@@ -25,9 +25,9 @@ Building on using real internet "brainrot" meme characters (Tung Tung Tung Sahur
 - **Live-service hook**: brainrot memes as a category refresh constantly, so new characters can be added as limited-time seasonal content — lining up with the retention system asked for later in the doc.
 - **Risk to flag**: meme-based content ages fast and carries IP/trend risk (a character could fall out of relevance, or read as too close to someone else's copyrighted work) — original designs *inspired by* the meme format age better than 1:1 recreations.
 
-## Launch School: Tongwarts University — Tung Tung School
+## Launch School: TungWarts University — Tung Tung School
 
-**This resolves Critical Q1.** Working title *Tongwarts University* (nature-fantasy: a Grand Quad with a fountain, a Clocktower, Arcane Library, an Arena, Greenhouse District, Campus Lake, a living/animated Tree, Underground Campus, Nature Preserve, Residence Halls, Student Center, Transit Hub — grounded, wood-and-stone architecture wrapped in greenery rather than a floating/candy-colored fantasy look). This gives the Hub (Step 5's `#8 Main Hub`) a real identity: the Grand Quad and Student Center double as your party-forming social hub, the Arena is your dueling/PvE testing ground, the Greenhouse District and Nature Preserve are exploration/social areas, and the Underground Campus is a natural home for the launch dungeon.
+**This resolves Critical Q1.** Working title *TungWarts University* (nature-fantasy: a Grand Quad with a fountain, a Clocktower, Arcane Library, an Arena, Greenhouse District, Campus Lake, a living/animated Tree, Underground Campus, Nature Preserve, Residence Halls, Student Center, Transit Hub — grounded, wood-and-stone architecture wrapped in greenery rather than a floating/candy-colored fantasy look). This gives the Hub (Step 5's `#8 Main Hub`) a real identity: the Grand Quad and Student Center double as your party-forming social hub, the Arena is your dueling/PvE testing ground, the Greenhouse District and Nature Preserve are exploration/social areas, and the Underground Campus is a natural home for the launch dungeon.
 
 **School identity — Tung Tung School:**
 
@@ -486,7 +486,7 @@ The remaining real risk is simply **total system count** — even at MVP scope, 
 
 ### Critical (answer before development starts)
 
-1. ✅ **Answered:** Tongwarts University — Tung Tung School (Strike melee + Wind element). See Launch School section above.
+1. ✅ **Answered:** TungWarts University — Tung Tung School (Strike melee + Wind element). See Launch School section above.
 2. 🟡 **Partially answered:** four Tung Tung Sahur variants proposed (Base, Elder, Sapling, Grove-Keeper) — open question is whether all four launch at once or two are held back.
 3. ✅ **Answered:** initiative is a per-battle roll + Agility modifier (D&D-style), not a strict Agility sort — see Combat philosophy and Step 6.
 4. Team role assignments against the 5 people you actually have (Step 4 is a template, not yet mapped to real names)

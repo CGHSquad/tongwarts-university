@@ -1,4 +1,4 @@
-# Tongwarts University (working title)
+# TungWarts University (working title)
 
 A Roblox turn-based social RPG — a Wizard101 x Persona hybrid where players attend
 a school, build social links, and fight in party-based, initiative-driven turn-based
@@ -19,7 +19,7 @@ It is the full Game Design Document + Development Plan, covering:
 - Turn-based combat architecture in detail (battle state, turn management,
   multiplayer sync, combat depth tiers)
 - Economy, retention, Roblox Discovery/growth strategy, risk analysis
-- The launch school (Tongwarts University — Tung Tung School: Strike melee + Wind
+- The launch school (TungWarts University — Tung Tung School: Strike melee + Wind
   element) and the four Tung Tung Sahur summon variants
 - The finalized initiative rule: a per-battle roll + Agility modifier (not a strict
   Agility sort) — see the "Combat philosophy" and "Step 6" sections
