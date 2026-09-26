@@ -1,0 +1,54 @@
+{
+  "name": "tungwarts-university",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "$path": "src/ReplicatedStorage",
+
+      "Remotes": {
+        "$className": "Folder",
+        "Battle": {
+          "$className": "Folder",
+          "SetReady": { "$className": "RemoteEvent" },
+          "SubmitAction": { "$className": "RemoteEvent" },
+          "RequestSync": { "$className": "RemoteEvent" },
+          "StateUpdate": { "$className": "RemoteEvent" },
+          "Notice": { "$className": "RemoteEvent" }
+        }
+      }
+    },
+
+    "ServerScriptService": {
+      "$path": "src/ServerScriptService"
+    },
+
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$path": "src/StarterPlayerScripts"
+      }
+    },
+
+    "Workspace": {
+      "Baseplate": {
+        "$className": "Part",
+        "$properties": {
+          "Anchored": true,
+          "Locked": true,
+          "Size": [512, 20, 512],
+          "Position": [0, -10, 0],
+          "Color": [0.36, 0.45, 0.3],
+          "Material": "Grass"
+        }
+      },
+      "SpawnLocation": {
+        "$className": "SpawnLocation",
+        "$properties": {
+          "Anchored": true,
+          "Size": [12, 1, 12],
+          "Position": [0, 0.5, 0]
+        }
+      }
+    }
+  }
+}
