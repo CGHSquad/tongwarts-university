@@ -34,3 +34,14 @@ treat it as the current source of truth, not something to hand-edit here.
   aligned with the MVP cut in `docs/GDD.md`'s Step 2 unless told otherwise.
 - Server-authoritative architecture throughout: the client renders and requests,
   the server validates and decides. See the GDD's Step 5/6 for the specifics.
+
+## Code layout
+
+- Rojo project: `default.project.json` maps `src/ServerScriptService` (server-only),
+  `src/ReplicatedStorage` (shared data/types) and `src/StarterPlayerScripts` (client UI/visuals).
+  Rojo is pinned in `rokit.toml`. Setup and playtest steps are in `README.md`.
+- Combat prototype (GDD Phase 1): all rules live in `ServerScriptService/Combat/BattleSession.luau`
+  (pure Luau, no Roblox APIs); `BattleDirector.luau` runs the lobby and turn timers;
+  `BattleServer.server.luau` is the network edge. Tuning and content are data in
+  `ReplicatedStorage/Combat/`; `BattleTypes.luau` defines what the server sends clients.
+- All scripts are `--!strict` Luau; keep them free of type errors.

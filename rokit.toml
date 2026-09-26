@@ -1,0 +1,6 @@
+# Toolchain pinned for the whole team so everyone syncs with the same Rojo.
+# Install Rokit (https://github.com/rojo-rbx/rokit), then run `rokit install` in this folder.
+# Keep the Rojo Studio plugin on the same version: `rojo plugin install`.
+
+[tools]
+rojo = "rojo-rbx/rojo@7.7.0"

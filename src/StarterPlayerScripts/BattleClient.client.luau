@@ -1,0 +1,55 @@
+--!strict
+--[[
+	BattleClient — client entry point for the combat prototype.
+
+	The client renders and requests, nothing more (GDD Step 5): every StateUpdate from the server
+	is the whole truth and gets drawn as-is, and the buttons only send requests (SetReady,
+	SubmitAction) that the server validates and resolves.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local BattleTypes = require(ReplicatedStorage:WaitForChild("Combat"):WaitForChild("BattleTypes"))
+local Combat = script.Parent:WaitForChild("Combat")
+local BattleUI = require(Combat:WaitForChild("BattleUI"))
+local BattleView = require(Combat:WaitForChild("BattleView"))
+
+local remotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Battle")
+local setReadyRemote = remotes:WaitForChild("SetReady") :: RemoteEvent
+local submitActionRemote = remotes:WaitForChild("SubmitAction") :: RemoteEvent
+local requestSyncRemote = remotes:WaitForChild("RequestSync") :: RemoteEvent
+local stateUpdateRemote = remotes:WaitForChild("StateUpdate") :: RemoteEvent
+local noticeRemote = remotes:WaitForChild("Notice") :: RemoteEvent
+
+local localPlayer = Players.LocalPlayer
+local view = BattleView.new()
+local ui = BattleUI.new(localPlayer:WaitForChild("PlayerGui") :: PlayerGui, localPlayer.UserId, {
+	onReadyChanged = function(ready)
+		setReadyRemote:FireServer(ready)
+	end,
+	onAttack = function(abilityId, targetId)
+		submitActionRemote:FireServer(abilityId, targetId)
+	end,
+	onTargetChanged = function(targetId)
+		view:setTarget(targetId)
+	end,
+})
+
+stateUpdateRemote.OnClientEvent:Connect(function(snapshot: BattleTypes.Snapshot)
+	view:render(snapshot.battle)
+	ui:render(snapshot)
+end)
+
+noticeRemote.OnClientEvent:Connect(function(message: string)
+	ui:showNotice(message)
+end)
+
+RunService.Heartbeat:Connect(function()
+	ui:tick(Workspace:GetServerTimeNow())
+end)
+
+-- Ask for the current state now that we're listening (a battle may already be running).
+requestSyncRemote:FireServer()
