@@ -2,11 +2,13 @@
 --[[
 	BattleUI — the bare-bones combat HUD, built in code.
 
-		lobby    who's here and who's ready, the Ready button, the start countdown
-		battle   whose turn it is (with that player's time left), the turn order with initiative
-		         totals, HP and Mana bars for every summon, and on your turn the ability buttons
-		         (plus Guard, which every summon has), target picker and Attack button. Plus a
-		         combat log and a victory/defeat screen.
+		overworld  while you explore: how walking into an enemy starts a fight, and who's in your
+		           party
+		battle     for the players in it: who struck first, whose turn it is (with that player's
+		           time left), the turn order with initiative totals, HP and Mana bars for every
+		           summon, and on your turn the ability buttons (plus Guard, which every summon
+		           has), target picker and Attack button. Plus a combat log and a victory/defeat
+		           screen.
 
 	It renders server snapshots and nothing else. The only thing it remembers is the choice you're
 	making right now (ability + target); Attack sends that choice to the server, which decides what
@@ -26,11 +28,10 @@ local BattleTheme = require(script.Parent:WaitForChild("BattleTheme"))
 
 type Snapshot = BattleTypes.Snapshot
 type BattleState = BattleTypes.BattleState
-type LobbyState = BattleTypes.LobbyState
+type OverworldState = BattleTypes.OverworldState
 type ParticipantState = BattleTypes.ParticipantState
 
 export type Callbacks = {
-	onReadyChanged: (ready: boolean) -> (),
 	onAction: (abilityId: string, targetId: string) -> (), -- an ability, or Guard
 	onTargetChanged: (targetId: string?, friendly: boolean) -> (), -- friendly = picking an ally
 }
@@ -334,6 +335,31 @@ local function createChip(parent: Instance, participant: ParticipantState, posit
 	return { frame = frame, stroke = stroke, label = label }
 end
 
+-- Whether this player has a summon in the battle.
+local function isInBattle(battle: BattleState, userId: number): boolean
+	for _, participant in battle.participants do
+		if participant.ownerUserId == userId then
+			return true
+		end
+	end
+	return false
+end
+
+-- The headline while initiative is revealed: how the fight opened, and who struck first.
+local function openingHeadline(battle: BattleState): (string, string)
+	local who = battle.startedBy or "Someone"
+	if battle.opening == "Party" then
+		return "You struck first!",
+			`{who} walked right into them: your party takes a bonus turn, then everyone goes in initiative order.`
+	elseif battle.opening == "Enemy" then
+		return "Ambushed from behind!",
+			`They caught {who} from behind: the enemies take a bonus turn, then everyone goes in initiative order.`
+	end
+	return "Encounter!",
+		`{who} bumped into them from the side, an even start. Everyone rolls 1-20 plus an Agility bonus; `
+			.. "highest goes first."
+end
+
 --[[ BattleUI ]]
 
 local BattleUI = {}
@@ -344,12 +370,9 @@ type UIFields = {
 	callbacks: Callbacks,
 	gui: ScreenGui,
 
-	lobbyFrame: Frame,
-	lobbyList: Frame,
-	lobbyEntries: { TextLabel },
-	readyButton: TextButton,
-	lobbyStatus: TextLabel,
-	lobbyHint: TextLabel,
+	overworldFrame: Frame,
+	partyLabel: TextLabel,
+	overworldStatus: TextLabel,
 
 	battleFrame: Frame,
 	turnTitle: TextLabel,
@@ -371,7 +394,6 @@ type UIFields = {
 	noticeLabel: TextLabel,
 
 	snapshot: Snapshot?,
-	lobbyStatusBase: string,
 	detailBase: string,
 	detailDeadline: number?,
 	builtBattleId: number?,
@@ -403,41 +425,39 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 		table.insert(scales, uiScale)
 	end
 
-	--[[ Lobby ]]
-	local lobbyFrame = newPanel(gui, "Lobby")
-	lobbyFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-	lobbyFrame.Position = UDim2.fromScale(0.5, 0.5)
-	lobbyFrame.Size = UDim2.fromOffset(440, 0)
-	lobbyFrame.AutomaticSize = Enum.AutomaticSize.Y
-	lobbyFrame.Visible = false -- until the first state arrives, so Ready can't be pressed blind
-	addPadding(lobbyFrame, 18)
-	addList(lobbyFrame, Enum.FillDirection.Vertical, 10)
-	scaleWithScreen(lobbyFrame)
+	--[[ Overworld: a small panel at the top while you explore, below Roblox's own top bar ]]
+	local overworldFrame = newPanel(gui, "Overworld")
+	overworldFrame.AnchorPoint = Vector2.new(0.5, 0)
+	overworldFrame.Position = UDim2.new(0.5, 0, 0, 64)
+	overworldFrame.Size = UDim2.fromOffset(460, 0)
+	overworldFrame.AutomaticSize = Enum.AutomaticSize.Y
+	overworldFrame.Visible = false -- until the first state arrives
+	addPadding(overworldFrame, 12)
+	addList(overworldFrame, Enum.FillDirection.Vertical, 6)
+	scaleWithScreen(overworldFrame)
 
-	newLabel(lobbyFrame, "TungWarts Arena", 30, BattleTheme.FontHeavy).LayoutOrder = 1
-	local subtitle = newLabel(lobbyFrame, "Turn-based combat prototype: 2 summons per side", 16)
-	subtitle.TextColor3 = BattleTheme.SubtleText
-	subtitle.LayoutOrder = 2
-
-	local lobbyList = newContainer(lobbyFrame, "Players")
-	lobbyList.Size = UDim2.fromScale(1, 0)
-	lobbyList.AutomaticSize = Enum.AutomaticSize.Y
-	lobbyList.LayoutOrder = 3
-	addList(lobbyList, Enum.FillDirection.Vertical, 4)
-
-	local readyButton = newButton(lobbyFrame, "READY", UDim2.new(1, 0, 0, 46))
-	readyButton.Name = "ReadyButton"
-	readyButton.TextSize = 22
-	readyButton.Font = BattleTheme.FontHeavy
-	readyButton.LayoutOrder = 4
-
-	local lobbyStatus = newLabel(lobbyFrame, "", 17, BattleTheme.FontBold)
-	lobbyStatus.LayoutOrder = 5
-	local lobbyHint = newLabel(lobbyFrame, "", 14)
-	lobbyHint.Size = UDim2.fromScale(1, 0)
-	lobbyHint.AutomaticSize = Enum.AutomaticSize.Y
-	lobbyHint.TextColor3 = BattleTheme.SubtleText
-	lobbyHint.LayoutOrder = 6
+	local overworldTitle = newLabel(overworldFrame, "TungWarts Grounds", 22, BattleTheme.FontHeavy)
+	overworldTitle.TextXAlignment = Enum.TextXAlignment.Left
+	overworldTitle.LayoutOrder = 1
+	local howTo = newLabel(
+		overworldFrame,
+		"Walk into an enemy to start a fight. Face it when you touch it and your party gets a bonus turn. "
+			.. "If one walks into your back, the enemies get it instead.",
+		15
+	)
+	howTo.TextXAlignment = Enum.TextXAlignment.Left
+	howTo.LayoutOrder = 2
+	local partyLabel = newLabel(overworldFrame, "", 15, BattleTheme.FontBold)
+	partyLabel.Name = "Party"
+	partyLabel.TextXAlignment = Enum.TextXAlignment.Left
+	partyLabel.TextColor3 = BattleTheme.SubtleText
+	partyLabel.LayoutOrder = 3
+	local overworldStatus = newLabel(overworldFrame, "", 15, BattleTheme.FontBold)
+	overworldStatus.Name = "Status"
+	overworldStatus.TextXAlignment = Enum.TextXAlignment.Left
+	overworldStatus.TextColor3 = BattleTheme.Accent
+	overworldStatus.LayoutOrder = 4
+	overworldStatus.Visible = false
 
 	--[[ Battle ]]
 	local battleFrame = newContainer(gui, "Battle")
@@ -581,12 +601,9 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 		callbacks = callbacks,
 		gui = gui,
 
-		lobbyFrame = lobbyFrame,
-		lobbyList = lobbyList,
-		lobbyEntries = {},
-		readyButton = readyButton,
-		lobbyStatus = lobbyStatus,
-		lobbyHint = lobbyHint,
+		overworldFrame = overworldFrame,
+		partyLabel = partyLabel,
+		overworldStatus = overworldStatus,
 
 		battleFrame = battleFrame,
 		turnTitle = turnTitle,
@@ -608,7 +625,6 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 		noticeLabel = noticeLabel,
 
 		snapshot = nil,
-		lobbyStatusBase = "",
 		detailBase = "",
 		detailDeadline = nil,
 		builtBattleId = nil,
@@ -624,9 +640,6 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 	}
 	local self = setmetatable(fields, BattleUI)
 
-	readyButton.Activated:Connect(function()
-		self:_toggleReady()
-	end)
 	attackButton.Activated:Connect(function()
 		self:_submitAttack()
 	end)
@@ -646,18 +659,20 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 	return self
 end
 
--- Draws a fresh snapshot from the server.
+-- Draws a fresh snapshot from the server. The battle screen is only for the players in the fight;
+-- everyone else keeps exploring.
 function BattleUI.render(self: BattleUI, snapshot: Snapshot)
 	self.snapshot = snapshot
 	local battle = snapshot.battle
-	self.lobbyFrame.Visible = battle == nil
-	self.battleFrame.Visible = battle ~= nil
+	local inBattle = battle ~= nil and isInBattle(battle, self.localUserId)
+	self.overworldFrame.Visible = not inBattle
+	self.battleFrame.Visible = inBattle
 
-	if battle then
+	if battle and inBattle then
 		self:_renderBattle(battle)
 	else
 		self:_clearBattle()
-		self:_renderLobby(snapshot.lobby)
+		self:_renderOverworld(snapshot.overworld, battle)
 		self.callbacks.onTargetChanged(nil, false)
 	end
 	self:tick(Workspace:GetServerTimeNow())
@@ -666,17 +681,14 @@ end
 -- Updates countdowns; called every frame.
 function BattleUI.tick(self: BattleUI, now: number)
 	local snapshot = self.snapshot
-	if snapshot == nil then
+	local battle = if snapshot then snapshot.battle else nil
+	if battle == nil or not self.battleFrame.Visible then
 		return
 	end
 
-	local battle = snapshot.battle
-	if battle == nil then
-		local endsAt = snapshot.lobby.countdownEndsAt
-		self.lobbyStatus.Text = if endsAt then `Battle starting in {secondsLeft(endsAt, now)}...` else self.lobbyStatusBase
-	elseif battle.phase == "reward" then
-		local returnAt = battle.lobbyReturnAt
-		self.resultDetail.Text = if returnAt then `Back to the lobby in {secondsLeft(returnAt, now)}...` else ""
+	if battle.phase == "reward" then
+		local returnAt = battle.overworldReturnAt
+		self.resultDetail.Text = if returnAt then `Back to exploring in {secondsLeft(returnAt, now)}...` else ""
 	elseif self.detailDeadline then
 		self.turnDetail.Text = `{self.detailBase}  ·  {secondsLeft(self.detailDeadline, now)}s left`
 	end
@@ -704,67 +716,19 @@ function BattleUI._rerender(self: BattleUI)
 	end
 end
 
---[[ Lobby ]]
+--[[ Overworld ]]
 
-function BattleUI._renderLobby(self: BattleUI, lobby: LobbyState)
-	for _, entry in self.lobbyEntries do
-		entry:Destroy()
+-- While you explore: who's in your party, and whether a fight you're not in is going on.
+function BattleUI._renderOverworld(self: BattleUI, overworld: OverworldState, battle: BattleState?)
+	local names = {}
+	for _, player in overworld.players do
+		table.insert(names, if player.userId == self.localUserId then `{player.name} (you)` else player.name)
 	end
-	table.clear(self.lobbyEntries)
-
-	local myEntry = nil
-	local readyCount = 0
-	local waitingOn = {}
-	for index, member in lobby.members do
-		local isMe = member.userId == self.localUserId
-		if isMe then
-			myEntry = member
-		end
-		if member.ready then
-			readyCount += 1
-		else
-			table.insert(waitingOn, member.name)
-		end
-
-		local entry = newLabel(self.lobbyList, "", 18, BattleTheme.FontBold)
-		entry.Text = `{member.name}{if isMe then " (you)" else ""}  ·  {if member.ready then "READY" else "not ready"}`
-		entry.TextColor3 = if member.ready then BattleTheme.HealthBar else BattleTheme.SubtleText
-		entry.LayoutOrder = index
-		table.insert(self.lobbyEntries, entry)
-	end
-
-	local needed = math.min(#lobby.members, lobby.maxPartySize)
-	if #lobby.members == 0 then
-		self.lobbyStatusBase = "Waiting for players..."
-	elseif readyCount == 0 then
-		self.lobbyStatusBase = "Press READY to start"
-	else
-		self.lobbyStatusBase = `{readyCount}/{needed} ready. Waiting for {table.concat(waitingOn, ", ")}`
-	end
-
-	if #lobby.members <= 1 then
-		self.lobbyHint.Text = "Playing solo? Press READY and you'll control both of your party's summons."
-	else
-		self.lobbyHint.Text = `The battle starts when everyone is ready. Up to {lobby.maxPartySize} players fight, `
-			.. "each controlling one summon."
-	end
-
-	local isReady = myEntry ~= nil and myEntry.ready
-	self.readyButton.Text = if isReady then "CANCEL READY" else "READY"
-	styleButton(self.readyButton, if myEntry == nil then "disabled" elseif isReady then "normal" else "attack")
-end
-
-function BattleUI._toggleReady(self: BattleUI)
-	local snapshot = self.snapshot
-	if snapshot == nil or snapshot.battle ~= nil then
-		return
-	end
-	for _, member in snapshot.lobby.members do
-		if member.userId == self.localUserId then
-			self.callbacks.onReadyChanged(not member.ready)
-			return
-		end
-	end
+	self.partyLabel.Text = if #overworld.players <= 1
+		then "Playing solo: you'll control your whole party."
+		else `Party: {table.concat(names, ", ")}. Up to {overworld.maxPartySize} fight together.`
+	self.overworldStatus.Visible = battle ~= nil
+	self.overworldStatus.Text = "A fight is on without you. You'll be in the next one."
 end
 
 --[[ Battle ]]
@@ -883,13 +847,12 @@ function BattleUI._renderHeader(self: BattleUI, battle: BattleState, actor: Part
 	self.detailDeadline = nil
 
 	if battle.phase == "setup" then
-		title = "Rolling initiative..."
-		detail = "Everyone rolls 1-20 plus an Agility bonus. Highest total goes first."
+		title, detail = openingHeadline(battle)
 	elseif battle.phase == "reward" then
 		title = if battle.winner == "Party" then "Victory!" else "Defeat"
 		detail = battle.log[#battle.log] or ""
 	elseif actor then
-		local round = `Round {battle.round}`
+		local round = if battle.round == 0 then "Bonus turn" else `Round {battle.round}`
 		if battle.phase == "resolve" then
 			title = round
 			detail = battle.log[#battle.log] or ""

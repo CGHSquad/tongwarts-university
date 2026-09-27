@@ -7,7 +7,7 @@
 	ServerScriptService, which never replicates, so clients can't even read it.
 
 	A fight, as BattleDirector drives it:
-		session:rollInitiative()           -- once per battle; builds turnQueue             "setup"
+		session:rollInitiative(opening)    -- once per battle; builds turnQueue             "setup"
 		session:beginNextTurn()            -- next summon's turn: Mana back, statuses tick   "input"
 		                                   -- (straight to "resolve" if an ailment costs it the turn)
 		session:submitAction(userId, ...)  -- a player's request: validated, resolved       "resolve"
@@ -21,6 +21,10 @@
 
 	Besides its own abilities, every summon can Guard (GDD Step 6): free, no target, and it braces
 	until its own next turn. See _guard and _attack.
+
+	A fight can open with a bonus turn for one side, depending on how the overworld encounter
+	began (GDD Step 6's initiativeBonus): everyone on that side acts once, in initiative order,
+	before round 1. See rollInitiative.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -88,6 +92,9 @@ type SessionFields = {
 	byId: { [string]: Participant },
 	turnQueue: { string }, -- participant ids in initiative order
 	turnIndex: number, -- position of the current actor in turnQueue
+	opening: Side?, -- the side that takes a bonus turn before round 1, if any
+	openingQueue: { string }, -- that side's ids in initiative order: the bonus turn
+	openingIndex: number, -- how far through openingQueue the bonus turn has got
 	currentActorId: string?,
 	winner: Side?,
 	lastAction: BattleTypes.ActionRecord?,
@@ -279,6 +286,9 @@ function BattleSession.new(id: number, roster: { RosterEntry }, rng: Random): Ba
 		byId = {},
 		turnQueue = {},
 		turnIndex = 0,
+		opening = nil,
+		openingQueue = {},
+		openingIndex = 0,
 		currentActorId = nil,
 		winner = nil,
 		lastAction = nil,
@@ -337,7 +347,11 @@ end
 -- Agility bonus, and the turn queue sorts by that total rather than by raw Agility. Agility
 -- raises the odds of acting early without guaranteeing it. The order then stays fixed for the
 -- whole battle.
-function BattleSession.rollInitiative(self: BattleSession)
+--
+-- `opening` is the side that struck first in the overworld (GDD "Combat philosophy"), if either
+-- did. Everyone on it takes a bonus turn before round 1, in the order they just rolled. Then
+-- round 1 starts from the top of the queue as usual.
+function BattleSession.rollInitiative(self: BattleSession, opening: Side?)
 	assert(self.phase == "setup" and #self.turnQueue == 0, "Initiative is rolled once, before the first turn")
 
 	for _, participant in self.participants do
@@ -355,6 +369,16 @@ function BattleSession.rollInitiative(self: BattleSession)
 			`{participant.name} rolls initiative: {initiative.roll} + {initiative.bonus} Agility = {initiative.total}`
 		)
 	end
+
+	self.opening = opening
+	if opening then
+		for _, id in self.turnQueue do
+			if self.byId[id].side == opening then
+				table.insert(self.openingQueue, id)
+			end
+		end
+		self:_log(`The {if opening == "Party" then "party" else "enemies"} struck first: a bonus turn before round 1!`)
+	end
 end
 
 -- Opens the next turn: walks forward through turnQueue (wrapping into a new round), skipping
@@ -363,6 +387,19 @@ end
 function BattleSession.beginNextTurn(self: BattleSession): Participant
 	assert(self.phase == "setup" or self.phase == "resolve", `Can't begin a turn during "{self.phase}"`)
 	assert(#self.turnQueue > 0, "Roll initiative before the first turn")
+
+	-- The bonus turn, if the fight opened with one, comes before round 1 (the round is still 0).
+	while self.openingIndex < #self.openingQueue do
+		self.openingIndex += 1
+		local actor = self.byId[self.openingQueue[self.openingIndex]]
+		if actor.status == "Active" then
+			self.turnNumber += 1
+			self.currentActorId = actor.id
+			self.phase = "input"
+			self:_startTurn(actor)
+			return actor
+		end
+	end
 
 	for _ = 1, #self.turnQueue do
 		self.turnIndex = self.turnIndex % #self.turnQueue + 1
@@ -554,12 +591,14 @@ function BattleSession.getState(self: BattleSession): BattleTypes.BattleState
 		turnNumber = self.turnNumber,
 		currentActorId = self.currentActorId,
 		turnQueue = table.clone(self.turnQueue),
+		opening = self.opening,
 		participants = participants,
 		winner = self.winner,
 		lastAction = lastAction,
 		log = table.move(self.log, firstLogLine, #self.log, 1, {}),
 		turnDeadline = nil,
-		lobbyReturnAt = nil,
+		overworldReturnAt = nil,
+		startedBy = nil,
 	}
 end
 

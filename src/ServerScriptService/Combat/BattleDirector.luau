@@ -1,16 +1,16 @@
 --!strict
 --[[
-	BattleDirector — runs the arena: the ready-up lobby, and the real-time loop around a
-	BattleSession (turn timers, enemy turns, pacing, players leaving). One per server, one battle at
-	a time.
+	BattleDirector — runs the fights: starting one when a player walks into an overworld enemy
+	(startEncounter), and the real-time loop around its BattleSession (turn timers, enemy turns,
+	pacing, players leaving). One per server, one battle at a time.
 
 	It doesn't call Roblox APIs itself: BattleServer hands it the clock, the scheduler, the RNG and
-	the functions that reach clients. That keeps this file about game flow, and lets it run
-	outside Studio.
+	the functions that reach clients and the overworld. That keeps this file about game flow, and
+	lets it run outside Studio.
 
-	Lobby rule: players press Ready, and after a short countdown the battle starts once everyone in
-	the server is ready, or once a full party (CombatConfig.MaxPartySize) is. Anyone else watches
-	and can join the next battle.
+	Party rule: everyone in the server is one party. Whoever touches an enemy pulls the others into
+	the fight too, up to CombatConfig.MaxPartySize players; anyone past that sits this one out.
+	How the fight opens (who struck first) comes from the overworld: see Overworld and Encounter.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -26,12 +26,20 @@ export type Dependencies = {
 	rng: Random,
 	broadcast: (snapshot: BattleTypes.Snapshot) -> (), -- send the latest state to every client
 	notify: (userId: number, message: string) -> (), -- tell one player why a request was refused
+	-- The fight is over and cleared, and everyone's back in the overworld. The winner is nil if the
+	-- fight was reset after an error.
+	battleEnded: (winner: BattleTypes.Side?) -> (),
+}
+
+-- A fight about to start, from the overworld.
+export type Encounter = {
+	enemies: { string }, -- the enemy side's summons (Summons ids)
+	opening: BattleTypes.Side?, -- the side that struck first and takes a bonus turn, if either did
 }
 
 type Member = {
 	userId: number,
 	name: string,
-	ready: boolean,
 }
 
 local BattleDirector = {}
@@ -42,10 +50,9 @@ type DirectorFields = {
 	members: { Member }, -- everyone in the server, in join order
 	session: BattleSession.BattleSession?,
 	battleCount: number,
-	countdownEndsAt: number?,
-	countdownId: number, -- bumped to cancel a pending countdown
+	startedBy: string?, -- the player who walked into the enemy
 	turnDeadline: number?,
-	lobbyReturnAt: number?,
+	overworldReturnAt: number?,
 }
 
 export type BattleDirector = typeof(setmetatable({} :: DirectorFields, BattleDirector))
@@ -56,10 +63,9 @@ function BattleDirector.new(deps: Dependencies): BattleDirector
 		members = {},
 		session = nil,
 		battleCount = 0,
-		countdownEndsAt = nil,
-		countdownId = 0,
+		startedBy = nil,
 		turnDeadline = nil,
-		lobbyReturnAt = nil,
+		overworldReturnAt = nil,
 	}
 	return setmetatable(fields, BattleDirector)
 end
@@ -70,8 +76,7 @@ function BattleDirector.playerJoined(self: BattleDirector, userId: number, name:
 	if self:_findMember(userId) then
 		return
 	end
-	table.insert(self.members, { userId = userId, name = name, ready = false })
-	self:_refreshCountdown()
+	table.insert(self.members, { userId = userId, name = name })
 	self:_broadcast()
 end
 
@@ -94,25 +99,38 @@ function BattleDirector.playerLeft(self: BattleDirector, userId: number)
 			end
 		end)
 	end
-	self:_refreshCountdown()
 	self:_broadcast()
 end
 
-function BattleDirector.setReady(self: BattleDirector, userId: number, ready: boolean)
-	local member = self:_findMember(userId)
-	if member == nil then
-		return
+-- `userId` walked into an overworld enemy: start the fight. The party is that player, then
+-- everyone else in the server in join order, up to MaxPartySize. Returns the party's user ids, or
+-- nil if no fight started (one is already running, or that player isn't in the server).
+function BattleDirector.startEncounter(self: BattleDirector, userId: number, encounter: Encounter): { number }?
+	local starter = self:_findMember(userId)
+	if starter == nil or self.session ~= nil then
+		return nil
 	end
-	if self.session then
-		self.deps.notify(userId, "A battle is already running. Ready up when it ends.")
-		return
+	local party: { Member } = { starter }
+	for _, member in self.members do
+		if member ~= starter and #party < CombatConfig.MaxPartySize then
+			table.insert(party, member)
+		end
 	end
-	if member.ready == ready then
-		return -- nothing changed, so nothing to broadcast
-	end
-	member.ready = ready
-	self:_refreshCountdown()
+
+	local started = false
+	self:_protect(function()
+		self:_startBattle(party, encounter)
+		started = true
+	end)
 	self:_broadcast()
+	if not started then
+		return nil
+	end
+	local userIds = {}
+	for _, member in party do
+		table.insert(userIds, member.userId)
+	end
+	return userIds
 end
 
 function BattleDirector.submitAction(self: BattleDirector, userId: number, abilityId: string, targetId: string)
@@ -138,81 +156,32 @@ function BattleDirector.submitAction(self: BattleDirector, userId: number, abili
 end
 
 function BattleDirector.getSnapshot(self: BattleDirector): BattleTypes.Snapshot
-	local members: { BattleTypes.LobbyMember } = {}
+	local players: { BattleTypes.OverworldPlayer } = {}
 	for _, member in self.members do
-		table.insert(members, { userId = member.userId, name = member.name, ready = member.ready })
+		table.insert(players, { userId = member.userId, name = member.name })
 	end
 
 	local battle: BattleTypes.BattleState? = nil
 	if self.session then
 		local state = self.session:getState()
 		state.turnDeadline = self.turnDeadline
-		state.lobbyReturnAt = self.lobbyReturnAt
+		state.overworldReturnAt = self.overworldReturnAt
+		state.startedBy = self.startedBy
 		battle = state
 	end
 
 	return {
-		lobby = {
-			members = members,
+		overworld = {
+			players = players,
 			maxPartySize = CombatConfig.MaxPartySize,
-			countdownEndsAt = self.countdownEndsAt,
 		},
 		battle = battle,
 	}
 end
 
---[[ Lobby ]]
+--[[ Starting a fight ]]
 
--- Starts, keeps or cancels the pre-battle countdown to match who is ready right now.
-function BattleDirector._refreshCountdown(self: BattleDirector)
-	local readyCount = 0
-	for _, member in self.members do
-		if member.ready then
-			readyCount += 1
-		end
-	end
-	local canStart = self.session == nil
-		and readyCount > 0
-		and (readyCount == #self.members or readyCount >= CombatConfig.MaxPartySize)
-
-	if not canStart then
-		if self.countdownEndsAt ~= nil then
-			self.countdownEndsAt = nil
-			self.countdownId += 1 -- the pending start sees a different id and does nothing
-		end
-		return
-	end
-	if self.countdownEndsAt ~= nil then
-		return -- already counting down
-	end
-
-	self.countdownId += 1
-	local countdownId = self.countdownId
-	self.countdownEndsAt = self.deps.now() + CombatConfig.LobbyCountdownSeconds
-	self.deps.delay(CombatConfig.LobbyCountdownSeconds, function()
-		if self.countdownId ~= countdownId or self.session ~= nil then
-			return
-		end
-		self:_protect(function()
-			self:_startBattle()
-		end)
-		self:_broadcast()
-	end)
-end
-
-function BattleDirector._startBattle(self: BattleDirector)
-	self.countdownEndsAt = nil
-
-	-- The first ready players (in join order) form the party. Everyone's Ready resets for next time.
-	local party: { Member } = {}
-	for _, member in self.members do
-		if member.ready and #party < CombatConfig.MaxPartySize then
-			table.insert(party, member)
-		end
-		member.ready = false
-	end
-	assert(#party > 0, "The countdown finished with no one ready")
-
+function BattleDirector._startBattle(self: BattleDirector, party: { Member }, encounter: Encounter)
 	-- Party summons are dealt round-robin: one each for two players, both for a solo player.
 	local roster: { BattleSession.RosterEntry } = {}
 	for slot, summonId in CombatConfig.PartySummons do
@@ -225,7 +194,7 @@ function BattleDirector._startBattle(self: BattleDirector)
 		}
 		table.insert(roster, entry)
 	end
-	for _, summonId in CombatConfig.EnemySummons do
+	for _, summonId in encounter.enemies do
 		local entry: BattleSession.RosterEntry = { side = "Enemy", summonId = summonId }
 		table.insert(roster, entry)
 	end
@@ -233,10 +202,11 @@ function BattleDirector._startBattle(self: BattleDirector)
 	self.battleCount += 1
 	local session = BattleSession.new(self.battleCount, roster, self.deps.rng)
 	self.session = session
+	self.startedBy = party[1].name
 	self.turnDeadline = nil
-	self.lobbyReturnAt = nil
+	self.overworldReturnAt = nil
 
-	session:rollInitiative()
+	session:rollInitiative(encounter.opening)
 	self:_after(CombatConfig.InitiativeRevealSeconds, function()
 		self:_beginNextTurn()
 	end)
@@ -305,24 +275,26 @@ function BattleDirector._afterTurn(self: BattleDirector)
 end
 
 function BattleDirector._showResults(self: BattleDirector)
-	if self.lobbyReturnAt ~= nil then
+	if self.overworldReturnAt ~= nil then
 		return
 	end
 	self.turnDeadline = nil
-	self.lobbyReturnAt = self.deps.now() + CombatConfig.ResultScreenSeconds
+	self.overworldReturnAt = self.deps.now() + CombatConfig.ResultScreenSeconds
 	self:_after(CombatConfig.ResultScreenSeconds, function()
-		self:_returnToLobby()
+		self:_endBattle()
 	end)
 end
 
-function BattleDirector._returnToLobby(self: BattleDirector)
+-- The fight is over (or was reset): clear it, and hand everyone back to the overworld.
+function BattleDirector._endBattle(self: BattleDirector)
+	local session = self.session
 	self.session = nil
+	self.startedBy = nil
 	self.turnDeadline = nil
-	self.lobbyReturnAt = nil
-	for _, member in self.members do
-		member.ready = false
+	self.overworldReturnAt = nil
+	if session then
+		self.deps.battleEnded(session.winner)
 	end
-	self:_refreshCountdown()
 end
 
 --[[ Helpers ]]
@@ -345,8 +317,8 @@ function BattleDirector._after(self: BattleDirector, seconds: number, callback: 
 	end)
 end
 
--- Last line of defense for "nobody has to step in": if a bug throws mid-battle, reset to the
--- lobby instead of leaving everyone stuck on a frozen turn. The error still shows in the output.
+-- Last line of defense for "nobody has to step in": if a bug throws mid-battle, end the fight
+-- instead of leaving everyone stuck on a frozen turn. The error still shows in the output.
 function BattleDirector._protect(self: BattleDirector, callback: () -> ())
 	local failure: string? = nil
 	xpcall(callback, function(err)
@@ -355,8 +327,8 @@ function BattleDirector._protect(self: BattleDirector, callback: () -> ())
 	if failure == nil then
 		return
 	end
-	warn(`[BattleDirector] Battle error, returning everyone to the lobby:\n{failure}`)
-	self:_returnToLobby()
+	warn(`[BattleDirector] Battle error, returning everyone to the overworld:\n{failure}`)
+	self:_endBattle()
 	for _, member in self.members do
 		self.deps.notify(member.userId, "Something went wrong, so the battle was reset.")
 	end

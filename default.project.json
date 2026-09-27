@@ -10,7 +10,6 @@
         "$className": "Folder",
         "Battle": {
           "$className": "Folder",
-          "SetReady": { "$className": "RemoteEvent" },
           "SubmitAction": { "$className": "RemoteEvent" },
           "RequestSync": { "$className": "RemoteEvent" },
           "StateUpdate": { "$className": "RemoteEvent" },

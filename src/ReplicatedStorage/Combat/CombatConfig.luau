@@ -8,19 +8,21 @@
 ]]
 
 local CombatConfig = {
-	-- Who fights. Party summons are dealt to the party in join order, so with two players each
-	-- controls one, and a solo player controls both. Any ids from Summons work here.
+	-- Who fights. Walking into an overworld enemy pulls you and everyone else in the server into
+	-- the fight, up to MaxPartySize players. Party summons are dealt to them in that order (whoever
+	-- touched the enemy first), so with two players each controls one, and a solo player controls
+	-- both. Overworld enemies fight as EnemySummons unless they say otherwise (EnemySpawns). Any ids
+	-- from Summons work here.
 	MaxPartySize = 2,
 	PartySummons = { "TungTungSahur", "TungTungSahur" },
 	EnemySummons = { "WildSapling", "WildSapling" },
 
 	-- Pacing, in seconds.
-	LobbyCountdownSeconds = 3, -- after everyone is ready, before the battle starts
-	InitiativeRevealSeconds = 3, -- time to read the initiative rolls before the first turn
+	InitiativeRevealSeconds = 3, -- time to read the initiative rolls (and who struck first) before the first turn
 	EnemyThinkSeconds = 1.25, -- small delay so enemy turns are readable
 	ResolvePauseSeconds = 1.5, -- after an action, before the next turn opens
 	TurnTimeoutSeconds = 30, -- a player who doesn't act in time skips the turn (AFK/disconnect rule)
-	ResultScreenSeconds = 8, -- victory/defeat screen before returning to the lobby
+	ResultScreenSeconds = 8, -- victory/defeat screen before everyone's back in the overworld
 
 	-- Initiative (GDD Step 6): rolled once per battle.
 	-- total = random 1..InitiativeDieSides + floor(Agility / AgilityPerInitiativeBonus)
@@ -78,6 +80,23 @@ local CombatConfig = {
 	GuardAilmentChanceMultiplier = 0.5, -- ailments are this much as likely to land on it
 	GuardManaBonus = 6, -- paid once, only if something actually attacks it before its next turn
 	-- (critical hits against a guarding summon are always blocked)
+
+	-- Overworld encounters (GDD "Combat philosophy"): walking into an enemy starts a fight, and where
+	-- the enemy was, compared with the way the player was facing, decides how the fight opens:
+	--   in front (within EncounterFrontAngle of straight ahead): the party struck first, so everyone
+	--     in the party takes a bonus turn before round 1
+	--   behind (within EncounterBackAngle of straight behind): it caught the player from behind, so
+	--     every enemy takes a bonus turn before round 1
+	--   anywhere else, from the side: a neutral start
+	-- A bonus turn goes in initiative order, and then the fight runs as usual from round 1.
+	EncounterFrontAngle = 60, -- degrees either side of straight ahead
+	EncounterBackAngle = 60, -- degrees either side of straight behind
+	EncounterContactDistance = 4, -- studs between the player and the enemy, center to center, that count as touching
+	EncounterCooldownSeconds = 4, -- after a fight, the party gets this long to walk away before another can start
+	EnemyRespawnSeconds = 20, -- a beaten overworld enemy comes back after this long
+	EnemyPatrolSpeed = 8, -- studs per second (players walk at 16)
+	EnemyPatrolPauseSeconds = 1, -- a patrolling enemy stops this long at each point of its route
+	EnemyIdleTurnSeconds = 4, -- an idle enemy turns to look another way this often
 
 	-- How many combat log lines clients receive.
 	LogLinesShown = 6,

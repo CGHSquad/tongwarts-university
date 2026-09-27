@@ -41,8 +41,11 @@ treat it as the current source of truth, not something to hand-edit here.
   `src/ReplicatedStorage` (shared data/types) and `src/StarterPlayerScripts` (client UI/visuals).
   Rojo is pinned in `rokit.toml`. Setup and playtest steps are in `README.md`.
 - Combat prototype (GDD Phase 1): all rules live in `ServerScriptService/Combat/BattleSession.luau`
-  (pure Luau, no Roblox APIs); `BattleDirector.luau` runs the lobby and turn timers;
-  `BattleServer.server.luau` is the network edge. Tuning and content are data in
+  (pure Luau, no Roblox APIs); `BattleDirector.luau` starts fights and runs turn timers;
+  `BattleServer.server.luau` is the entry point and network edge. Fights start in the overworld
+  (`ServerScriptService/Overworld/`): `Overworld.luau` moves the enemies in `EnemySpawns.luau` and
+  starts a fight when a player touches one, and `Encounter.luau` decides who struck first (the
+  bonus opening turn, passed to `BattleSession:rollInitiative`). Tuning and content are data in
   `ReplicatedStorage/Combat/` (`CombatConfig` holds every formula's numbers; `Abilities`,
   `Summons`, `StatusEffects` are content); `BattleTypes.luau` defines what the server sends clients.
 - After changing combat numbers or rules, run `lune run tools/simulate-battles` (Lune is pinned

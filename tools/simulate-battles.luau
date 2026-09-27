@@ -18,6 +18,10 @@
 		           (GDD Step 6, "Guard"). If it beat sensible play, Guard would be too strong.
 	Enemies use the game's own EnemyAI every time.
 
+	Fights open neutrally, except in the "Opening turn" table: there, sensible play is replayed
+	with the party (or the enemies) taking the bonus turn that striking first in the overworld
+	gives (GDD "Combat philosophy"), to show what getting the jump on a fight is worth.
+
 	The combat modules are plain Luau, so nothing Roblox runs here: a tiny stand-in for `game` and
 	`script` maps src/ the way default.project.json does.
 ]]
@@ -379,7 +383,8 @@ local function record(session, tally, action, guarding)
 	end
 end
 
-local function playBattle(party, choose, tally)
+-- `opening` is the side that takes a bonus turn before round 1, if either does.
+local function playBattle(party, choose, tally, opening)
 	local roster = {}
 	for index, summonId in party do
 		table.insert(roster, { side = "Party", summonId = summonId, ownerUserId = index, ownerName = `Player{index}` })
@@ -390,7 +395,7 @@ local function playBattle(party, choose, tally)
 	end
 
 	local session = BattleSession.new(1, roster, rng)
-	session:rollInitiative()
+	session:rollInitiative(opening)
 	local lastSequence = 0
 	local guarding = {}
 	while session.phase ~= "reward" and session.round < MAX_ROUNDS do
@@ -484,6 +489,15 @@ for _, party in PARTIES do
 	table.insert(results, entry)
 end
 
+-- Then the same sensible play with each side getting the jump on the fight.
+for _, entry in results do
+	entry.partyFirst, entry.enemiesFirst = newTally(), newTally()
+	for _ = 1, BATTLES do
+		playBattle(entry.party, sensible, entry.partyFirst, "Party")
+		playBattle(entry.party, sensible, entry.enemiesFirst, "Enemy")
+	end
+end
+
 print("Win rate                              careless   no Guard   sensible     turtle   rounds (sensible)")
 for _, entry in results do
 	local function winRate(styleName: string): string
@@ -514,6 +528,21 @@ for _, entry in results do
 			)
 		end
 	end
+end
+
+print("\nOpening turn (sensible play): win rate when the fight opens with...")
+print("  Party                              the party's bonus turn    even start    the enemies' bonus turn")
+for _, entry in results do
+	local neutral = entry.tallies.sensible
+	print(
+		string.format(
+			"  %-34s %22s    %10s    %23s",
+			partyName(entry.party),
+			percent(entry.partyFirst.wins, entry.partyFirst.battles),
+			percent(neutral.wins, neutral.battles),
+			percent(entry.enemiesFirst.wins, entry.enemiesFirst.battles)
+		)
+	)
 end
 
 print("\nWho does what (sensible play, average per battle)")
