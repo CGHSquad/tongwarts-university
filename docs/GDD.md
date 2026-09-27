@@ -395,11 +395,13 @@ Damage/Tank/Healer/Support/Debuffer/Crowd-Control/Utility are useful *design lan
 
 Every summon gets a **Guard** option on its turn, alongside its abilities — no Mana cost, no target. Combines Persona's Guard command with Wizard101's "pass to bank resources" idea, adapted to our Mana economy instead of pips:
 
-- **Damage reduction:** while guarding, incoming physical and magical damage is cut further on top of Endurance's own reduction (e.g., an additional \~40–50% off whatever damage would otherwise land) — strong enough to be worth choosing over attacking when it matters, not just a minor discount.
-- **Blocks critical hits:** an attacker cannot land a critical hit against a guarding target, full stop, regardless of their Luck.
-- **Resists ailments:** the attacker's effective Luck (or the target's own resist roll, however `Dazed`-style ailments are resolved) is reduced against a guarding target, so a guarding summon is meaningfully harder to daze.
-- **Bonus Mana:** guarding grants extra Mana on top of the normal +3-per-turn regen — the Wizard101 "save up for the expensive spell" idea, translated to our resource. Guard once or twice to afford Grove-Keeper's Sap Mend or Sapling's Splinter Slam a turn earlier.
-- **Duration:** lasts exactly until this summon's own next turn — implemented the same way existing turn-scoped statuses already work (ticks down at the start of that summon's own turns).
+**Why the conditional Mana and softer numbers matter:** the first draft stacked full damage reduction, crit immunity, ailment resist, *and* guaranteed resource gain onto one free, no-downside action — strictly better than attacking whenever there's no rush, which turns "sensible play" into "everyone guards to max Mana, then alpha-strikes" rather than a real turn-by-turn decision. Persona's Guard costs your whole turn for defense only; Wizard101's Pass gives no defense at all, just a bet on the resource. This version keeps Guard genuinely good without letting it dominate every turn where nothing is urgent.
+
+- **Damage reduction:** a moderate additional cut (\~25–30%), applied **multiplicatively with Endurance's own reduction**, not stacked on top additively — a tank guarding gets meaningfully tankier, but doesn't approach near-immunity. (Endurance alone caps at 60% per the current formula; guarding a fully-built Endurance tank should land somewhere around 70–75% total reduction, not 80%+.)
+- **Blocks critical hits:** an attacker cannot land a critical hit against a guarding target, regardless of their Luck.
+- **Resists ailments (not blocks):** the attacker's effective Luck (or the resist roll) is reduced against a guarding target — meaningfully harder to daze, not immune.
+- **Bonus Mana — conditional, not free:** guarding grants no automatic Mana bonus just for choosing it. The bonus only pays out **if the guarding summon is actually attacked** before its next turn — you're betting the enemy targets you, the same risk Wizard101's passing carries in spirit (saving up costs you tempo either way, but only *pays off* if the bet was right). Guarding into an attack that never comes should feel like a wasted turn, not a free banked resource.
+- **Duration:** lasts exactly until this summon's own next turn, same as other turn-scoped statuses.
 
 **What doesn't carry over from Persona, and why:** Persona's Guard also negates a would-be Knockdown when a hit lands on an elemental weakness — we don't have a weakness/knockdown/"1 More" bonus-turn system yet (that's tied to the still-open Slash/Pierce type chart, currently on hold). Guard's damage/crit/ailment protection ports over cleanly now; the weakness-negation piece becomes relevant once a real type-weakness system exists.
 
