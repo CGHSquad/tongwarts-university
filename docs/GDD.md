@@ -50,6 +50,21 @@ All four share the same base model with palette/silhouette variation (bark color
 
 **Open question for your team:** should these four count as your full MVP roster (Critical Q2 answered), or do you want Tung Tung School to launch with just the Base + one specialist, saving the other two variants for a Should-have content update? Either works with the scope in Step 2 — just flagging the choice.
 
+## Summon evolution and acquisition
+
+**Evolution — confirmed.** All four Tung Tung Sahur variants (Base, Elder, Sapling, Grove-Keeper) stay as separate, parallel archetypes — you get meaningful role choice from day one, not a single line you unlock piece by piece. What's new: **each of the four independently evolves** into a stronger form of *itself* at a level threshold, e.g. Tung Tung Sahur (Base) → Tung Tung Tung Sahur (Crook) at Lv 20 — same role, bigger numbers, maybe one new ability. Elder gets its own evolved tank form, Sapling its own evolved glass-cannon form, and so on. This is the Metaphor-style "archetype gets stronger, doesn't change identity" pattern, not a branching job tree.
+
+- **MVP scope:** ship the four base forms only. Evolution is the first Should-have content update once the base roster is proven fun — flag if you'd rather have it live at launch instead.
+- **Cost for a 5-person team:** cheap if an evolved form is a recolor/bigger model + a stat bump (+ maybe one ability), not a full new kit — keeps this in line with the palette/silhouette-variation approach already used for the four base variants.
+
+**Acquisition — still being figured out, here's a starting shape to react to.** New summons (future families beyond Tung Tung School, and possibly sibling variants) are earned, not just handed out:
+
+- **In-game currency purchase**, gated by **player level** (can't buy a high-tier summon before you're leveled enough to use it) and possibly other unlock conditions (a quest, a Social Link milestone, a dungeon clear) — stacking gates the way social stats already gate content elsewhere in this GDD.
+- **Cross-school premium:** a summon from a school other than your own costs more currency to acquire than an in-school one. This pairs naturally with the existing pip system — an off-school summon's abilities already get single (not double) Power Pip value without a Mastery item, so a currency premium on top is a second, separate cost layer. Worth deciding whether both penalties apply at once or whether the currency premium alone is enough friction — open question, not locked yet.
+- **Possible skill-cost premium:** off-school abilities costing more Mana to cast (on top of the single-pip-value penalty) is on the table but risks double-penalizing the same choice — flag this as something to playtest rather than commit to now.
+
+This is exactly the "second axis needed for balance" gap already flagged in the Launch School section above — acquisition is how a contrasting melee-type/element family actually enters the game post-launch.
+
 ## Combat philosophy
 
 Turn-based combat is flagged as **the** foundational pillar — explicitly not a real-time action RPG. It's meant to run on turn order, strategic decisions, team composition, and school synergy rather than reflexes. Because of that, party-based multiplayer isn't a bolt-on feature — it's a direct consequence of the combat choice: fights are built around 3-4 players filling roles like damage, healing, tank, and utility, though the doc is careful to say these roles aren't finalized or mandatory.
@@ -154,6 +169,7 @@ Adapting Wizard101's Power Pip system on top of Mana/Energy rather than replacin
   - Leaderboards, clubs/organizations
   - Seasonal BrainRot summon events
   - Additional dungeons with mechanical variety (not just reskins)
+  - Gear system (weapons, armor, accessories — see the dedicated Gear System section after Step 7)
 
   ### Do not build yet
   - Trading
@@ -403,6 +419,17 @@ Gear upgrades and Power Pip Chance items, cosmetics (character and summon), cons
 ### Monetization while maintaining trust
 
 Cosmetics (character outfits, summon skins/recolors) and convenience (inventory space, faster summon-roster browsing) are the only premium-currency spends at launch. Avoid loot-box-style random premium purchases for anything gameplay-relevant — if BrainRot summons are ever sold, sell a specific named one directly rather than a randomized pull, especially given the audience skews younger.
+
+## Gear System (Later/Could-have)
+
+Wanted eventually, not for MVP — a Persona-style equipment layer sitting on top of the five-stat model:
+
+- **Weapons:** drive physical (Strike/Slash/Pierce) basic-attack and skill damage. Carry a crit-rate modifier and can grant an elemental boost (a Wind-Boost equivalent) — this is where melee-type identity (once Slash/Pierce exist) becomes a gear choice, not just a school trait.
+- **Armor:** sets base defense and evasion against both physical and magical damage — layers on top of the Endurance/Agility formulas already in the combat architecture (Step 6), rather than replacing them.
+- **Accessories:** the flexible slot — can grant a skill outright, a flat stat boost, or immunity/high evasion to a specific element (a Wind-immunity accessory, say). Precedent: Persona's Reaper-drop "Divine Pillar" grants Almighty-damage immunity.
+- **Passives:** any gear piece can carry a passive independent of its slot — extra max Mana, a flat Strength/Endurance boost, or, rarely, an accessory that grants an entire bonus ability.
+
+**Why this waits:** gear is a real itemization/economy sink (ties directly into Step 7's Sinks list) and a natural next step after Power Pip Chance gear is already live, but it's a full new system — inventory slots, drop tables, an equip UI — layered on top of everything else. Consistent with the MVP-scope discipline elsewhere in this doc: prove the four-summon combat loop is fun first, then add gear once there's a reason to keep playing past the first few fights.
 
 ## Step 8 — Retention
 
