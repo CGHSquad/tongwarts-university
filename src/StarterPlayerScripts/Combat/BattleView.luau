@@ -22,9 +22,11 @@ local BattleTheme = require(script.Parent:WaitForChild("BattleTheme"))
 type BattleState = BattleTypes.BattleState
 type ParticipantState = BattleTypes.ParticipantState
 
--- The stage sits in front of the spawn point. The camera looks across it with the party on the
--- left and the enemies on the right, matching the HUD panels.
-local STAGE_CENTER = Vector3.new(0, 0, -60)
+-- The stage is its own little arena out past the north edge of the overworld's baseplate, so
+-- nothing out exploring wanders through the fight. The camera looks across it, away from the
+-- overworld, with the party on the left and the enemies on the right, matching the HUD panels.
+local STAGE_CENTER = Vector3.new(0, 0, -700)
+local STAGE_FLOOR_SIZE = Vector3.new(80, 1, 60)
 local BLOCK_SIZE = Vector3.new(5, 5, 5)
 local CAMERA_POSITION = STAGE_CENTER + Vector3.new(0, 20, 40)
 local CAMERA_FOCUS = STAGE_CENTER + Vector3.new(0, 3, 0)
@@ -160,6 +162,17 @@ function BattleView._build(self: BattleView, battle: BattleState)
 	self:_clear()
 	local folder = Instance.new("Folder")
 	folder.Name = "BattleStage"
+	local floor = Instance.new("Part")
+	floor.Name = "Floor"
+	floor.Size = STAGE_FLOOR_SIZE
+	floor.CFrame = CFrame.new(STAGE_CENTER - Vector3.new(0, STAGE_FLOOR_SIZE.Y / 2, 0))
+	floor.Anchored = true
+	floor.CanCollide = false
+	floor.CanTouch = false
+	floor.CanQuery = false
+	floor.Material = Enum.Material.Grass
+	floor.Color = Color3.fromRGB(92, 115, 77)
+	floor.Parent = folder
 	for _, participant in battle.participants do
 		self.blocks[participant.id] = createBlock(participant, folder)
 	end

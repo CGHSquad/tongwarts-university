@@ -26,30 +26,35 @@ Code lives in `src/` and syncs into Roblox Studio with [Rojo](https://rojo.space
 | `src/StarterPlayerScripts` | StarterPlayer > StarterPlayerScripts | Client code: UI and visuals only. |
 
 The battle RemoteEvents (`ReplicatedStorage.Remotes.Battle`) and a baseplate with a spawn point
-are declared in `default.project.json` as well. File suffixes pick the script type:
-`.server.luau` is a Script, `.client.luau` a LocalScript, plain `.luau` a ModuleScript.
+are declared in `default.project.json` as well. The enemies out on the baseplate are created by
+the server from `ServerScriptService/Overworld/EnemySpawns.luau`. File suffixes pick the script
+type: `.server.luau` is a Script, `.client.luau` a LocalScript, plain `.luau` a ModuleScript.
 
 ## Combat prototype (Phase 1)
 
-The GDD's Phase 1 goal: prove the turn-based loop works with placeholder art. A party of two
-Tung Tung summons (colored blocks) fights two Wild Saplings.
+The GDD's Phase 1 goal: prove the turn-based loop works with placeholder art. You walk around a
+baseplate where packs of Wild Saplings (red blocks with eyes) patrol or stand around, and walking
+into one starts a fight: your party of two Tung Tung summons (colored blocks) against two Wild
+Saplings.
 
 ### Playtest it with two people
 
 1. In Studio, open the **Test** tab, set the **Clients and Servers** option to **2 players**, and
    click **Start**. Studio opens a server plus one window per player.
    (On two computers, use Team Create and **Team Test** instead so you join the same server.)
-2. Both players press **READY**. After a 3-second countdown the battle starts.
+2. Walk (WASD) into one of the enemy blocks. Which way you're facing when you touch it decides
+   how the fight opens (see **Starting a fight** below), and it pulls both players in, wherever
+   the other one is.
 3. Each player controls one summon. On your turn, pick an ability (or **Guard**), pick a target
    if it needs one, and press the big button. The enemies act on their own.
-4. When one side is knocked out you get a Victory or Defeat screen, then everyone returns to
-   the lobby and can ready up for another battle.
+4. When one side is knocked out you get a Victory or Defeat screen, then you're back exploring.
+   A beaten enemy disappears for 20 seconds; if your party lost, you respawn at the spawn point.
 
-Playing alone? Press **Play**, then **READY**, and you control both party summons.
+Playing alone? Press **Play** and walk into an enemy. You control both party summons.
 
 To try other summons, change `PartySummons` in `ReplicatedStorage/Combat/CombatConfig.luau`,
-e.g. `{ "TungTungElder", "TungTungGroveKeeper" }`. The first summon goes to the first player
-to join.
+e.g. `{ "TungTungElder", "TungTungGroveKeeper" }`. The first summon goes to whoever touched the
+enemy.
 
 ### Summons
 
@@ -65,9 +70,22 @@ can Guard (see Rules):
 
 ### Rules
 
+- **Starting a fight** (the GDD's overworld initiative): touching an enemy pulls everyone in the
+  server into the fight (up to 2 players), and where the enemy was compared with the way the
+  player who touched it was facing decides the opening:
+  - **Face-on** (within 60° of straight ahead): you struck first, so everyone in your party
+    takes a **bonus turn** before round 1.
+  - **From behind** (within 60° of straight behind): it caught you, so every enemy takes the
+    bonus turn.
+  - **From the side:** an even start.
+
+  During the fight your characters are frozen in place and the enemy stops. Afterwards you get
+  4 seconds to walk away before another fight can start. Only one fight runs at a time; a third
+  player sits it out and keeps exploring.
 - **Initiative:** at the start of each battle every summon rolls 1-20 and adds an Agility
   bonus (`floor(Agility / 2)`). Turns go from the highest total down, one summon at a time,
   allies and enemies interleaved. The order is fixed for that battle; exact ties go to the party.
+  A bonus turn goes in this same order, then round 1 starts from the top.
 - **Stats** (the GDD's final model):
   - **Strength** powers Strike attacks.
   - **Magic** powers Wind attacks and heals, and sets max Mana.
@@ -106,14 +124,17 @@ can Guard (see Rules):
 | File | What it does |
 | --- | --- |
 | `ServerScriptService/Combat/BattleSession.luau` | All combat rules for one fight: initiative, turn order, validation, damage, win check. Pure Luau with no Roblox APIs. |
-| `ServerScriptService/Combat/BattleDirector.luau` | The ready-up lobby and the real-time loop: turn timers, enemy turns, pacing, players leaving. |
+| `ServerScriptService/Combat/BattleDirector.luau` | Starts a fight when someone walks into an enemy, then runs its real-time loop: turn timers, enemy turns, pacing, players leaving. |
 | `ServerScriptService/Combat/EnemyAI.luau` | Enemy move choice: a weighted table per enemy type. |
-| `ServerScriptService/BattleServer.server.luau` | Network edge: connects players and RemoteEvents to the director, and type-checks client input. |
-| `ReplicatedStorage/Combat/CombatConfig.luau` | Every formula's numbers (Health, Endurance, hit chance, crits, ailments, Guard), timers, party size, who fights. |
+| `ServerScriptService/Overworld/Overworld.luau` | The overworld: moves the enemies, notices a player touching one, freezes the party during the fight, and cleans up afterwards. |
+| `ServerScriptService/Overworld/Encounter.luau` | Face-on, from behind or from the side: which side gets the bonus turn. |
+| `ServerScriptService/Overworld/EnemySpawns.luau` | Where the enemies are, how they move (patrol a path or stand and look around), and who you fight. |
+| `ServerScriptService/BattleServer.server.luau` | Entry point: connects players, RemoteEvents and the overworld to the director, and type-checks client input. |
+| `ReplicatedStorage/Combat/CombatConfig.luau` | Every formula's numbers (Health, Endurance, hit chance, crits, ailments, Guard, how fights start), timers, party size, who fights. |
 | `ReplicatedStorage/Combat/Abilities.luau`, `Summons.luau`, `StatusEffects.luau` | Abilities, summons and statuses as data. Add new ones here, not in the combat code. |
 | `ReplicatedStorage/Combat/BattleTypes.luau` | The shape of the state the server sends to clients. |
 | `StarterPlayerScripts/BattleClient.client.luau` | Client entry point: draws each server update, sends button presses. |
-| `StarterPlayerScripts/Combat/BattleUI.luau`, `BattleView.luau`, `BattleTheme.luau` | The HUD, the placeholder blocks and battle camera, and their colors and fonts. |
+| `StarterPlayerScripts/Combat/BattleUI.luau`, `BattleView.luau`, `BattleTheme.luau` | The overworld panel and battle HUD, the placeholder blocks and battle camera (the fight is staged in its own arena past the edge of the map), and their colors and fonts. |
 | `tools/simulate-battles.luau` | Plays thousands of battles with the real rules to compare party comps (see below). |
 
 ### Tuning and the battle simulator
@@ -146,6 +167,8 @@ For each party comp it reports:
 - **Guard:** how often each member guards, how often those guards got attacked (paying Mana), and
   the same for the turtle
 - **the dice:** hits, crits, dazes and turns lost
+- **the opening turn:** sensible play again, with the party or the enemies taking the bonus turn,
+  to show what striking first is worth
 
 To compare other comps, edit `PARTIES` at the top of the script. With the current numbers:
 
@@ -170,3 +193,14 @@ Careless play wins 0–10%.
 A handful of healer battles (up to about 1%) are still going after 100 rounds and count as losses: a
 lone Grove-Keeper alternating Guard and Sap Mend can outlast the last enemy without ever killing
 it.
+
+Striking first is worth a lot. The same sensible play, depending on how the fight opened:
+
+| Party | Party's bonus turn | Even start | Enemies' bonus turn |
+| --- | --- | --- | --- |
+| Sahur + Sahur | 96% | 78% | 40% |
+| Elder + Sapling | 99% | 91% | 56% |
+| Sapling + Grove-Keeper | 94% | 77% | 47% |
+| Elder + Grove-Keeper | 96% | 90% | 77% |
+| Sahur + Grove-Keeper | 94% | 80% | 63% |
+| Sapling + Sapling | 90% | 50% | 12% |

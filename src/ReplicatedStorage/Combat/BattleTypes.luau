@@ -74,28 +74,28 @@ export type BattleState = {
 	turnNumber: number,
 	currentActorId: string?,
 	turnQueue: { string }, -- participant ids in initiative order, fixed for the whole battle
+	opening: Side?, -- the side that struck first in the overworld and gets a bonus turn before round 1
 	participants: { ParticipantState },
 	winner: Side?,
 	lastAction: ActionRecord?,
 	log: { string },
 	turnDeadline: number?, -- when the current player's turn auto-passes
-	lobbyReturnAt: number?, -- when the result screen closes
+	overworldReturnAt: number?, -- when the result screen closes and everyone's back in the overworld
+	startedBy: string?, -- the player who walked into the enemy
 }
 
-export type LobbyMember = {
+export type OverworldPlayer = {
 	userId: number,
 	name: string,
-	ready: boolean,
 }
 
-export type LobbyState = {
-	members: { LobbyMember },
-	maxPartySize: number,
-	countdownEndsAt: number?, -- set while the pre-battle countdown runs
+export type OverworldState = {
+	players: { OverworldPlayer }, -- everyone in the server, in join order
+	maxPartySize: number, -- how many of them a fight pulls in
 }
 
 export type Snapshot = {
-	lobby: LobbyState,
+	overworld: OverworldState,
 	battle: BattleState?, -- nil when no battle is running
 }
 
