@@ -6,9 +6,10 @@
 	A few moves aren't in any summon's list because they're universal:
 		universal = "Everyone"  every summon can use it: Guard
 		universal = "Party"     every player's party member can: Attack, their character's own swing
-	On the field, a player's character performs the universal moves itself; the summon only flashes
-	in for the abilities in its own list (GDD Step 6, "The player character on the field"). Stats,
-	HP and Mana still all belong to the summon, so Attack scales with the summon's Strength.
+	On the field, a player's character performs the universal moves itself; the summon only appears
+	(behind the character, Stand/Persona-style) for the abilities in its own list (GDD Step 6, "The
+	player character on the field"). Stats, HP and Mana still all belong to the summon, so Attack
+	scales with the summon's Strength.
 
 	kind
 		"Attack"  hits one enemy. Rolls to hit (Agility vs Agility), then deals

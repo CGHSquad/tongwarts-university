@@ -99,16 +99,18 @@ top of that, your character always has Attack and Guard (see Rules):
 - **Ailments:** Gale Clap can **daze** its target. The chance goes up or down with the
   attacker's Luck against the target's. A dazed summon may lose its turn. Sap Mend clears it.
 - **Your character on the field** (GDD Step 6, the Persona-style presentation): your own character
-  stands in your spot and makes two moves of its own:
+  stands in your spot for the whole fight and makes two moves of its own:
   - **Attack:** free, and hits for 4 + your summon's Strength. That makes it weaker than the
     summon's 2-Mana Strike, so it's the move for when you'd rather not spend Mana.
   - **Guard:** see below.
 
-  Your summon, a colored block, only flashes in while it uses one of its own abilities (Strike,
-  Gale Clap, Windbreak, Sap Mend and so on), then your character is back. The summon still owns
-  all the stats, Health and Mana; this is how a turn looks, not who fights. Enemies are just their
-  creature. The character on the field is a copy of your avatar, or a blocky stand-in if a
-  teammate's avatar hasn't loaded on your screen or they're mid-respawn.
+  Your summon, a colored block, only appears for one of its own abilities (Strike, Gale Clap,
+  Windbreak, Sap Mend and so on). Like a JoJo Stand or a Persona, it materializes behind your
+  character, up over its shoulder, performs the move and dismisses again, while your character
+  stays on the field the whole time. The summon still owns all the stats, Health and Mana; this is
+  how a turn looks, not who fights. Enemies are just their creature. The character on the field is
+  a copy of your avatar, or a blocky stand-in if a teammate's avatar hasn't loaded on your screen
+  or they're mid-respawn.
 - **Guard:** instead of an ability, any summon can Guard. It's free and needs no target, and it
   lasts until that summon's next turn. While guarding it:
   - takes 30% less damage. That multiplies with Endurance's cut rather than adding to it, so a
@@ -146,7 +148,7 @@ top of that, your character always has Attack and Guard (see Rules):
 | `ReplicatedStorage/Combat/Abilities.luau`, `Summons.luau`, `StatusEffects.luau` | Abilities, summons and statuses as data. Add new ones here, not in the combat code. |
 | `ReplicatedStorage/Combat/BattleTypes.luau` | The shape of the state the server sends to clients. |
 | `StarterPlayerScripts/BattleClient.client.luau` | Client entry point: draws each server update, sends button presses. |
-| `StarterPlayerScripts/Combat/BattleUI.luau`, `BattleView.luau`, `BattleTheme.luau` | The overworld panel and battle HUD; the stage (each player's character, summons flashing in for their own abilities, enemy blocks) and battle camera, in its own arena past the edge of the map; and their colors and fonts. |
+| `StarterPlayerScripts/Combat/BattleUI.luau`, `BattleView.luau`, `BattleTheme.luau` | The overworld panel and battle HUD; the stage (each player's character, with its summon appearing behind it for the summon's own abilities, and the enemy blocks) and battle camera, in its own arena past the edge of the map; and their colors and fonts. |
 | `tools/simulate-battles.luau` | Plays thousands of battles with the real rules to compare party comps (see below). |
 
 ### Tuning and the battle simulator
