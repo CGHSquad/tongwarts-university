@@ -45,8 +45,9 @@ Saplings.
 2. Walk (WASD) into one of the enemy blocks. Which way you're facing when you touch it decides
    how the fight opens (see **Starting a fight** below), and it pulls both players in, wherever
    the other one is.
-3. Each player controls one summon. On your turn, pick an ability (or **Guard**), pick a target
-   if it needs one, and press the big button. The enemies act on their own.
+3. Each player is on the field as their own character, with one summon. On your turn, pick a
+   move (your character's **Attack** or **Guard**, or one of your summon's abilities), pick a
+   target if it needs one, and press the big button. The enemies act on their own.
 4. When one side is knocked out you get a Victory or Defeat screen, then you're back exploring.
    A beaten enemy disappears for 20 seconds; if your party lost, you respawn at the spawn point.
 
@@ -58,8 +59,8 @@ enemy.
 
 ### Summons
 
-The four Tung Tung Sahur variants from the GDD. Each has the basic Strike plus its own kit, and
-can Guard (see Rules):
+The four Tung Tung Sahur variants from the GDD. Each has the basic Strike plus its own kit. On
+top of that, your character always has Attack and Guard (see Rules):
 
 | Summon | Role | Leans on | Abilities |
 | --- | --- | --- | --- |
@@ -97,6 +98,17 @@ can Guard (see Rules):
   target. **Critical hits** (×1.5 damage) come from the attacker's Luck.
 - **Ailments:** Gale Clap can **daze** its target. The chance goes up or down with the
   attacker's Luck against the target's. A dazed summon may lose its turn. Sap Mend clears it.
+- **Your character on the field** (GDD Step 6, the Persona-style presentation): your own character
+  stands in your spot and makes two moves of its own:
+  - **Attack:** free, and hits for 4 + your summon's Strength. That makes it weaker than the
+    summon's 2-Mana Strike, so it's the move for when you'd rather not spend Mana.
+  - **Guard:** see below.
+
+  Your summon, a colored block, only flashes in while it uses one of its own abilities (Strike,
+  Gale Clap, Windbreak, Sap Mend and so on), then your character is back. The summon still owns
+  all the stats, Health and Mana; this is how a turn looks, not who fights. Enemies are just their
+  creature. The character on the field is a copy of your avatar, or a blocky stand-in if a
+  teammate's avatar hasn't loaded on your screen or they're mid-respawn.
 - **Guard:** instead of an ability, any summon can Guard. It's free and needs no target, and it
   lasts until that summon's next turn. While guarding it:
   - takes 30% less damage. That multiplies with Endurance's cut rather than adding to it, so a
@@ -110,12 +122,12 @@ can Guard (see Rules):
   Elder's Windbreak, and the two stack. (Enemies don't guard yet.)
 - **Statuses** (taunt, Windbreak, Tailwind, Dazed, and Guard's Bracing) last a few of that
   summon's own turns. Buffs never change the turn order mid-battle.
-- **Mana:** every ability costs Mana (Guard is free), and each summon gets +3 at the start of its
-  turn.
+- **Mana:** every ability costs Mana (Attack and Guard are free), and each summon gets +3 at the
+  start of its turn.
 - **The server decides everything.** Clients send "use this ability on this target"; the
-  server checks it's really your turn, the ability is yours (or Guard) and affordable, and the target is
-  legal for that ability. Anything else is refused with a message, and the client never
-  computes an outcome.
+  server checks it's really your turn, the ability is yours (or Attack or Guard) and affordable,
+  and the target is legal for that ability. Anything else is refused with a message, and the
+  client never computes an outcome.
 - **AFK and leaving:** a player who doesn't act within 30 seconds skips that turn. A player who
   leaves mid-battle drops out, and if it was their turn the battle moves on right away.
 
@@ -134,7 +146,7 @@ can Guard (see Rules):
 | `ReplicatedStorage/Combat/Abilities.luau`, `Summons.luau`, `StatusEffects.luau` | Abilities, summons and statuses as data. Add new ones here, not in the combat code. |
 | `ReplicatedStorage/Combat/BattleTypes.luau` | The shape of the state the server sends to clients. |
 | `StarterPlayerScripts/BattleClient.client.luau` | Client entry point: draws each server update, sends button presses. |
-| `StarterPlayerScripts/Combat/BattleUI.luau`, `BattleView.luau`, `BattleTheme.luau` | The overworld panel and battle HUD, the placeholder blocks and battle camera (the fight is staged in its own arena past the edge of the map), and their colors and fonts. |
+| `StarterPlayerScripts/Combat/BattleUI.luau`, `BattleView.luau`, `BattleTheme.luau` | The overworld panel and battle HUD; the stage (each player's character, summons flashing in for their own abilities, enemy blocks) and battle camera, in its own arena past the edge of the map; and their colors and fonts. |
 | `tools/simulate-battles.luau` | Plays thousands of battles with the real rules to compare party comps (see below). |
 
 ### Tuning and the battle simulator
@@ -151,9 +163,10 @@ lune run tools/simulate-battles 10000 7  # more battles, different random seed
 It runs the real `BattleSession` and `EnemyAI` code (no Studio needed) against the enemies in
 `CombatConfig`. Each party comp plays four ways:
 
-- **careless:** random buttons, Guard included.
-- **sensible:** heal the hurt, keep buffs up, focus the weakest enemy, and Guard only in the one
-  spot where it pays: a healer that's hurt, being attacked, and can't afford its heal.
+- **careless:** random buttons, the character's Attack and Guard included.
+- **sensible:** heal the hurt, keep buffs up, and hit the weakest enemy with the hardest-hitting
+  attack you can afford (the character's free Attack counts). Guard only in the one spot where it
+  pays: a healer that's hurt, being attacked, and can't afford its heal.
 - **no Guard:** sensible, but never guards.
 - **turtle:** sensible, but it guards whenever its Mana isn't full, then spends it all on its
   biggest attack. This is the "guard to max Mana, then alpha-strike" pattern Guard mustn't
@@ -166,6 +179,7 @@ For each party comp it reports:
   aimed at it
 - **Guard:** how often each member guards, how often those guards got attacked (paying Mana), and
   the same for the turtle
+- **Attack:** how often each member uses the character's free Attack
 - **the dice:** hits, crits, dazes and turns lost
 - **the opening turn:** sensible play again, with the party or the enemies taking the bonus turn,
   to show what striking first is worth
@@ -174,14 +188,20 @@ To compare other comps, edit `PARTIES` at the top of the script. With the curren
 
 | Party | Sensible | No Guard | Turtle | Rounds (sensible) |
 | --- | --- | --- | --- | --- |
-| Sahur + Sahur | 78% | 77% | 8% | 7.4 |
-| Elder + Sapling | 91% | 91% | 1% | 8.3 |
-| Sapling + Grove-Keeper | 77% | 72% | 47% | 12.7 |
-| Elder + Grove-Keeper | 90% | 81% | 0% | 23.1 |
-| Sahur + Grove-Keeper | 80% | 81% | 25% | 10.7 |
-| Sapling + Sapling | 50% | 48% | 7% | 5.7 |
+| Sahur + Sahur | 78% | 77% | 7% | 7.3 |
+| Elder + Sapling | 91% | 92% | 1% | 8.3 |
+| Sapling + Grove-Keeper | 77% | 70% | 45% | 12.7 |
+| Elder + Grove-Keeper | 90% | 80% | 0% | 22.6 |
+| Sahur + Grove-Keeper | 82% | 80% | 28% | 10.9 |
+| Sapling + Sapling | 50% | 50% | 7% | 5.7 |
 
-Careless play wins 0–10%.
+Careless play wins 0–7%.
+
+- **Attack is never the best pick.** Sensible play never uses it (0% of turns): a summon's Strike
+  costs only 2 Mana, Mana comes back 3 a turn, and Strike always hits harder. Only button-mashing
+  uses it (19–27% of careless turns). Take Attack out of careless play and every other table
+  comes out exactly as it did before Attack existed, so the small shifts from earlier versions of
+  these tables are just the dice landing differently.
 
 - **Turtling loses badly.** Guarding until Mana is full, then alpha-striking, loses in every comp.
 - **Guard helps in one spot.** A healer that's hurt, being attacked, and can't afford its heal
@@ -198,9 +218,9 @@ Striking first is worth a lot. The same sensible play, depending on how the figh
 
 | Party | Party's bonus turn | Even start | Enemies' bonus turn |
 | --- | --- | --- | --- |
-| Sahur + Sahur | 96% | 78% | 40% |
-| Elder + Sapling | 99% | 91% | 56% |
-| Sapling + Grove-Keeper | 94% | 77% | 47% |
+| Sahur + Sahur | 96% | 78% | 39% |
+| Elder + Sapling | 98% | 91% | 56% |
+| Sapling + Grove-Keeper | 93% | 77% | 48% |
 | Elder + Grove-Keeper | 96% | 90% | 77% |
-| Sahur + Grove-Keeper | 94% | 80% | 63% |
-| Sapling + Sapling | 90% | 50% | 12% |
+| Sahur + Grove-Keeper | 94% | 82% | 62% |
+| Sapling + Sapling | 89% | 50% | 11% |

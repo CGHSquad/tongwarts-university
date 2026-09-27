@@ -6,9 +6,9 @@
 		           party
 		battle     for the players in it: who struck first, whose turn it is (with that player's
 		           time left), the turn order with initiative totals, HP and Mana bars for every
-		           summon, and on your turn the ability buttons (plus Guard, which every summon
-		           has), target picker and Attack button. Plus a combat log and a victory/defeat
-		           screen.
+		           summon, and on your turn your moves: your character's own (Attack, Guard) and
+		           your summon's abilities, then a target and the big button. Plus a combat log
+		           and a victory/defeat screen.
 
 	It renders server snapshots and nothing else. The only thing it remembers is the choice you're
 	making right now (ability + target); Attack sends that choice to the server, which decides what
@@ -32,7 +32,7 @@ type OverworldState = BattleTypes.OverworldState
 type ParticipantState = BattleTypes.ParticipantState
 
 export type Callbacks = {
-	onAction: (abilityId: string, targetId: string) -> (), -- an ability, or Guard
+	onAction: (abilityId: string, targetId: string) -> (), -- a summon's ability, or Attack or Guard
 	onTargetChanged: (targetId: string?, friendly: boolean) -> (), -- friendly = picking an ally
 }
 
@@ -43,9 +43,11 @@ local NOTICE_SECONDS = 3
 local ACTION_PANEL_WIDTH = 520
 local ACTION_PANEL_PADDING = 12
 
--- Guard is in no summon's ability list: every summon can use it (see Abilities), so it gets its
--- own button after the summon's abilities.
-local GUARD = Abilities.Guard
+-- The moves a player's character makes itself, in menu order: the universal ones (see Abilities).
+-- The panel shows them on a row of their own, above the summon's own abilities, since only those
+-- bring the summon out (GDD Step 6, "The player character on the field").
+local CHARACTER_MOVES = { "Attack", "Guard" }
+local ROW_LABEL_WIDTH = 64
 
 -- What guarding does, from CombatConfig, so the button's explanation stays true when it's tuned.
 local function describeGuard(): string
@@ -382,6 +384,7 @@ type UIFields = {
 	enemyPanel: Frame,
 	actionPanel: Frame,
 	actionTitle: TextLabel,
+	moveRow: Frame,
 	abilityRow: Frame,
 	abilityHint: TextLabel,
 	targetCaption: TextLabel,
@@ -523,31 +526,44 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 
 	local actionTitle = newLabel(actionPanel, "", 20, BattleTheme.FontHeavy)
 	actionTitle.LayoutOrder = 1
-	local abilityCaption = newLabel(actionPanel, "1. Choose an ability, or Guard", 14, BattleTheme.FontBold)
+	local abilityCaption = newLabel(actionPanel, "1. Choose a move", 14, BattleTheme.FontBold)
 	abilityCaption.TextXAlignment = Enum.TextXAlignment.Left
 	abilityCaption.TextColor3 = BattleTheme.SubtleText
 	abilityCaption.LayoutOrder = 2
-	local abilityRow = newContainer(actionPanel, "Abilities")
-	abilityRow.Size = UDim2.new(1, 0, 0, 44)
-	abilityRow.LayoutOrder = 3
-	addList(abilityRow, Enum.FillDirection.Horizontal, 8)
+	-- A row of buttons with a label in front: who makes these moves.
+	local function newMoveRow(name: string, label: string, layoutOrder: number): Frame
+		local row = newContainer(actionPanel, name)
+		row.Size = UDim2.new(1, 0, 0, 44)
+		row.LayoutOrder = layoutOrder
+		addList(row, Enum.FillDirection.Horizontal, 8).VerticalAlignment = Enum.VerticalAlignment.Center
+		local rowLabel = newLabel(row, label, 14, BattleTheme.FontBold)
+		rowLabel.Name = "Label"
+		rowLabel.Size = UDim2.fromOffset(ROW_LABEL_WIDTH, 44)
+		rowLabel.AutomaticSize = Enum.AutomaticSize.None
+		rowLabel.TextXAlignment = Enum.TextXAlignment.Left
+		rowLabel.TextColor3 = BattleTheme.SubtleText
+		rowLabel.LayoutOrder = 0
+		return row
+	end
+	local moveRow = newMoveRow("Moves", "You", 3)
+	local abilityRow = newMoveRow("Abilities", "Summon", 4)
 	local abilityHint = newLabel(actionPanel, "", 14)
 	abilityHint.TextXAlignment = Enum.TextXAlignment.Left
 	abilityHint.TextColor3 = BattleTheme.SubtleText
-	abilityHint.LayoutOrder = 4
+	abilityHint.LayoutOrder = 5
 	local targetCaption = newLabel(actionPanel, "2. Pick a target", 14, BattleTheme.FontBold)
 	targetCaption.TextXAlignment = Enum.TextXAlignment.Left
 	targetCaption.TextColor3 = BattleTheme.SubtleText
-	targetCaption.LayoutOrder = 5
+	targetCaption.LayoutOrder = 6
 	local targetRow = newContainer(actionPanel, "Targets")
 	targetRow.Size = UDim2.new(1, 0, 0, 44)
-	targetRow.LayoutOrder = 6
+	targetRow.LayoutOrder = 7
 	addList(targetRow, Enum.FillDirection.Horizontal, 8)
 	local attackButton = newButton(actionPanel, "ATTACK!", UDim2.new(1, 0, 0, 46))
 	attackButton.Name = "AttackButton"
 	attackButton.Font = BattleTheme.FontHeavy
 	attackButton.TextSize = 22
-	attackButton.LayoutOrder = 7
+	attackButton.LayoutOrder = 8
 
 	-- Combat log, newest line at the bottom.
 	local logPanel = newPanel(battleFrame, "Log")
@@ -613,6 +629,7 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 		enemyPanel = enemyPanel,
 		actionPanel = actionPanel,
 		actionTitle = actionTitle,
+		moveRow = moveRow,
 		abilityRow = abilityRow,
 		abilityHint = abilityHint,
 		targetCaption = targetCaption,
@@ -937,20 +954,22 @@ function BattleUI._highlightedTarget(self: BattleUI, myTurn: boolean): (string?,
 	return self.selectedTargetId, ability.targets == "Ally"
 end
 
--- Keeps the current choice legal: an ability this summon has and can afford (or Guard), and a
--- target that ability can take. Falls back to the first affordable ability (Guard if none is), and
--- to the first enemy for an attack or the most hurt party member for a heal. Abilities with no pick
--- just name the actor.
+-- Keeps the current choice legal: one of your character's moves, or an ability your summon has
+-- and can afford, and a target it can take. Falls back to the summon's first affordable ability
+-- (your free Attack if there's none), and to the first enemy for an attack or the most hurt party
+-- member for a heal. Moves with no pick just name the actor.
 function BattleUI._validateChoices(self: BattleUI, battle: BattleState, actor: ParticipantState)
 	local function usable(abilityId: string?): boolean
-		if abilityId == nil or (abilityId ~= GUARD.id and table.find(actor.abilities, abilityId) == nil) then
+		if abilityId == nil then
+			return false
+		elseif table.find(CHARACTER_MOVES, abilityId) == nil and table.find(actor.abilities, abilityId) == nil then
 			return false
 		end
 		local ability = Abilities[abilityId]
 		return ability ~= nil and actor.mana >= ability.manaCost
 	end
 	if not usable(self.selectedAbilityId) then
-		self.selectedAbilityId = GUARD.id
+		self.selectedAbilityId = CHARACTER_MOVES[1]
 		for _, abilityId in actor.abilities do
 			if usable(abilityId) then
 				self.selectedAbilityId = abilityId
@@ -1002,32 +1021,14 @@ function BattleUI._renderActions(
 
 	self.actionTitle.Text = `Your move: {actor.name}`
 
-	-- Ability buttons, sized so all of this summon's abilities and Guard fit on one row.
+	-- Your character's moves on one row, your summon's own abilities on the next.
 	if self.abilityButtonsFor ~= actor.id then
 		for _, button in self.abilityButtons do
 			button:Destroy()
 		end
 		table.clear(self.abilityButtons)
-		local choices = table.clone(actor.abilities)
-		table.insert(choices, GUARD.id)
-		local rowWidth = ACTION_PANEL_WIDTH - 2 * ACTION_PANEL_PADDING
-		local width = math.floor((rowWidth - 8 * (#choices - 1)) / #choices)
-		for index, abilityId in choices do
-			local ability = Abilities[abilityId]
-			if ability == nil then
-				continue
-			end
-			local cost = if ability.manaCost > 0 then `{ability.manaCost} Mana` else "Free"
-			local button = newButton(self.abilityRow, `{ability.name}\n{cost}`, UDim2.fromOffset(width, 44))
-			button.Name = abilityId
-			button.TextSize = 15
-			button.LayoutOrder = index
-			button.Activated:Connect(function()
-				self.selectedAbilityId = abilityId
-				self:_rerender()
-			end)
-			self.abilityButtons[abilityId] = button
-		end
+		self:_buildButtons(self.moveRow, CHARACTER_MOVES)
+		self:_buildButtons(self.abilityRow, actor.abilities)
 		self.abilityButtonsFor = actor.id
 	end
 
@@ -1042,8 +1043,8 @@ function BattleUI._renderActions(
 	local selected = if self.selectedAbilityId then Abilities[self.selectedAbilityId] else nil
 	self.abilityHint.Text = if selected == nil
 		then ""
-		elseif selected.kind == "Attack" then `{selected.damageType}: {selected.description}`
 		elseif selected.kind == "Guard" then describeGuard()
+		elseif selected.kind == "Attack" and selected.universal == nil then `{selected.damageType}: {selected.description}`
 		else selected.description
 
 	-- Target picker: only the summons the selected ability can target.
@@ -1072,6 +1073,29 @@ function BattleUI._renderActions(
 		else "USE!"
 	self.attackButton.Text = if self.submittedTurn then "Sending..." else verb
 	styleButton(self.attackButton, if canAct then "attack" else "disabled")
+end
+
+-- One button per ability on a row, after the row's label, sized so they all fit.
+function BattleUI._buildButtons(self: BattleUI, row: Frame, abilityIds: { string })
+	local width = ACTION_PANEL_WIDTH - 2 * ACTION_PANEL_PADDING - ROW_LABEL_WIDTH - 8
+	local count = math.max(1, #abilityIds)
+	local buttonWidth = math.floor((width - 8 * (count - 1)) / count)
+	for index, abilityId in abilityIds do
+		local ability = Abilities[abilityId]
+		if ability == nil then
+			continue
+		end
+		local cost = if ability.manaCost > 0 then `{ability.manaCost} Mana` else "Free"
+		local button = newButton(row, `{ability.name}\n{cost}`, UDim2.fromOffset(buttonWidth, 44))
+		button.Name = abilityId
+		button.TextSize = 15
+		button.LayoutOrder = index
+		button.Activated:Connect(function()
+			self.selectedAbilityId = abilityId
+			self:_rerender()
+		end)
+		self.abilityButtons[abilityId] = button
+	end
 end
 
 function BattleUI._submitAttack(self: BattleUI)

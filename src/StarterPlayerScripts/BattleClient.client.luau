@@ -27,7 +27,7 @@ local noticeRemote = remotes:WaitForChild("Notice") :: RemoteEvent
 local localPlayer = Players.LocalPlayer
 local view = BattleView.new()
 local ui = BattleUI.new(localPlayer:WaitForChild("PlayerGui") :: PlayerGui, localPlayer.UserId, {
-	onAction = function(abilityId, targetId) -- an ability or Guard; the server decides what happens
+	onAction = function(abilityId, targetId) -- any move from the panel; the server decides what happens
 		submitActionRemote:FireServer(abilityId, targetId)
 	end,
 	onTargetChanged = function(targetId, friendly)
