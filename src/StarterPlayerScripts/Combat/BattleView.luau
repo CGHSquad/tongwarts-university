@@ -4,17 +4,18 @@
 	whoever is acting and on your chosen target, a small hit effect, and a fixed battle camera.
 
 	Who you see (GDD Step 6, "The player character on the field"):
-		party    each player's own character stands in its spot and does its own moves: Attack and
-		         Guard (and Items, later). Its summon, a colored block, flashes in only while it uses
-		         one of its own abilities (Strike, Gale Clap, Sap Mend, ...), then the character is
-		         back.
+		party    each player's own character, which never leaves its spot. It makes its own moves
+		         itself: Attack and Guard (and Items, later). For one of its summon's own abilities
+		         (Strike, Gale Clap, Sap Mend, ...) the summon, a colored block, materializes behind
+		         the character, up over its shoulder, performs the move and dismisses again,
+		         Stand/Persona-style: for that beat the two are on the field together.
 		enemies  just their creature, a block: they have no character/summon split.
 	The character is a copy of that player's avatar, or a blocky stand-in when this client can't see
 	their avatar. Stats, HP and Mana all still belong to the summon; this is only how a turn looks.
 
 	Everything here exists only on this client and is redrawn from server snapshots: it's a picture
-	of the BattleSession, not the real thing. Swapping in real summon models later won't touch any
-	combat code.
+	of the BattleSession, not the real thing. Replacing the blocks with real summon models later
+	won't touch any combat code.
 ]]
 
 local Debris = game:GetService("Debris")
@@ -40,24 +41,28 @@ local STAGE_FLOOR_SIZE = Vector3.new(80, 1, 60)
 local BLOCK_SIZE = Vector3.new(5, 5, 5)
 local CAMERA_POSITION = STAGE_CENTER + Vector3.new(0, 20, 40)
 local CAMERA_FOCUS = STAGE_CENTER + Vector3.new(0, 3, 0)
-local SUMMON_FLASH_SECONDS = 1.2 -- how long a summon stays out to use one of its abilities
+-- A party member's summon is only out while it uses one of its own abilities: it materializes, does
+-- the move and dismisses in SUMMON_SECONDS, fading in and out over SUMMON_FADE_SECONDS of that.
+local SUMMON_SECONDS = 1.2
+local SUMMON_FADE_SECONDS = 0.2
+-- Where it materializes, relative to its spot (which faces the enemies): behind the character, up
+-- over its shoulder, and a step further from the camera, so the character stays in view in front.
+local SUMMON_SOCKET = CFrame.new(-1.5, 4, 4)
 
-type Showing = "Character" | "Summon"
-
--- One combatant's spot on the stage. Its folder (named after the participant) holds whichever model
--- is showing, named "Character" or "Summon", plus the Spot that carries its nameplate and popups.
+-- One combatant's spot on the stage. Its folder (named after the participant) holds what's on the
+-- field there, named "Character" and "Summon", plus the Spot that carries its nameplate and popups.
 type Figure = {
 	folder: Folder,
-	home: CFrame, -- the block's place, facing the other side
+	home: CFrame, -- the spot, facing the other side
 	spot: Part, -- invisible, at home
 	summon: Part, -- the summon's block (for an enemy, its creature)
-	character: Model?, -- party members: the player's character
+	summonHome: CFrame, -- where the block stands: home for an enemy, a party member's socket
+	character: Model?, -- party members: the player's character, always on the field
 	characterRoot: BasePart?,
 	characterHome: CFrame?, -- where the character's root stands
 	highlight: Highlight,
 	hpLabel: TextLabel,
-	showing: Showing,
-	flashes: number, -- bumped by every summon flash-in, so only the latest one swaps back
+	appearances: number, -- bumped each time the summon comes out, so only the latest one dismisses it
 }
 
 local BattleView = {}
@@ -230,16 +235,17 @@ local function createFigure(participant: ParticipantState, parent: Instance): Fi
 		home = home,
 		spot = spot,
 		summon = summon,
+		summonHome = home,
 		character = nil,
 		characterRoot = nil,
 		characterHome = nil,
 		highlight = highlight,
 		hpLabel = hpLabel,
-		showing = "Summon",
-		flashes = 0,
+		appearances = 0,
 	}
 
-	-- A player's party member is their character on the field, with its summon out of sight.
+	-- A player's party member is their character on the field. Its summon stays off the field until
+	-- it's used, then appears at its socket behind the character (see bringOutSummon).
 	local shown: Instance = summon
 	if participant.side == "Party" then
 		local character = copyAvatar(participant.ownerUserId) or buildStandIn(summon.Color)
@@ -259,7 +265,8 @@ local function createFigure(participant: ParticipantState, parent: Instance): Fi
 		figure.character = character
 		figure.characterRoot = root
 		figure.characterHome = characterHome
-		figure.showing = "Character"
+		figure.summonHome = home * SUMMON_SOCKET
+		summon.CFrame = figure.summonHome
 		shown = character
 	end
 
@@ -269,34 +276,47 @@ local function createFigure(participant: ParticipantState, parent: Instance): Fi
 	return figure
 end
 
--- Shows the character or the summon in a figure's spot (enemies only ever show their summon).
-local function show(figure: Figure, which: Showing)
-	local character = figure.character
-	if character == nil then
-		return
-	end
-	figure.showing = which
-	figure.summon.CFrame = figure.home
+-- What stands in a figure's spot and takes its hits, and where it stands: a party member's
+-- character (moved by its root), or an enemy's creature.
+local function body(figure: Figure): (BasePart, CFrame)
 	local root, characterHome = figure.characterRoot, figure.characterHome
 	if root and characterHome then
-		root.CFrame = characterHome
+		return root, characterHome
 	end
-	character.Parent = if which == "Character" then figure.folder else nil
-	figure.summon.Parent = if which == "Summon" then figure.folder else nil
-	figure.highlight.Adornee = if which == "Character" then character else figure.summon
+	return figure.summon, figure.home
 end
 
--- Moves whatever is showing in a figure's spot a little way and straight back: a lunge or a recoil.
-local function nudge(figure: Figure, offset: Vector3, seconds: number, delaySeconds: number)
+-- Moves a part a little way from where it stands and straight back: a lunge or a recoil.
+local function nudge(part: BasePart, rest: CFrame, offset: Vector3, seconds: number, delaySeconds: number)
 	local info = TweenInfo.new(seconds, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true, delaySeconds)
-	local root, characterHome = figure.characterRoot, figure.characterHome
-	if figure.showing == "Character" and root and characterHome then
-		root.CFrame = characterHome
-		TweenService:Create(root, info, { CFrame = characterHome + offset }):Play()
-	else
-		figure.summon.CFrame = figure.home
-		TweenService:Create(figure.summon, info, { CFrame = figure.home + offset }):Play()
-	end
+	part.CFrame = rest
+	TweenService:Create(part, info, { CFrame = rest + offset }):Play()
+end
+
+local function fadeSummon(summon: BasePart, transparency: number)
+	TweenService:Create(summon, TweenInfo.new(SUMMON_FADE_SECONDS), { Transparency = transparency }):Play()
+end
+
+-- A party member's summon materializes at its socket behind the character to use one of its own
+-- abilities, and dismisses once that has played out. The character stays on the field throughout.
+local function bringOutSummon(figure: Figure)
+	figure.appearances += 1
+	local appearance = figure.appearances
+	local summon = figure.summon
+	summon.CFrame = figure.summonHome
+	summon.Transparency = 1
+	summon.Parent = figure.folder
+	fadeSummon(summon, 0)
+	task.delay(SUMMON_SECONDS - SUMMON_FADE_SECONDS, function()
+		if figure.appearances == appearance then
+			fadeSummon(summon, 1)
+		end
+	end)
+	task.delay(SUMMON_SECONDS, function()
+		if figure.appearances == appearance then
+			summon.Parent = nil
+		end
+	end)
 end
 
 -- A word or number that floats up off a spot and fades: damage, MISS, healing, a status.
@@ -388,7 +408,7 @@ end
 
 function BattleView._clear(self: BattleView)
 	for _, figure in self.figures do
-		figure.flashes += 1 -- any pending swap back is moot now
+		figure.appearances += 1 -- any pending dismissal is moot now
 		figure.summon:Destroy()
 		if figure.character then
 			figure.character:Destroy()
@@ -426,10 +446,13 @@ function BattleView._refreshFigures(self: BattleView)
 			figure.summon.Color = BattleTheme.colorFor(participant.side, participant.slot)
 			figure.hpLabel.Text = `HP {participant.hp}/{participant.maxHp}`
 		end
-		figure.summon.Transparency = fade
 		local character = figure.character
-		if character then
-			-- LocalTransparencyModifier keeps parts that are meant to be invisible (the root) invisible.
+		if character == nil then
+			figure.summon.Transparency = fade
+		else
+			-- A party member's summon fades itself in and out (bringOutSummon); this fades the
+			-- character. LocalTransparencyModifier keeps parts that are meant to be invisible (the
+			-- root) invisible.
 			for _, descendant in character:GetDescendants() do
 				if descendant:IsA("BasePart") then
 					descendant.LocalTransparencyModifier = fade
@@ -456,21 +479,10 @@ function BattleView._refreshFigures(self: BattleView)
 	end
 end
 
--- A party member's summon comes out to use one of its own abilities, then the character is back.
-function BattleView._flashSummon(self: BattleView, figure: Figure)
-	figure.flashes += 1
-	local flash = figure.flashes
-	show(figure, "Summon")
-	task.delay(SUMMON_FLASH_SECONDS, function()
-		if figure.flashes == flash then
-			show(figure, "Character")
-		end
-	end)
-end
-
--- Plays what an action did: a party member's summon flashes in if it's the summon's own ability,
--- the attacker lunges at its target and hits make the target recoil, then every target gets a popup
--- (damage, CRIT, MISS, an ailment, Mana a guard won back, healing, GUARD, or the status gained).
+-- Plays what an action did: a party member's summon comes out if it's one of the summon's own
+-- abilities, whoever performs the move lunges at its target and hits make the target recoil, then
+-- every target gets a popup (damage, CRIT, MISS, an ailment, Mana a guard won back, healing, GUARD,
+-- or the status gained).
 function BattleView._playAction(self: BattleView, battle: BattleState, action: BattleTypes.ActionRecord)
 	local actor = self.figures[action.actorId]
 	local ability = Abilities[action.abilityId]
@@ -478,11 +490,15 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: B
 		return
 	end
 
-	-- Attack and Guard are the character's own moves; anything in the summon's list brings it out.
+	-- Attack and Guard are the character's own moves. Anything in the summon's list brings the
+	-- summon out to perform it, while the character holds its ground.
+	local performer, performerHome = body(actor)
+	local lead = 0 -- how long the move waits for its performer to materialize
 	for _, participant in battle.participants do
 		if participant.id == action.actorId and participant.side == "Party" then
 			if table.find(participant.abilities, ability.id) ~= nil then
-				self:_flashSummon(actor)
+				bringOutSummon(actor)
+				performer, performerHome, lead = actor.summon, actor.summonHome, SUMMON_FADE_SECONDS
 			end
 		end
 	end
@@ -496,10 +512,11 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: B
 		if ability.kind == "Attack" and target ~= actor then
 			local toward = (target.home.Position - actor.home.Position).Unit
 			if index == 1 then
-				nudge(actor, toward * 4, 0.15, 0)
+				nudge(performer, performerHome, toward * 4, 0.15, lead)
 			end
 			if result.hit then
-				nudge(target, toward * 1.5, 0.1, 0.12)
+				local struck, struckHome = body(target)
+				nudge(struck, struckHome, toward * 1.5, 0.1, lead + 0.12)
 			end
 		end
 
