@@ -391,6 +391,20 @@ Damage/Tank/Healer/Support/Debuffer/Crowd-Control/Utility are useful *design lan
 
 **Later:** full elemental/BrainRot-type chart with multiple weaknesses per unit, team attacks (multi-player combo abilities), chain effects, ultimate abilities with charge meters. These add real depth but each multiplies QA surface area — sequence them after the MVP loop is proven fun, not before.
 
+### Guard — a universal defensive action
+
+Every summon gets a **Guard** option on its turn, alongside its abilities — no Mana cost, no target. Combines Persona's Guard command with Wizard101's "pass to bank resources" idea, adapted to our Mana economy instead of pips:
+
+- **Damage reduction:** while guarding, incoming physical and magical damage is cut further on top of Endurance's own reduction (e.g., an additional \~40–50% off whatever damage would otherwise land) — strong enough to be worth choosing over attacking when it matters, not just a minor discount.
+- **Blocks critical hits:** an attacker cannot land a critical hit against a guarding target, full stop, regardless of their Luck.
+- **Resists ailments:** the attacker's effective Luck (or the target's own resist roll, however `Dazed`-style ailments are resolved) is reduced against a guarding target, so a guarding summon is meaningfully harder to daze.
+- **Bonus Mana:** guarding grants extra Mana on top of the normal +3-per-turn regen — the Wizard101 "save up for the expensive spell" idea, translated to our resource. Guard once or twice to afford Grove-Keeper's Sap Mend or Sapling's Splinter Slam a turn earlier.
+- **Duration:** lasts exactly until this summon's own next turn — implemented the same way existing turn-scoped statuses already work (ticks down at the start of that summon's own turns).
+
+**What doesn't carry over from Persona, and why:** Persona's Guard also negates a would-be Knockdown when a hit lands on an elemental weakness — we don't have a weakness/knockdown/"1 More" bonus-turn system yet (that's tied to the still-open Slash/Pierce type chart, currently on hold). Guard's damage/crit/ailment protection ports over cleanly now; the weakness-negation piece becomes relevant once a real type-weakness system exists.
+
+**Relationship to the existing `Guarded` status:** the Elder's Windbreak ability already applies a `Guarded` status (damage taken × 0.6) as a costed active skill. This new universal Guard action is a separate, stronger, free defensive choice available to *every* summon — keep both: Windbreak is a Mana-cost skill with its own numbers, universal Guard is name-your-own-poison risk management with no cost. Give the new one its own status id (e.g. `Bracing`) so they don't collide or overwrite each other if both are active.
+
 ## Step 7 — Game Economy
 
 ### Currencies
