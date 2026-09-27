@@ -18,6 +18,8 @@ local Workspace = game:GetService("Workspace")
 local Combat = ReplicatedStorage:WaitForChild("Combat")
 local Abilities = require(Combat:WaitForChild("Abilities"))
 local BattleTypes = require(Combat:WaitForChild("BattleTypes"))
+local StatusEffects = require(Combat:WaitForChild("StatusEffects"))
+local Summons = require(Combat:WaitForChild("Summons"))
 local BattleTheme = require(script.Parent:WaitForChild("BattleTheme"))
 
 type Snapshot = BattleTypes.Snapshot
@@ -28,13 +30,15 @@ type ParticipantState = BattleTypes.ParticipantState
 export type Callbacks = {
 	onReadyChanged: (ready: boolean) -> (),
 	onAttack: (abilityId: string, targetId: string) -> (),
-	onTargetChanged: (targetId: string?) -> (),
+	onTargetChanged: (targetId: string?, friendly: boolean) -> (), -- friendly = picking an ally
 }
 
 -- The layout is designed at this size and scaled to fit smaller windows (like two Studio test
 -- clients side by side).
 local DESIGN_SIZE = Vector2.new(1280, 720)
 local NOTICE_SECONDS = 3
+local ACTION_PANEL_WIDTH = 520
+local ACTION_PANEL_PADDING = 12
 
 --[[ Small builders, so the layout code below stays readable ]]
 
@@ -122,7 +126,7 @@ local function newButton(parent: Instance, text: string, size: UDim2): TextButto
 	return button
 end
 
-type ButtonLook = "normal" | "selected" | "target" | "attack" | "disabled"
+type ButtonLook = "normal" | "selected" | "target" | "ally" | "attack" | "disabled"
 
 local function styleButton(button: TextButton, look: ButtonLook)
 	button.Interactable = look ~= "disabled"
@@ -132,6 +136,9 @@ local function styleButton(button: TextButton, look: ButtonLook)
 		button.TextColor3 = BattleTheme.ButtonSelectedText
 	elseif look == "target" then
 		button.BackgroundColor3 = BattleTheme.Danger
+		button.TextColor3 = BattleTheme.ButtonSelectedText
+	elseif look == "ally" then
+		button.BackgroundColor3 = BattleTheme.HealthBar
 		button.TextColor3 = BattleTheme.ButtonSelectedText
 	elseif look == "attack" then
 		button.BackgroundColor3 = BattleTheme.AttackButton
@@ -197,6 +204,7 @@ type Row = {
 	hpText: TextLabel,
 	manaFill: Frame,
 	manaText: TextLabel,
+	effectsLabel: TextLabel,
 }
 
 type Chip = {
@@ -205,7 +213,8 @@ type Chip = {
 	label: TextLabel,
 }
 
--- One summon's card in the party/enemy panel: name, controller, HP bar, Mana bar.
+-- One summon's card in the party/enemy panel: name, controller and role, HP bar, Mana bar, and
+-- any status effects.
 local function createRow(parent: Instance, participant: ParticipantState): Row
 	local frame = Instance.new("Frame")
 	frame.Name = participant.id
@@ -234,7 +243,7 @@ local function createRow(parent: Instance, participant: ParticipantState): Row
 	swatch.Parent = nameLine
 	addCorner(swatch, 3)
 
-	local nameLabel = newLabel(nameLine, participant.name, 17, BattleTheme.FontBold)
+	local nameLabel = newLabel(nameLine, participant.name, 16, BattleTheme.FontBold)
 	nameLabel.Position = UDim2.fromOffset(22, 0)
 	nameLabel.Size = UDim2.new(1, -80, 1, 0)
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -256,6 +265,12 @@ local function createRow(parent: Instance, participant: ParticipantState): Row
 	local hpFill, hpText = newBar(frame, BattleTheme.HealthBar, 3)
 	local manaFill, manaText = newBar(frame, BattleTheme.ManaBar, 4)
 
+	local effectsLabel = newLabel(frame, "", 14, BattleTheme.FontBold)
+	effectsLabel.TextXAlignment = Enum.TextXAlignment.Left
+	effectsLabel.RichText = true
+	effectsLabel.LayoutOrder = 5
+	effectsLabel.Visible = false
+
 	return {
 		frame = frame,
 		stroke = stroke,
@@ -266,7 +281,20 @@ local function createRow(parent: Instance, participant: ParticipantState): Row
 		hpText = hpText,
 		manaFill = manaFill,
 		manaText = manaText,
+		effectsLabel = effectsLabel,
 	}
+end
+
+-- "Dazed 2  ·  Tailwind 3" with ailments in red and buffs in gold (RichText).
+local function formatStatuses(statuses: { BattleTypes.StatusState }): string
+	local parts = {}
+	for _, status in statuses do
+		local def = StatusEffects[status.id]
+		local color = if def ~= nil and def.kind == "Ailment" then BattleTheme.Danger else BattleTheme.Accent
+		local name = if def ~= nil then def.name else status.id
+		table.insert(parts, `<font color="#{color:ToHex()}">{name} {status.turnsLeft}</font>`)
+	end
+	return table.concat(parts, "  ·  ")
 end
 
 -- One entry in the turn-order strip: initiative total and name.
@@ -319,6 +347,7 @@ type UIFields = {
 	actionTitle: TextLabel,
 	abilityRow: Frame,
 	abilityHint: TextLabel,
+	targetCaption: TextLabel,
 	targetRow: Frame,
 	attackButton: TextButton,
 	logLabel: TextLabel,
@@ -450,22 +479,22 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 	local actionPanel = newPanel(battleFrame, "Actions")
 	actionPanel.AnchorPoint = Vector2.new(0.5, 1)
 	actionPanel.Position = UDim2.new(0.5, 0, 1, -12)
-	actionPanel.Size = UDim2.fromOffset(520, 0)
+	actionPanel.Size = UDim2.fromOffset(ACTION_PANEL_WIDTH, 0)
 	actionPanel.AutomaticSize = Enum.AutomaticSize.Y
 	actionPanel.Visible = false
-	addPadding(actionPanel, 12)
+	addPadding(actionPanel, ACTION_PANEL_PADDING)
 	addList(actionPanel, Enum.FillDirection.Vertical, 6)
 	addStroke(actionPanel, BattleTheme.Accent, 2)
 	scaleWithScreen(actionPanel)
 
 	local actionTitle = newLabel(actionPanel, "", 20, BattleTheme.FontHeavy)
 	actionTitle.LayoutOrder = 1
-	local abilityCaption = newLabel(actionPanel, "1. Choose an attack", 14, BattleTheme.FontBold)
+	local abilityCaption = newLabel(actionPanel, "1. Choose an ability", 14, BattleTheme.FontBold)
 	abilityCaption.TextXAlignment = Enum.TextXAlignment.Left
 	abilityCaption.TextColor3 = BattleTheme.SubtleText
 	abilityCaption.LayoutOrder = 2
 	local abilityRow = newContainer(actionPanel, "Abilities")
-	abilityRow.Size = UDim2.new(1, 0, 0, 40)
+	abilityRow.Size = UDim2.new(1, 0, 0, 44)
 	abilityRow.LayoutOrder = 3
 	addList(abilityRow, Enum.FillDirection.Horizontal, 8)
 	local abilityHint = newLabel(actionPanel, "", 14)
@@ -477,7 +506,7 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 	targetCaption.TextColor3 = BattleTheme.SubtleText
 	targetCaption.LayoutOrder = 5
 	local targetRow = newContainer(actionPanel, "Targets")
-	targetRow.Size = UDim2.new(1, 0, 0, 40)
+	targetRow.Size = UDim2.new(1, 0, 0, 44)
 	targetRow.LayoutOrder = 6
 	addList(targetRow, Enum.FillDirection.Horizontal, 8)
 	local attackButton = newButton(actionPanel, "ATTACK!", UDim2.new(1, 0, 0, 46))
@@ -555,6 +584,7 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 		actionTitle = actionTitle,
 		abilityRow = abilityRow,
 		abilityHint = abilityHint,
+		targetCaption = targetCaption,
 		targetRow = targetRow,
 		attackButton = attackButton,
 		logLabel = logLabel,
@@ -614,7 +644,7 @@ function BattleUI.render(self: BattleUI, snapshot: Snapshot)
 	else
 		self:_clearBattle()
 		self:_renderLobby(snapshot.lobby)
-		self.callbacks.onTargetChanged(nil)
+		self.callbacks.onTargetChanged(nil, false)
 	end
 	self:tick(Workspace:GetServerTimeNow())
 end
@@ -734,10 +764,13 @@ function BattleUI._buildBattle(self: BattleUI, battle: BattleState)
 		local panel = if participant.side == "Party" then self.partyPanel else self.enemyPanel
 		self.rows[participant.id] = createRow(panel, participant)
 
-		local targetButton = newButton(self.targetRow, participant.name, UDim2.fromOffset(236, 40))
+		-- Every summon gets a (hidden) target button; each render shows the ones that are legal
+		-- targets for the selected ability.
+		local targetButton = newButton(self.targetRow, participant.name, UDim2.fromOffset(236, 44))
 		targetButton.Name = participant.id
+		targetButton.TextSize = 15
 		targetButton.TextTruncate = Enum.TextTruncate.AtEnd
-		targetButton.LayoutOrder = participant.slot
+		targetButton.LayoutOrder = (if participant.side == "Party" then 0 else 10) + participant.slot
 		targetButton.Visible = false
 		targetButton.Activated:Connect(function()
 			self.selectedTargetId = participant.id
@@ -827,7 +860,8 @@ function BattleUI._renderBattle(self: BattleUI, battle: BattleState)
 		self.resultTitle.TextColor3 = if won then BattleTheme.Accent else BattleTheme.Danger
 	end
 
-	self.callbacks.onTargetChanged(if myTurn then self.selectedTargetId else nil)
+	local targetId, friendly = self:_highlightedTarget(myTurn)
+	self.callbacks.onTargetChanged(targetId, friendly)
 end
 
 function BattleUI._renderHeader(self: BattleUI, battle: BattleState, actor: ParticipantState?, myTurn: boolean)
@@ -885,20 +919,50 @@ function BattleUI._renderRow(self: BattleUI, battle: BattleState, participant: P
 
 	if participant.ownerUserId == nil then
 		row.ownerLabel.Text = "Enemy (server AI)"
-	elseif participant.ownerUserId == self.localUserId then
-		row.ownerLabel.Text = `{participant.ownerName or "You"} (you)`
 	else
-		row.ownerLabel.Text = participant.ownerName or "Ally"
+		local controller = if participant.ownerUserId == self.localUserId
+			then `{participant.ownerName or "You"} (you)`
+			else participant.ownerName or "Ally"
+		local summon = Summons[participant.summonId]
+		row.ownerLabel.Text = if summon ~= nil then `{controller}  ·  {summon.role}` else controller
 	end
 
+	row.effectsLabel.Visible = #participant.statuses > 0
+	row.effectsLabel.Text = formatStatuses(participant.statuses)
+
 	local acting = battle.phase == "input" and battle.currentActorId == participant.id
-	local targeted = myTurn and self.selectedTargetId == participant.id
-	row.stroke.Enabled = acting or targeted
-	row.stroke.Color = if acting then BattleTheme.Accent else BattleTheme.Danger
+	local targetId, friendly = self:_highlightedTarget(myTurn)
+	row.stroke.Enabled = acting or targetId == participant.id
+	row.stroke.Color = if acting then BattleTheme.Accent elseif friendly then BattleTheme.HealthBar else BattleTheme.Danger
 end
 
--- Keeps the current choice legal: an ability this summon has and can afford, and an opponent
--- that's still standing. Falls back to the first legal option.
+-- Whether `target` is a legal pick for `ability`. Mirrors the server's rule so the picker only
+-- offers sensible choices; the server still checks for itself.
+local function canTarget(ability: Abilities.Ability, actor: ParticipantState, target: ParticipantState): boolean
+	if target.status ~= "Active" then
+		return false
+	elseif ability.targets == "Enemy" then
+		return target.side ~= actor.side
+	elseif ability.targets == "Ally" then
+		return target.side == actor.side
+	end
+	return false -- "Self" and "AllAllies" need no pick
+end
+
+-- The summon the current choice points at, and whether it's a friend (a heal). Abilities with no
+-- pick highlight nothing.
+function BattleUI._highlightedTarget(self: BattleUI, myTurn: boolean): (string?, boolean)
+	local abilityId = self.selectedAbilityId
+	local ability = if abilityId then Abilities[abilityId] else nil
+	if not myTurn or ability == nil or (ability.targets ~= "Enemy" and ability.targets ~= "Ally") then
+		return nil, false
+	end
+	return self.selectedTargetId, ability.targets == "Ally"
+end
+
+-- Keeps the current choice legal: an ability this summon has and can afford, and a target that
+-- ability can take. Falls back to the first affordable ability, and to the first enemy for an
+-- attack or the most hurt party member for a heal. Abilities with no pick just name the actor.
 function BattleUI._validateChoices(self: BattleUI, battle: BattleState, actor: ParticipantState)
 	local function usable(abilityId: string?): boolean
 		if abilityId == nil or table.find(actor.abilities, abilityId) == nil then
@@ -917,24 +981,34 @@ function BattleUI._validateChoices(self: BattleUI, battle: BattleState, actor: P
 		end
 	end
 
-	local function isLegalTarget(participant: ParticipantState): boolean
-		return participant.side ~= actor.side and participant.status == "Active"
+	local ability = if self.selectedAbilityId then Abilities[self.selectedAbilityId] else nil
+	if ability == nil then
+		self.selectedTargetId = nil
+		return
+	elseif ability.targets == "Self" or ability.targets == "AllAllies" then
+		self.selectedTargetId = actor.id
+		return
 	end
-	local keepTarget = false
+
 	for _, participant in battle.participants do
-		if participant.id == self.selectedTargetId then
-			keepTarget = isLegalTarget(participant)
+		if participant.id == self.selectedTargetId and canTarget(ability, actor, participant) then
+			return -- still a good pick
 		end
 	end
-	if not keepTarget then
-		self.selectedTargetId = nil
-		for _, participant in battle.participants do
-			if isLegalTarget(participant) then
-				self.selectedTargetId = participant.id
-				break
+	local best: ParticipantState? = nil
+	for _, participant in battle.participants do
+		if canTarget(ability, actor, participant) then
+			if best == nil then
+				best = participant
+			elseif
+				ability.targets == "Ally"
+				and fraction(participant.hp, participant.maxHp) < fraction(best.hp, best.maxHp)
+			then
+				best = participant
 			end
 		end
 	end
+	self.selectedTargetId = if best then best.id else nil
 end
 
 function BattleUI._renderActions(
@@ -950,18 +1024,23 @@ function BattleUI._renderActions(
 
 	self.actionTitle.Text = `Your move: {actor.name}`
 
+	-- Ability buttons, sized so all of this summon's abilities fit on one row.
 	if self.abilityButtonsFor ~= actor.id then
 		for _, button in self.abilityButtons do
 			button:Destroy()
 		end
 		table.clear(self.abilityButtons)
+		local rowWidth = ACTION_PANEL_WIDTH - 2 * ACTION_PANEL_PADDING
+		local count = math.max(1, #actor.abilities)
+		local width = math.floor((rowWidth - 8 * (count - 1)) / count)
 		for index, abilityId in actor.abilities do
 			local ability = Abilities[abilityId]
 			if ability == nil then
 				continue
 			end
-			local button = newButton(self.abilityRow, `{ability.name}  ·  {ability.manaCost} Mana`, UDim2.fromOffset(230, 40))
+			local button = newButton(self.abilityRow, `{ability.name}\n{ability.manaCost} Mana`, UDim2.fromOffset(width, 44))
 			button.Name = abilityId
+			button.TextSize = 15
 			button.LayoutOrder = index
 			button.Activated:Connect(function()
 				self.selectedAbilityId = abilityId
@@ -980,24 +1059,37 @@ function BattleUI._renderActions(
 			if not affordable then "disabled" elseif abilityId == self.selectedAbilityId then "selected" else "normal"
 		)
 	end
-	local selectedAbility = if self.selectedAbilityId then Abilities[self.selectedAbilityId] else nil
-	self.abilityHint.Text = if selectedAbility
-		then `{selectedAbility.damageType}: {selectedAbility.description}`
-		else ""
+	local selected = if self.selectedAbilityId then Abilities[self.selectedAbilityId] else nil
+	self.abilityHint.Text = if selected == nil
+		then ""
+		elseif selected.kind == "Attack" then `{selected.damageType}: {selected.description}`
+		else selected.description
 
+	-- Target picker: only the summons the selected ability can target.
+	self.targetCaption.Text = if selected == nil or selected.targets == "Enemy"
+		then "2. Pick an enemy"
+		elseif selected.targets == "Ally" then "2. Pick a party member"
+		elseif selected.targets == "Self" then "2. Target: itself"
+		else "2. Target: the whole party"
+	self.targetRow.Visible = selected ~= nil and (selected.targets == "Enemy" or selected.targets == "Ally")
 	for id, button in self.targetButtons do
 		local participant = byId[id]
-		local legal = participant ~= nil and participant.side ~= actor.side and participant.status == "Active"
+		local legal = selected ~= nil and participant ~= nil and canTarget(selected, actor, participant)
 		button.Visible = legal
-		if participant and legal then
-			button.Text = `{participant.name}  ({participant.hp} HP)`
-			styleButton(button, if id == self.selectedTargetId then "target" else "normal")
+		if selected and participant and legal then
+			button.Text = `{participant.name}\n{participant.hp}/{participant.maxHp} HP`
+			local chosenLook: ButtonLook = if selected.targets == "Ally" then "ally" else "target"
+			styleButton(button, if id == self.selectedTargetId then chosenLook else "normal")
 		end
 	end
 
-	local canAttack = self.selectedAbilityId ~= nil and self.selectedTargetId ~= nil and self.submittedTurn == nil
-	self.attackButton.Text = if self.submittedTurn then "Sending..." else "ATTACK!"
-	styleButton(self.attackButton, if canAttack then "attack" else "disabled")
+	local canAct = selected ~= nil and self.selectedTargetId ~= nil and self.submittedTurn == nil
+	local verb = if selected == nil or selected.kind == "Attack"
+		then "ATTACK!"
+		elseif selected.kind == "Heal" then "HEAL!"
+		else "USE!"
+	self.attackButton.Text = if self.submittedTurn then "Sending..." else verb
+	styleButton(self.attackButton, if canAct then "attack" else "disabled")
 end
 
 function BattleUI._submitAttack(self: BattleUI)

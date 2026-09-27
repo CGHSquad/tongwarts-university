@@ -22,6 +22,12 @@ export type InitiativeRoll = {
 	total: number, -- roll + bonus; the turn order sorts by this
 }
 
+-- A status effect on a summon (see StatusEffects for what each one does).
+export type StatusState = {
+	id: string,
+	turnsLeft: number,
+}
+
 export type ParticipantState = {
 	id: string, -- "P1", "P2" for the party, "E1", "E2" for enemies
 	side: Side,
@@ -35,17 +41,29 @@ export type ParticipantState = {
 	mana: number,
 	maxMana: number,
 	status: ParticipantStatus,
+	statuses: { StatusState },
 	abilities: { string },
 	initiative: InitiativeRoll?,
+}
+
+-- What one action did to one of its targets.
+export type ActionResult = {
+	targetId: string,
+	hit: boolean, -- false when an attack missed
+	critical: boolean,
+	damage: number,
+	healed: number,
+	knockedOut: boolean,
+	inflicted: string?, -- ailment the hit inflicted, e.g. "Dazed"
+	applied: string?, -- status a Status ability applied, e.g. "Guarded"
+	cleansed: boolean, -- ailments removed by a heal
 }
 
 export type ActionRecord = {
 	sequence: number, -- increases with every resolved action in a battle
 	actorId: string,
-	targetId: string,
 	abilityId: string,
-	damage: number,
-	knockedOut: boolean,
+	results: { ActionResult }, -- one per target
 }
 
 export type BattleState = {

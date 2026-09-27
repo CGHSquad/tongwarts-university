@@ -249,7 +249,9 @@ function BattleDirector._beginNextTurn(self: BattleDirector)
 	self.turnDeadline = nil
 	local actor = session:beginNextTurn()
 
-	if not session:canAffordAnyAbility(actor) then
+	if session.phase ~= "input" then
+		self:_afterTurn() -- an ailment cost it the turn
+	elseif not session:canAffordAnyAbility(actor) then
 		session:passTurn("NoMana")
 		self:_afterTurn()
 	elseif actor.ownerUserId == nil then
@@ -270,7 +272,12 @@ end
 function BattleDirector._takeEnemyTurn(self: BattleDirector)
 	local session = self.session :: BattleSession.BattleSession
 	local actor = session:getCurrentActor() :: BattleSession.Participant
-	local abilityId, targetId = EnemyAI.chooseAction(actor, session:getActiveOpponents(actor), self.deps.rng)
+	local abilityId, targetId = EnemyAI.chooseAction(
+		actor,
+		session:getActiveAllies(actor),
+		session:getActiveOpponents(actor),
+		self.deps.rng
+	)
 
 	local acted = false
 	if abilityId ~= nil and targetId ~= nil then

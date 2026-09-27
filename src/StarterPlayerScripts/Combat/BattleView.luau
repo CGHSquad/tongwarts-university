@@ -13,7 +13,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
-local BattleTypes = require(ReplicatedStorage:WaitForChild("Combat"):WaitForChild("BattleTypes"))
+local Combat = ReplicatedStorage:WaitForChild("Combat")
+local Abilities = require(Combat:WaitForChild("Abilities"))
+local BattleTypes = require(Combat:WaitForChild("BattleTypes"))
+local StatusEffects = require(Combat:WaitForChild("StatusEffects"))
 local BattleTheme = require(script.Parent:WaitForChild("BattleTheme"))
 
 type BattleState = BattleTypes.BattleState
@@ -42,6 +45,7 @@ type ViewFields = {
 	battle: BattleState?,
 	lastActionSeen: number,
 	targetId: string?,
+	targetFriendly: boolean,
 	cameraActive: boolean,
 }
 
@@ -112,6 +116,7 @@ function BattleView.new(): BattleView
 		battle = nil,
 		lastActionSeen = 0,
 		targetId = nil,
+		targetFriendly = false,
 		cameraActive = false,
 	}
 	return setmetatable(fields, BattleView)
@@ -140,12 +145,14 @@ function BattleView.render(self: BattleView, battle: BattleState?)
 	end
 end
 
--- Outlines the target you've picked in the HUD (nil clears it).
-function BattleView.setTarget(self: BattleView, targetId: string?)
-	if self.targetId == targetId then
+-- Outlines the summon you've picked in the HUD: red for an enemy, green for a party member
+-- you're healing. nil clears it.
+function BattleView.setTarget(self: BattleView, targetId: string?, friendly: boolean)
+	if self.targetId == targetId and self.targetFriendly == friendly then
 		return
 	end
 	self.targetId = targetId
+	self.targetFriendly = friendly
 	self:_refreshBlocks()
 end
 
@@ -202,8 +209,9 @@ function BattleView._refreshBlocks(self: BattleView)
 			block.highlight.FillTransparency = 1
 			block.highlight.Enabled = true
 		elseif self.targetId == participant.id then
-			block.highlight.OutlineColor = BattleTheme.Danger
-			block.highlight.FillColor = BattleTheme.Danger
+			local color = if self.targetFriendly then BattleTheme.HealthBar else BattleTheme.Danger
+			block.highlight.OutlineColor = color
+			block.highlight.FillColor = color
 			block.highlight.FillTransparency = 0.6
 			block.highlight.Enabled = true
 		else
@@ -212,45 +220,86 @@ function BattleView._refreshBlocks(self: BattleView)
 	end
 end
 
--- The attacker lunges, the target recoils, and the damage number floats up.
-function BattleView._playAction(self: BattleView, action: BattleTypes.ActionRecord)
-	local attacker = self.blocks[action.actorId]
-	local target = self.blocks[action.targetId]
-	if attacker == nil or target == nil then
-		return
-	end
-
-	local toward = (target.home.Position - attacker.home.Position).Unit
-	attacker.part.CFrame = attacker.home
-	TweenService:Create(
-		attacker.part,
-		TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true),
-		{ CFrame = attacker.home + toward * 4 }
-	):Play()
-
-	target.part.CFrame = target.home
-	TweenService:Create(
-		target.part,
-		TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true, 0.12),
-		{ CFrame = target.home + toward * 1.5 }
-	):Play()
-
+-- A word or number that floats up off a block and fades: damage, MISS, healing, a status.
+local function showPopup(block: Block, text: string, color: Color3, startHeight: number)
 	local popup = Instance.new("BillboardGui")
-	popup.Name = "DamagePopup"
-	popup.Adornee = target.part
-	popup.Size = UDim2.fromOffset(120, 40)
-	popup.StudsOffset = Vector3.zero
+	popup.Name = "Popup"
+	popup.Adornee = block.part
+	popup.Size = UDim2.fromOffset(160, 40)
+	popup.StudsOffset = Vector3.new(0, startHeight, 0)
 	popup.AlwaysOnTop = true
 	popup.LightInfluence = 0
 	local label = newBillboardLabel(popup, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), BattleTheme.FontHeavy)
-	label.Text = `-{action.damage}`
-	label.TextColor3 = if action.knockedOut then BattleTheme.Danger else BattleTheme.Text
-	popup.Parent = target.part
+	label.Text = text
+	label.TextColor3 = color
+	popup.Parent = block.part
 
 	local rise = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, 3.5, 0) }):Play()
+	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + 3.5, 0) }):Play()
 	TweenService:Create(label, rise, { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
 	Debris:AddItem(popup, 1)
+end
+
+-- Plays what an action did: an attacker lunges at its target and hits make the target recoil,
+-- then every target gets a popup (damage, CRIT, MISS, an ailment, healing, or the status gained).
+function BattleView._playAction(self: BattleView, action: BattleTypes.ActionRecord)
+	local actor = self.blocks[action.actorId]
+	local ability = Abilities[action.abilityId]
+	if actor == nil or ability == nil then
+		return
+	end
+
+	for index, result in action.results do
+		local target = self.blocks[result.targetId]
+		if target == nil then
+			continue
+		end
+
+		if ability.kind == "Attack" and target ~= actor then
+			local toward = (target.home.Position - actor.home.Position).Unit
+			if index == 1 then
+				actor.part.CFrame = actor.home
+				TweenService:Create(
+					actor.part,
+					TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true),
+					{ CFrame = actor.home + toward * 4 }
+				):Play()
+			end
+			if result.hit then
+				target.part.CFrame = target.home
+				TweenService:Create(
+					target.part,
+					TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true, 0.12),
+					{ CFrame = target.home + toward * 1.5 }
+				):Play()
+			end
+		end
+
+		if ability.kind == "Attack" then
+			if not result.hit then
+				showPopup(target, "MISS", BattleTheme.SubtleText, 0)
+			else
+				local strong = result.critical or result.knockedOut
+				showPopup(
+					target,
+					if result.critical then `CRIT -{result.damage}` else `-{result.damage}`,
+					if strong then BattleTheme.Danger else BattleTheme.Text,
+					0
+				)
+				local inflicted = result.inflicted
+				if inflicted then
+					local def = StatusEffects[inflicted]
+					showPopup(target, `{if def then def.name else inflicted}!`, BattleTheme.Danger, 1.5)
+				end
+			end
+		elseif ability.kind == "Heal" then
+			showPopup(target, `+{result.healed}`, BattleTheme.HealthBar, 0)
+		else
+			local applied = result.applied
+			local def = if applied then StatusEffects[applied] else nil
+			showPopup(target, if def then def.name else ability.name, BattleTheme.Accent, 0)
+		end
+	end
 end
 
 function BattleView._setBattleCamera(self: BattleView, active: boolean)
