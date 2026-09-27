@@ -407,6 +407,22 @@ Every summon gets a **Guard** option on its turn, alongside its abilities — no
 
 **Relationship to the existing `Guarded` status:** the Elder's Windbreak ability already applies a `Guarded` status (damage taken × 0.6) as a costed active skill. This new universal Guard action is a separate, stronger, free defensive choice available to *every* summon — keep both: Windbreak is a Mana-cost skill with its own numbers, universal Guard is name-your-own-poison risk management with no cost. Give the new one its own status id (e.g. `Bracing`) so they don't collide or overwrite each other if both are active.
 
+### The player character on the field (Persona/Metaphor-style presentation)
+
+**Confirmed:** the visible combat model on your side is the **player character**, not the summon. The summon is an extension of the character, not a stand-in for them — it only visually appears when its own ability is used, then returns to the character. This matches how Persona's protagonist stays on-field while their Persona flashes in for a spell, and how Metaphor's Archetypes work the same way.
+
+**What the player character does directly (no summon flash-in):**
+
+- **Base Attack** — a new, universal, **free** action (no Mana cost) every player character has. Damage scales off the active summon's Strength for now (there's only one Strength value to draw from until gear exists); once weapons are added (Gear System, above), the equipped weapon modifies this attack directly — base attack is the action a future weapon actually affects, per your Persona reference.
+- **Guard** — already spec'd above; performed by the character, not the summon.
+- **Items** — a future feature (not built now), also performed by the character, not the summon.
+
+**What triggers a summon flash-in:** using one of the active summon's own abilities (Strike, Gale Clap, Windbreak, Sap Mend, etc.) — the summon visually appears to perform that ability, then the character resumes as the visible combatant.
+
+**What doesn't change:** the summon still owns all five combat stats (Strength, Magic, Endurance, Agility, Luck) and the HP/Mana pools — this is a presentation and action-ownership layer on top of the existing data model, not a change to who carries stats. `BattleSession`'s internal participant data doesn't need to change; this is primarily how the client (`BattleView`) renders each turn — default to the player's character model, swap to the summon model only for the duration of a summon-ability animation — plus one new zero-cost `Attack` entry in `Abilities.luau`.
+
+**Enemy side is unaffected:** enemy BrainRot creatures (Wild Sapling, etc.) keep fighting as themselves — there's no "enemy trainer" character, since only the player party has a character/summon split.
+
 ## Step 7 — Game Economy
 
 ### Currencies
