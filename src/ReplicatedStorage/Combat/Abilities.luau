@@ -1,47 +1,166 @@
 --!strict
 --[[
 	Abilities — combat abilities as data (GDD Step 5), so new ones can be added here without
-	touching the combat loop. Every ability targets one enemy that is still standing.
+	touching the combat loop. Every summon has the basic Strike plus its own abilities (Summons).
 
-	damage = (power + the summon's scalingStat * statRatio), +/- CombatConfig.DamageVariance
+	kind
+		"Attack"  hits one enemy. Rolls to hit (Agility vs Agility), then deals
+		          power + scalingStat * statRatio, cut by the target's Endurance. Luck can make it a
+		          critical hit, and `ailment` can afflict the target (Luck vs Luck).
+		"Heal"    restores power + scalingStat * statRatio Health to one ally. `cleanse` also removes
+		          ailments.
+		"Status"  applies a status (StatusEffects) for `turns` turns.
+
+	targets: what the player picks
+		"Enemy"      an enemy that's still standing
+		"Ally"       a party member that's still standing, itself included
+		"Self"       itself (no pick)
+		"AllAllies"  every party member still standing (no pick)
+
+	The formulas and their numbers live in CombatConfig.
 ]]
 
-export type StatName = "Strength" | "Magic" | "Vitality" | "Agility"
+export type StatName = "Strength" | "Magic" | "Endurance" | "Agility" | "Luck"
+export type Targeting = "Enemy" | "Ally" | "Self" | "AllAllies"
 
-export type Ability = {
+export type AilmentChance = {
+	status: string, -- an Ailment from StatusEffects
+	chance: number, -- base chance on a hit, before Luck
+	turns: number,
+}
+
+export type AttackAbility = {
+	kind: "Attack",
 	id: string,
 	name: string,
 	description: string,
+	targets: Targeting,
+	manaCost: number,
 	damageType: "Strike" | "Wind", -- melee type or element; the MVP weakness axis will key off this
+	power: number,
+	scalingStat: StatName,
+	statRatio: number,
+	critBonus: number?, -- added to the critical hit chance
+	ailment: AilmentChance?,
+}
+
+export type HealAbility = {
+	kind: "Heal",
+	id: string,
+	name: string,
+	description: string,
+	targets: Targeting,
 	manaCost: number,
 	power: number,
 	scalingStat: StatName,
 	statRatio: number,
+	cleanse: boolean?,
 }
 
+export type StatusAbility = {
+	kind: "Status",
+	id: string,
+	name: string,
+	description: string,
+	targets: Targeting,
+	manaCost: number,
+	status: string, -- a StatusEffects entry
+	turns: number,
+}
+
+export type Ability = AttackAbility | HealAbility | StatusAbility
+
 local Abilities: { [string]: Ability } = {
-	-- Tung Tung School's melee type is Strike: blunt force, cheap, reliable.
+	-- Everyone's basic attack. Tung Tung School's melee type is Strike: cheap and reliable.
 	Strike = {
+		kind = "Attack",
 		id = "Strike",
 		name = "Strike",
 		description = "A blunt-force bonk. Cheap and reliable; scales with Strength.",
-		damageType = "Strike",
+		targets = "Enemy",
 		manaCost = 2,
+		damageType = "Strike",
 		power = 8,
 		scalingStat = "Strength",
 		statRatio = 1,
 	},
 
-	-- Tung Tung School's element is Wind: a harder hit that costs a real chunk of Mana.
+	-- Base: the school's Wind skill. The clap's gust hits harder and can leave the target dazed.
 	GaleClap = {
+		kind = "Attack",
 		id = "GaleClap",
 		name = "Gale Clap",
-		description = "Claps its wooden hands into a cutting gust. Hits harder; scales with Magic.",
-		damageType = "Wind",
+		description = "Claps its wooden hands into a cutting gust. Scales with Magic; can daze.",
+		targets = "Enemy",
 		manaCost = 8,
+		damageType = "Wind",
 		power = 10,
 		scalingStat = "Magic",
 		statRatio = 1.5,
+		ailment = { status = "Dazed", chance = 0.2, turns = 2 },
+	},
+
+	-- Elder (tank): pull the enemies' attacks onto itself, then weather them.
+	KnockOnWood = {
+		kind = "Status",
+		id = "KnockOnWood",
+		name = "Knock on Wood",
+		description = "Raps its trunk so loudly that every enemy has to target it.",
+		targets = "Self",
+		manaCost = 4,
+		status = "Taunting",
+		turns = 3,
+	},
+
+	Windbreak = {
+		kind = "Status",
+		id = "Windbreak",
+		name = "Windbreak",
+		description = "Wraps itself in a wall of wind to take less damage.",
+		targets = "Self",
+		manaCost = 5,
+		status = "Guarded",
+		turns = 3,
+	},
+
+	-- Sapling (damage): one big, expensive hit.
+	SplinterSlam = {
+		kind = "Attack",
+		id = "SplinterSlam",
+		name = "Splinter Slam",
+		description = "A reckless full-body slam. Huge damage and a better critical chance.",
+		targets = "Enemy",
+		manaCost = 10,
+		damageType = "Strike",
+		power = 12,
+		scalingStat = "Strength",
+		statRatio = 1.3,
+		critBonus = 0.1,
+	},
+
+	-- Grove-Keeper (support): buff the whole party, mend whoever needs it.
+	Tailwind = {
+		kind = "Status",
+		id = "Tailwind",
+		name = "Tailwind",
+		description = "A helpful breeze: the whole party gets more accurate and harder to hit.",
+		targets = "AllAllies",
+		manaCost = 8,
+		status = "Tailwind",
+		turns = 3,
+	},
+
+	SapMend = {
+		kind = "Heal",
+		id = "SapMend",
+		name = "Sap Mend",
+		description = "Mends an ally with healing sap and clears their ailments. Scales with Magic.",
+		targets = "Ally",
+		manaCost = 6,
+		power = 10,
+		scalingStat = "Magic",
+		statRatio = 1,
+		cleanse = true,
 	},
 }
 

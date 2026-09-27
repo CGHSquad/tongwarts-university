@@ -43,5 +43,8 @@ treat it as the current source of truth, not something to hand-edit here.
 - Combat prototype (GDD Phase 1): all rules live in `ServerScriptService/Combat/BattleSession.luau`
   (pure Luau, no Roblox APIs); `BattleDirector.luau` runs the lobby and turn timers;
   `BattleServer.server.luau` is the network edge. Tuning and content are data in
-  `ReplicatedStorage/Combat/`; `BattleTypes.luau` defines what the server sends clients.
+  `ReplicatedStorage/Combat/` (`CombatConfig` holds every formula's numbers; `Abilities`,
+  `Summons`, `StatusEffects` are content); `BattleTypes.luau` defines what the server sends clients.
+- After changing combat numbers or rules, run `lune run tools/simulate-battles` (Lune is pinned
+  in `rokit.toml`) to see win rates per party comp and what each role does.
 - All scripts are `--!strict` Luau; keep them free of type errors.

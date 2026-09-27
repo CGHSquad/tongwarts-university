@@ -1,6 +1,7 @@
-# Toolchain pinned for the whole team so everyone syncs with the same Rojo.
+# Toolchain pinned for the whole team so everyone uses the same versions.
 # Install Rokit (https://github.com/rojo-rbx/rokit), then run `rokit install` in this folder.
 # Keep the Rojo Studio plugin on the same version: `rojo plugin install`.
 
 [tools]
 rojo = "rojo-rbx/rojo@7.7.0"
+lune = "lune-org/lune@0.10.5" # runs scripts in tools/, like the battle simulator

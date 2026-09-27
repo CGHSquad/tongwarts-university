@@ -7,12 +7,17 @@
 	ServerScriptService, which never replicates, so clients can't even read it.
 
 	A fight, as BattleDirector drives it:
-		session:rollInitiative()           -- once per battle; builds turnQueue          "setup"
-		session:beginNextTurn()            -- the next active participant's turn opens   "input"
-		session:submitAction(userId, ...)  -- a player's request: validated, resolved    "resolve"
-		session:performEnemyAction(...)    -- same validation and resolution for the AI  "resolve"
-		session:passTurn(reason)           -- AFK timeout, or nothing affordable         "resolve"
-		...back to beginNextTurn, until one side has no one left standing              "reward"
+		session:rollInitiative()           -- once per battle; builds turnQueue             "setup"
+		session:beginNextTurn()            -- next summon's turn: Mana back, statuses tick   "input"
+		                                   -- (straight to "resolve" if an ailment costs it the turn)
+		session:submitAction(userId, ...)  -- a player's request: validated, resolved       "resolve"
+		session:performEnemyAction(...)    -- same validation and resolution for the AI     "resolve"
+		session:passTurn(reason)           -- AFK timeout, or nothing affordable            "resolve"
+		...back to beginNextTurn, until one side has no one left standing                 "reward"
+
+	Stats (GDD "Core stats", finalized): Strength and Magic scale damage, Endurance cuts incoming
+	damage and makes up most of max Health, Agility gives the initiative bonus plus accuracy and
+	evasion, and Luck drives critical hits and ailments. The numbers are all in CombatConfig.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -20,10 +25,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Abilities = require(ReplicatedStorage.Combat.Abilities)
 local BattleTypes = require(ReplicatedStorage.Combat.BattleTypes)
 local CombatConfig = require(ReplicatedStorage.Combat.CombatConfig)
+local StatusEffects = require(ReplicatedStorage.Combat.StatusEffects)
 local Summons = require(ReplicatedStorage.Combat.Summons)
 
 type Side = BattleTypes.Side
 type Phase = BattleTypes.Phase
+type ActionResult = BattleTypes.ActionResult
 
 -- One entry per summon joining the battle.
 export type RosterEntry = {
@@ -49,6 +56,7 @@ export type Participant = {
 	mana: number,
 	maxMana: number,
 	status: BattleTypes.ParticipantStatus,
+	statuses: { BattleTypes.StatusState },
 	initiative: BattleTypes.InitiativeRoll?,
 }
 
@@ -79,9 +87,10 @@ type SessionFields = {
 
 export type BattleSession = typeof(setmetatable({} :: SessionFields, BattleSession))
 
--- Placeholder formulas (GDD Step 11, Q6). The numbers live in CombatConfig.
+--[[ Formulas. Placeholders per GDD Step 11 Q6; the numbers live in CombatConfig. ]]
+
 function BattleSession.maxHpFor(stats: Summons.Stats): number
-	return CombatConfig.BaseHP + stats.Vitality * CombatConfig.HPPerVitality
+	return CombatConfig.BaseHP + stats.Endurance * CombatConfig.HPPerEndurance
 end
 
 function BattleSession.maxManaFor(stats: Summons.Stats): number
@@ -92,15 +101,93 @@ function BattleSession.initiativeBonusFor(agility: number): number
 	return math.floor(agility / CombatConfig.AgilityPerInitiativeBonus)
 end
 
+-- The share of incoming damage, physical or magical, that Endurance blocks.
+function BattleSession.damageReductionFor(endurance: number): number
+	return math.clamp(endurance * CombatConfig.DamageReductionPerEndurance, 0, CombatConfig.MaxDamageReduction)
+end
+
+-- Accuracy (attacker's Agility) against evasion (target's Agility).
+function BattleSession.hitChanceFor(attackerAgility: number, targetAgility: number): number
+	local chance = CombatConfig.BaseHitChance + (attackerAgility - targetAgility) * CombatConfig.HitChancePerAgility
+	return math.clamp(chance, CombatConfig.MinHitChance, CombatConfig.MaxHitChance)
+end
+
+function BattleSession.critChanceFor(luck: number, abilityBonus: number): number
+	return math.clamp(CombatConfig.BaseCritChance + luck * CombatConfig.CritChancePerLuck + abilityBonus, 0, 1)
+end
+
+-- Inflicting an ailment: the ability's base chance, pushed up or down by Luck against Luck.
+function BattleSession.ailmentChanceFor(baseChance: number, attackerLuck: number, targetLuck: number): number
+	local chance = baseChance + (attackerLuck - targetLuck) * CombatConfig.AilmentChancePerLuck
+	return math.clamp(chance, 0, CombatConfig.MaxAilmentChance)
+end
+
+--[[ Status effects ]]
+
+-- Agility for accuracy and evasion, buffs included. Turn order never uses this: it was rolled from
+-- base Agility at the start, and a fight in progress is never re-sorted (GDD Step 6).
+function BattleSession.effectiveAgility(participant: Participant): number
+	local agility = participant.stats.Agility
+	for _, status in participant.statuses do
+		agility += StatusEffects[status.id].agilityBonus or 0
+	end
+	return agility
+end
+
+-- Whether enemies have to target this participant (a taunt is up).
+function BattleSession.drawsAttacks(participant: Participant): boolean
+	for _, status in participant.statuses do
+		if StatusEffects[status.id].drawsAttacks then
+			return true
+		end
+	end
+	return false
+end
+
+local function damageTakenMultiplier(participant: Participant): number
+	local multiplier = 1
+	for _, status in participant.statuses do
+		multiplier *= StatusEffects[status.id].damageTakenMultiplier or 1
+	end
+	return multiplier
+end
+
+-- A status the summon already has is refreshed, not stacked.
+local function applyStatus(participant: Participant, statusId: string, turns: number)
+	assert(StatusEffects[statusId] ~= nil, `Unknown status "{statusId}"`)
+	for _, status in participant.statuses do
+		if status.id == statusId then
+			status.turnsLeft = math.max(status.turnsLeft, turns)
+			return
+		end
+	end
+	table.insert(participant.statuses, { id = statusId, turnsLeft = turns })
+end
+
+local function removeAilments(participant: Participant): boolean
+	local removed = false
+	for index = #participant.statuses, 1, -1 do
+		if StatusEffects[participant.statuses[index].id].kind == "Ailment" then
+			table.remove(participant.statuses, index)
+			removed = true
+		end
+	end
+	return removed
+end
+
+--[[ Helpers ]]
+
 local function statValue(stats: Summons.Stats, stat: Abilities.StatName): number
 	if stat == "Strength" then
 		return stats.Strength
 	elseif stat == "Magic" then
 		return stats.Magic
-	elseif stat == "Vitality" then
-		return stats.Vitality
+	elseif stat == "Endurance" then
+		return stats.Endurance
+	elseif stat == "Agility" then
+		return stats.Agility
 	end
-	return stats.Agility
+	return stats.Luck
 end
 
 -- Turn order: highest initiative total first. Exact ties go to the party side (GDD Step 6), then
@@ -116,6 +203,22 @@ local function goesFirst(a: Participant, b: Participant): boolean
 	end
 	return a.slot < b.slot
 end
+
+local function newResult(targetId: string): ActionResult
+	return {
+		targetId = targetId,
+		hit = true,
+		critical = false,
+		damage = 0,
+		healed = 0,
+		knockedOut = false,
+		inflicted = nil,
+		applied = nil,
+		cleansed = false,
+	}
+end
+
+--[[ Lifecycle ]]
 
 function BattleSession.new(id: number, roster: { RosterEntry }, rng: Random): BattleSession
 	local fields: SessionFields = {
@@ -136,20 +239,32 @@ function BattleSession.new(id: number, roster: { RosterEntry }, rng: Random): Ba
 	}
 	local self = setmetatable(fields, BattleSession)
 
+	-- Summons go by their type's name, with a letter only when a side has more than one of it.
+	local copies: { [string]: number } = {}
+	for _, entry in roster do
+		local key = `{entry.side}/{entry.summonId}`
+		copies[key] = (copies[key] or 0) + 1
+	end
+
 	local slotsTaken: { [string]: number } = {}
+	local copiesNamed: { [string]: number } = {}
 	for _, entry in roster do
 		local summon = Summons[entry.summonId]
 		assert(summon ~= nil, `Unknown summon "{entry.summonId}"`)
 
 		local slot = (slotsTaken[entry.side] or 0) + 1
 		slotsTaken[entry.side] = slot
+		local key = `{entry.side}/{entry.summonId}`
+		copiesNamed[key] = (copiesNamed[key] or 0) + 1
+		local name = if copies[key] > 1 then `{summon.name} {string.char(64 + copiesNamed[key])}` else summon.name
+
 		local maxHp = BattleSession.maxHpFor(summon.stats)
 		local maxMana = BattleSession.maxManaFor(summon.stats)
 		local participant: Participant = {
 			id = (if entry.side == "Party" then "P" else "E") .. slot,
 			side = entry.side,
 			slot = slot,
-			name = `{summon.name} {string.char(64 + slot)}`, -- "Tung Tung Sahur A", "... B"
+			name = name,
 			summonId = summon.id,
 			ownerUserId = entry.ownerUserId,
 			ownerName = entry.ownerName,
@@ -160,6 +275,7 @@ function BattleSession.new(id: number, roster: { RosterEntry }, rng: Random): Ba
 			mana = maxMana,
 			maxMana = maxMana,
 			status = "Active",
+			statuses = {},
 			initiative = nil,
 		}
 		table.insert(self.participants, participant)
@@ -194,7 +310,8 @@ function BattleSession.rollInitiative(self: BattleSession)
 end
 
 -- Opens the next turn: walks forward through turnQueue (wrapping into a new round), skipping
--- anyone knocked out or gone, restores a little Mana to the new actor, and waits for its action.
+-- anyone knocked out or gone, and runs the start of that summon's turn. Usually the phase is then
+-- "input", waiting for its action; if an ailment cost it the turn, it's already "resolve".
 function BattleSession.beginNextTurn(self: BattleSession): Participant
 	assert(self.phase == "setup" or self.phase == "resolve", `Can't begin a turn during "{self.phase}"`)
 	assert(#self.turnQueue > 0, "Roll initiative before the first turn")
@@ -210,7 +327,7 @@ function BattleSession.beginNextTurn(self: BattleSession): Participant
 			self.turnNumber += 1
 			self.currentActorId = actor.id
 			self.phase = "input"
-			actor.mana = math.min(actor.maxMana, actor.mana + CombatConfig.ManaRegenPerTurn)
+			self:_startTurn(actor)
 			return actor
 		end
 	end
@@ -244,10 +361,21 @@ function BattleSession.getActiveOpponents(self: BattleSession, participant: Part
 	return opponents
 end
 
+-- Everyone still standing on this participant's side, itself included.
+function BattleSession.getActiveAllies(self: BattleSession, participant: Participant): { Participant }
+	local allies = {}
+	for _, other in self.participants do
+		if other.side == participant.side and other.status == "Active" then
+			table.insert(allies, other)
+		end
+	end
+	return allies
+end
+
 -- A player's request to act, straight from the SubmitAction RemoteEvent. Every rule is checked
 -- here on the server: is it this player's turn, is the ability theirs and affordable, is the
--- target legal. Returns true once the action has resolved, or false with an error code and a
--- message to show that player. The client's copy of the state is only ever for display.
+-- target legal for it. Returns true once the action has resolved, or false with an error code and
+-- a message to show that player. The client's copy of the state is only ever for display.
 function BattleSession.submitAction(
 	self: BattleSession,
 	userId: number,
@@ -307,6 +435,7 @@ function BattleSession.removePlayer(self: BattleSession, userId: number): boolea
 	for _, participant in self.participants do
 		if participant.ownerUserId == userId and participant.status == "Active" then
 			participant.status = "Left"
+			table.clear(participant.statuses)
 			self:_log(`{participant.name} leaves the battle.`)
 			if self.phase == "input" and participant.id == self.currentActorId then
 				wasTheirTurn = true
@@ -325,6 +454,10 @@ end
 function BattleSession.getState(self: BattleSession): BattleTypes.BattleState
 	local participants: { BattleTypes.ParticipantState } = {}
 	for _, participant in self.participants do
+		local statuses: { BattleTypes.StatusState } = {}
+		for _, status in participant.statuses do
+			table.insert(statuses, { id = status.id, turnsLeft = status.turnsLeft })
+		end
 		table.insert(participants, {
 			id = participant.id,
 			side = participant.side,
@@ -338,9 +471,24 @@ function BattleSession.getState(self: BattleSession): BattleTypes.BattleState
 			mana = participant.mana,
 			maxMana = participant.maxMana,
 			status = participant.status,
+			statuses = statuses,
 			abilities = table.clone(participant.abilities),
 			initiative = if participant.initiative then table.clone(participant.initiative) else nil,
 		})
+	end
+
+	local lastAction: BattleTypes.ActionRecord? = nil
+	if self.lastAction then
+		local results = {}
+		for _, result in self.lastAction.results do
+			table.insert(results, table.clone(result))
+		end
+		lastAction = {
+			sequence = self.lastAction.sequence,
+			actorId = self.lastAction.actorId,
+			abilityId = self.lastAction.abilityId,
+			results = results,
+		}
 	end
 
 	local firstLogLine = math.max(1, #self.log - CombatConfig.LogLinesShown + 1)
@@ -353,11 +501,65 @@ function BattleSession.getState(self: BattleSession): BattleTypes.BattleState
 		turnQueue = table.clone(self.turnQueue),
 		participants = participants,
 		winner = self.winner,
-		lastAction = if self.lastAction then table.clone(self.lastAction) else nil,
+		lastAction = lastAction,
 		log = table.move(self.log, firstLogLine, #self.log, 1, {}),
 		turnDeadline = nil,
 		lobbyReturnAt = nil,
 	}
+end
+
+--[[ Turn internals ]]
+
+-- The start of a turn (GDD Step 6's pre-action triggers): Mana trickles back, each status gets
+-- its say, and then they all count down. An ailment can cost the whole turn.
+function BattleSession._startTurn(self: BattleSession, actor: Participant)
+	actor.mana = math.min(actor.maxMana, actor.mana + CombatConfig.ManaRegenPerTurn)
+
+	local lostTurnTo: StatusEffects.StatusDef? = nil
+	for _, status in actor.statuses do
+		local def = StatusEffects[status.id]
+		if lostTurnTo == nil and def.skipTurnChance ~= nil and self:_roll(def.skipTurnChance) then
+			lostTurnTo = def
+		end
+	end
+
+	for index = #actor.statuses, 1, -1 do
+		local status = actor.statuses[index]
+		status.turnsLeft -= 1
+		if status.turnsLeft <= 0 then
+			table.remove(actor.statuses, index)
+		end
+	end
+
+	if lostTurnTo then
+		self.phase = "resolve"
+		self:_log(`{actor.name} is {string.lower(lostTurnTo.name)} and loses its turn.`)
+	end
+end
+
+-- Who an ability would affect, or nil if the requested target isn't legal for it. Abilities that
+-- need no pick ("Self", "AllAllies") ignore targetId.
+function BattleSession._targetsFor(
+	self: BattleSession,
+	actor: Participant,
+	ability: Abilities.Ability,
+	targetId: string
+): { Participant }?
+	if ability.targets == "Self" then
+		return { actor }
+	elseif ability.targets == "AllAllies" then
+		return self:getActiveAllies(actor)
+	end
+
+	local target = self.byId[targetId]
+	if target == nil or target.status ~= "Active" then
+		return nil
+	end
+	local isAlly = target.side == actor.side
+	if (ability.targets == "Ally") ~= isAlly then
+		return nil
+	end
+	return { target }
 end
 
 function BattleSession._resolveAction(
@@ -375,42 +577,135 @@ function BattleSession._resolveAction(
 			"NotEnoughMana",
 			`Not enough Mana for {ability.name}: it costs {ability.manaCost} and {actor.name} has {actor.mana}.`
 	end
-	local target = self.byId[targetId]
-	if target == nil or target.side == actor.side or target.status ~= "Active" then
-		return false, "InvalidTarget", "Pick an enemy that's still standing."
+	local targets = self:_targetsFor(actor, ability, targetId)
+	if targets == nil then
+		return false,
+			"InvalidTarget",
+			if ability.targets == "Ally"
+				then "Pick a party member who's still standing."
+				else "Pick an enemy that's still standing."
 	end
 
-	-- GDD Step 6, "Action priority": pre-action triggers, the action, post-action triggers, then
-	-- death checks. There are no status effects yet, so only the action and death checks run.
+	-- GDD Step 6, "Action priority": pre-action triggers (they ran at the start of the turn), the
+	-- action, post-action triggers (none yet), then death checks.
 	self.phase = "resolve"
 	actor.mana -= ability.manaCost
-	local damage = self:_rollDamage(actor, ability)
-	target.hp = math.max(0, target.hp - damage)
+	local results: { ActionResult } = {}
+	if ability.kind == "Attack" then
+		for _, target in targets do
+			table.insert(results, self:_attack(actor, ability, target))
+		end
+	elseif ability.kind == "Heal" then
+		for _, target in targets do
+			table.insert(results, self:_heal(actor, ability, target))
+		end
+	else
+		results = self:_grantStatus(actor, ability, targets)
+	end
 
-	local knockedOut = target.hp == 0
 	self.actionCount += 1
 	self.lastAction = {
 		sequence = self.actionCount,
 		actorId = actor.id,
-		targetId = target.id,
 		abilityId = ability.id,
-		damage = damage,
-		knockedOut = knockedOut,
+		results = results,
 	}
-	self:_log(`{actor.name} used {ability.name} on {target.name} for {damage} damage.`)
-
-	if knockedOut then
-		target.status = "KnockedOut"
-		self:_log(`{target.name} is knocked out!`)
-	end
 	self:_checkForWinner()
 	return true, nil, nil
 end
 
-function BattleSession._rollDamage(self: BattleSession, actor: Participant, ability: Abilities.Ability): number
-	local base = ability.power + statValue(actor.stats, ability.scalingStat) * ability.statRatio
+-- One attack on one target: roll to hit, roll for a critical hit, cut the damage by the target's
+-- Endurance and statuses, then check for a knockout, and roll for the ailment if it's still up.
+function BattleSession._attack(
+	self: BattleSession,
+	actor: Participant,
+	ability: Abilities.AttackAbility,
+	target: Participant
+): ActionResult
+	local result = newResult(target.id)
+	local hitChance =
+		BattleSession.hitChanceFor(BattleSession.effectiveAgility(actor), BattleSession.effectiveAgility(target))
+	if not self:_roll(hitChance) then
+		result.hit = false
+		self:_log(`{actor.name} used {ability.name} on {target.name}, but missed.`)
+		return result
+	end
+
 	local variance = CombatConfig.DamageVariance
-	return math.max(1, math.round(base * self.rng:NextNumber(1 - variance, 1 + variance)))
+	local damage = (ability.power + statValue(actor.stats, ability.scalingStat) * ability.statRatio)
+		* self.rng:NextNumber(1 - variance, 1 + variance)
+	result.critical = self:_roll(BattleSession.critChanceFor(actor.stats.Luck, ability.critBonus or 0))
+	if result.critical then
+		damage *= CombatConfig.CriticalMultiplier
+	end
+	damage *= 1 - BattleSession.damageReductionFor(target.stats.Endurance)
+	damage *= damageTakenMultiplier(target)
+	result.damage = math.max(1, math.round(damage))
+	target.hp = math.max(0, target.hp - result.damage)
+	self:_log(
+		if result.critical
+			then `{actor.name} used {ability.name} on {target.name}: critical hit, {result.damage} damage!`
+			else `{actor.name} used {ability.name} on {target.name} for {result.damage} damage.`
+	)
+
+	local ailment = ability.ailment
+	if target.hp == 0 then
+		result.knockedOut = true
+		target.status = "KnockedOut"
+		table.clear(target.statuses)
+		self:_log(`{target.name} is knocked out!`)
+	elseif ailment then
+		local chance = BattleSession.ailmentChanceFor(ailment.chance, actor.stats.Luck, target.stats.Luck)
+		if self:_roll(chance) then
+			applyStatus(target, ailment.status, ailment.turns)
+			result.inflicted = ailment.status
+			self:_log(`{target.name} is {string.lower(StatusEffects[ailment.status].name)}!`)
+		end
+	end
+	return result
+end
+
+function BattleSession._heal(
+	self: BattleSession,
+	actor: Participant,
+	ability: Abilities.HealAbility,
+	target: Participant
+): ActionResult
+	local result = newResult(target.id)
+	local amount = math.round(ability.power + statValue(actor.stats, ability.scalingStat) * ability.statRatio)
+	result.healed = math.min(amount, target.maxHp - target.hp)
+	target.hp += result.healed
+	result.cleansed = ability.cleanse == true and removeAilments(target)
+	self:_log(
+		`{actor.name} used {ability.name} on {target.name}: +{result.healed} Health{if result.cleansed
+			then ", ailments cleared"
+			else ""}.`
+	)
+	return result
+end
+
+function BattleSession._grantStatus(
+	self: BattleSession,
+	actor: Participant,
+	ability: Abilities.StatusAbility,
+	targets: { Participant }
+): { ActionResult }
+	local results: { ActionResult } = {}
+	for _, target in targets do
+		applyStatus(target, ability.status, ability.turns)
+		local result = newResult(target.id)
+		result.applied = ability.status
+		table.insert(results, result)
+	end
+
+	local def = StatusEffects[ability.status]
+	local onWhom = if ability.targets == "AllAllies" then " on the whole party" else ""
+	self:_log(`{actor.name} used {ability.name}: {def.name}{onWhom} for {ability.turns} turns ({def.description}).`)
+	return results
+end
+
+function BattleSession._roll(self: BattleSession, chance: number): boolean
+	return self.rng:NextNumber() < chance
 end
 
 function BattleSession._hasActive(self: BattleSession, side: Side): boolean

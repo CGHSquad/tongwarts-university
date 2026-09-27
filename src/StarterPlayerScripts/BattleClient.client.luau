@@ -33,8 +33,8 @@ local ui = BattleUI.new(localPlayer:WaitForChild("PlayerGui") :: PlayerGui, loca
 	onAttack = function(abilityId, targetId)
 		submitActionRemote:FireServer(abilityId, targetId)
 	end,
-	onTargetChanged = function(targetId)
-		view:setTarget(targetId)
+	onTargetChanged = function(targetId, friendly)
+		view:setTarget(targetId, friendly)
 	end,
 })
 
