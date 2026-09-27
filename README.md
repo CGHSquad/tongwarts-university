@@ -40,8 +40,8 @@ Tung Tung summons (colored blocks) fights two Wild Saplings.
    click **Start**. Studio opens a server plus one window per player.
    (On two computers, use Team Create and **Team Test** instead so you join the same server.)
 2. Both players press **READY**. After a 3-second countdown the battle starts.
-3. Each player controls one summon. On your turn, pick an ability, pick a target if it needs
-   one, and press the big button. The enemies act on their own.
+3. Each player controls one summon. On your turn, pick an ability (or **Guard**), pick a target
+   if it needs one, and press the big button. The enemies act on their own.
 4. When one side is knocked out you get a Victory or Defeat screen, then everyone returns to
    the lobby and can ready up for another battle.
 
@@ -53,7 +53,8 @@ to join.
 
 ### Summons
 
-The four Tung Tung Sahur variants from the GDD. Each has the basic Strike plus its own kit:
+The four Tung Tung Sahur variants from the GDD. Each has the basic Strike plus its own kit, and
+can Guard (see Rules):
 
 | Summon | Role | Leans on | Abilities |
 | --- | --- | --- | --- |
@@ -78,11 +79,23 @@ The four Tung Tung Sahur variants from the GDD. Each has the basic Strike plus i
   target. **Critical hits** (×1.5 damage) come from the attacker's Luck.
 - **Ailments:** Gale Clap can **daze** its target. The chance goes up or down with the
   attacker's Luck against the target's. A dazed summon may lose its turn. Sap Mend clears it.
-- **Statuses** (taunt, guard, Tailwind, Dazed) last a few of that summon's own turns. Buffs
-  never change the turn order mid-battle.
-- **Mana:** every ability costs Mana, and each summon gets +3 at the start of its turn.
+- **Guard:** instead of an ability, any summon can Guard. It's free and needs no target, and it
+  lasts until that summon's next turn. While guarding it:
+  - takes 30% less damage. That multiplies with Endurance's cut rather than adding to it, so a
+    maxed-Endurance tank guarding blocks 72%, and nothing ever blocks more than 75%.
+  - can't be hit by a critical hit.
+  - is half as likely to get an ailment.
+  - gets 6 Mana back if something attacks it before its next turn (hit or miss, once). If
+    nothing does, it gets nothing.
+
+  It's a bet that you'll be the one attacked, and it costs your whole turn. It's separate from the
+  Elder's Windbreak, and the two stack. (Enemies don't guard yet.)
+- **Statuses** (taunt, Windbreak, Tailwind, Dazed, and Guard's Bracing) last a few of that
+  summon's own turns. Buffs never change the turn order mid-battle.
+- **Mana:** every ability costs Mana (Guard is free), and each summon gets +3 at the start of its
+  turn.
 - **The server decides everything.** Clients send "use this ability on this target"; the
-  server checks it's really your turn, the ability is yours and affordable, and the target is
+  server checks it's really your turn, the ability is yours (or Guard) and affordable, and the target is
   legal for that ability. Anything else is refused with a message, and the client never
   computes an outcome.
 - **AFK and leaving:** a player who doesn't act within 30 seconds skips that turn. A player who
@@ -96,7 +109,7 @@ The four Tung Tung Sahur variants from the GDD. Each has the basic Strike plus i
 | `ServerScriptService/Combat/BattleDirector.luau` | The ready-up lobby and the real-time loop: turn timers, enemy turns, pacing, players leaving. |
 | `ServerScriptService/Combat/EnemyAI.luau` | Enemy move choice: a weighted table per enemy type. |
 | `ServerScriptService/BattleServer.server.luau` | Network edge: connects players and RemoteEvents to the director, and type-checks client input. |
-| `ReplicatedStorage/Combat/CombatConfig.luau` | Every formula's numbers (Health, Endurance, hit chance, crits, ailments), timers, party size, who fights. |
+| `ReplicatedStorage/Combat/CombatConfig.luau` | Every formula's numbers (Health, Endurance, hit chance, crits, ailments, Guard), timers, party size, who fights. |
 | `ReplicatedStorage/Combat/Abilities.luau`, `Summons.luau`, `StatusEffects.luau` | Abilities, summons and statuses as data. Add new ones here, not in the combat code. |
 | `ReplicatedStorage/Combat/BattleTypes.luau` | The shape of the state the server sends to clients. |
 | `StarterPlayerScripts/BattleClient.client.luau` | Client entry point: draws each server update, sends button presses. |
@@ -115,24 +128,45 @@ lune run tools/simulate-battles 10000 7  # more battles, different random seed
 ```
 
 It runs the real `BattleSession` and `EnemyAI` code (no Studio needed) against the enemies in
-`CombatConfig`. For each party comp it reports:
+`CombatConfig`. Each party comp plays four ways:
 
-- **win rates** for careless play (random buttons) and sensible play (heal the hurt, keep buffs
-  up, focus the weakest enemy)
+- **careless:** random buttons, Guard included.
+- **sensible:** heal the hurt, keep buffs up, focus the weakest enemy, and Guard only in the one
+  spot where it pays: a healer that's hurt, being attacked, and can't afford its heal.
+- **no Guard:** sensible, but never guards.
+- **turtle:** sensible, but it guards whenever its Mana isn't full, then spends it all on its
+  biggest attack. This is the "guard to max Mana, then alpha-strike" pattern Guard mustn't
+  reward (GDD Step 6).
+
+For each party comp it reports:
+
+- **win rates** for the four play styles
 - **what each member does:** damage dealt and taken, healing, and the share of enemy attacks
   aimed at it
+- **Guard:** how often each member guards, how often those guards got attacked (paying Mana), and
+  the same for the turtle
 - **the dice:** hits, crits, dazes and turns lost
 
-To compare other comps, edit `PARTIES` at the top of the script. With the current numbers
-(sensible play):
+To compare other comps, edit `PARTIES` at the top of the script. With the current numbers:
 
-| Party | Wins | Rounds |
-| --- | --- | --- |
-| Sahur + Sahur | 78% | 7.4 |
-| Elder + Sapling | 91% | 8.3 |
-| Sapling + Grove-Keeper | 71% | 9.0 |
-| Elder + Grove-Keeper | 81% | 17.8 |
-| Sahur + Grove-Keeper | 80% | 9.9 |
-| Sapling + Sapling | 51% | 5.7 |
+| Party | Sensible | No Guard | Turtle | Rounds (sensible) |
+| --- | --- | --- | --- | --- |
+| Sahur + Sahur | 78% | 77% | 8% | 7.4 |
+| Elder + Sapling | 91% | 91% | 1% | 8.3 |
+| Sapling + Grove-Keeper | 77% | 72% | 47% | 12.7 |
+| Elder + Grove-Keeper | 90% | 81% | 0% | 23.1 |
+| Sahur + Grove-Keeper | 80% | 81% | 25% | 10.7 |
+| Sapling + Sapling | 50% | 48% | 7% | 5.7 |
 
-Careless play wins 0–40%, depending on the comp.
+Careless play wins 0–10%.
+
+- **Turtling loses badly.** Guarding until Mana is full, then alpha-striking, loses in every comp.
+- **Guard helps in one spot.** A healer that's hurt, being attacked, and can't afford its heal
+  should guard. It guards on 5–9% of its turns, nearly every guard gets attacked, and the Mana it
+  wins back pays for the heal. That adds 5–9 points of win rate to two of the three healer comps.
+- **Everyone else should attack.** In the simulator, guarding to bank Mana for a big attack, or
+  to put off a knockout, costs more than it saves.
+
+A handful of healer battles (up to about 1%) are still going after 100 rounds and count as losses: a
+lone Grove-Keeper alternating Guard and Sap Mend can outlast the last enemy without ever killing
+it.

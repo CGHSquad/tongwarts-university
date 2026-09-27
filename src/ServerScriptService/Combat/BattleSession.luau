@@ -18,6 +18,9 @@
 	Stats (GDD "Core stats", finalized): Strength and Magic scale damage, Endurance cuts incoming
 	damage and makes up most of max Health, Agility gives the initiative bonus plus accuracy and
 	evasion, and Luck drives critical hits and ailments. The numbers are all in CombatConfig.
+
+	Besides its own abilities, every summon can Guard (GDD Step 6): free, no target, and it braces
+	until its own next turn. See _guard and _attack.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -40,6 +43,13 @@ export type RosterEntry = {
 	ownerName: string?,
 }
 
+-- A status on a summon. Clients only ever see its id and turns left (getState).
+export type ActiveStatus = {
+	id: string,
+	turnsLeft: number,
+	unpaidMana: number?, -- its manaWhenAttacked, until the first attack pays it out
+}
+
 -- A summon in this battle (the GDD's participant entry; its characterRef is summonId).
 export type Participant = {
 	id: string,
@@ -56,7 +66,7 @@ export type Participant = {
 	mana: number,
 	maxMana: number,
 	status: BattleTypes.ParticipantStatus,
-	statuses: { BattleTypes.StatusState },
+	statuses: { ActiveStatus },
 	initiative: BattleTypes.InitiativeRoll?,
 }
 
@@ -144,24 +154,61 @@ function BattleSession.drawsAttacks(participant: Participant): boolean
 	return false
 end
 
-local function damageTakenMultiplier(participant: Participant): number
+-- The share of incoming damage this participant blocks. Endurance cuts it first, then each status
+-- (Guarded, Bracing) cuts what's left, so they multiply instead of adding up: Endurance's 60% cap
+-- and Bracing's 30% block 1 - 0.4 * 0.7 = 72%, not 90%. The total is capped as well.
+function BattleSession.damageReductionAgainst(participant: Participant): number
+	local taken = 1 - BattleSession.damageReductionFor(participant.stats.Endurance)
+	for _, status in participant.statuses do
+		taken *= StatusEffects[status.id].damageTakenMultiplier or 1
+	end
+	return math.min(1 - taken, CombatConfig.MaxTotalDamageReduction)
+end
+
+-- Whether attacks on this participant can't be critical hits (it's guarding).
+function BattleSession.blocksCriticals(participant: Participant): boolean
+	for _, status in participant.statuses do
+		if StatusEffects[status.id].blocksCriticals then
+			return true
+		end
+	end
+	return false
+end
+
+-- Scales the chance of inflicting an ailment on this participant (below 1 while it's guarding).
+function BattleSession.ailmentChanceMultiplier(participant: Participant): number
 	local multiplier = 1
 	for _, status in participant.statuses do
-		multiplier *= StatusEffects[status.id].damageTakenMultiplier or 1
+		multiplier *= StatusEffects[status.id].ailmentChanceMultiplier or 1
 	end
 	return multiplier
 end
 
 -- A status the summon already has is refreshed, not stacked.
 local function applyStatus(participant: Participant, statusId: string, turns: number)
-	assert(StatusEffects[statusId] ~= nil, `Unknown status "{statusId}"`)
+	local def = StatusEffects[statusId]
+	assert(def ~= nil, `Unknown status "{statusId}"`)
 	for _, status in participant.statuses do
 		if status.id == statusId then
 			status.turnsLeft = math.max(status.turnsLeft, turns)
+			status.unpaidMana = def.manaWhenAttacked
 			return
 		end
 	end
-	table.insert(participant.statuses, { id = statusId, turnsLeft = turns })
+	table.insert(participant.statuses, { id = statusId, turnsLeft = turns, unpaidMana = def.manaWhenAttacked })
+end
+
+-- Pays out every manaWhenAttacked still pending on this participant (Guard's bet coming off).
+-- Returns how much Mana it actually gained, which is less when it was nearly full.
+local function collectManaWhenAttacked(participant: Participant): number
+	local bonus = 0
+	for _, status in participant.statuses do
+		bonus += status.unpaidMana or 0
+		status.unpaidMana = nil
+	end
+	local before = participant.mana
+	participant.mana = math.min(participant.maxMana, participant.mana + bonus)
+	return participant.mana - before
 end
 
 local function removeAilments(participant: Participant): boolean
@@ -215,6 +262,7 @@ local function newResult(targetId: string): ActionResult
 		inflicted = nil,
 		applied = nil,
 		cleansed = false,
+		manaGained = 0,
 	}
 end
 
@@ -341,6 +389,7 @@ function BattleSession.getCurrentActor(self: BattleSession): Participant?
 	return if id then self.byId[id] else nil
 end
 
+-- Whether it can afford one of its own abilities. (Guard is free, so it can always do that.)
 function BattleSession.canAffordAnyAbility(self: BattleSession, participant: Participant): boolean
 	for _, abilityId in participant.abilities do
 		local ability = Abilities[abilityId]
@@ -349,6 +398,12 @@ function BattleSession.canAffordAnyAbility(self: BattleSession, participant: Par
 		end
 	end
 	return false
+end
+
+-- Whether this participant may use the ability: one of its own, or Guard, which every summon has.
+function BattleSession.canUse(participant: Participant, abilityId: string): boolean
+	local ability = Abilities[abilityId]
+	return ability ~= nil and (ability.kind == "Guard" or table.find(participant.abilities, abilityId) ~= nil)
 end
 
 function BattleSession.getActiveOpponents(self: BattleSession, participant: Participant): { Participant }
@@ -569,7 +624,7 @@ function BattleSession._resolveAction(
 	targetId: string
 ): (boolean, ActionError?, string?)
 	local ability = Abilities[abilityId]
-	if ability == nil or table.find(actor.abilities, abilityId) == nil then
+	if ability == nil or not BattleSession.canUse(actor, abilityId) then
 		return false, "UnknownAbility", `{actor.name} doesn't know that ability.`
 	end
 	if actor.mana < ability.manaCost then
@@ -599,6 +654,8 @@ function BattleSession._resolveAction(
 		for _, target in targets do
 			table.insert(results, self:_heal(actor, ability, target))
 		end
+	elseif ability.kind == "Guard" then
+		table.insert(results, self:_guard(actor, ability))
 	else
 		results = self:_grantStatus(actor, ability, targets)
 	end
@@ -616,6 +673,7 @@ end
 
 -- One attack on one target: roll to hit, roll for a critical hit, cut the damage by the target's
 -- Endurance and statuses, then check for a knockout, and roll for the ailment if it's still up.
+-- A guarding target can't be crit, resists the ailment, and gets its Mana bonus, hit or miss.
 function BattleSession._attack(
 	self: BattleSession,
 	actor: Participant,
@@ -625,21 +683,40 @@ function BattleSession._attack(
 	local result = newResult(target.id)
 	local hitChance =
 		BattleSession.hitChanceFor(BattleSession.effectiveAgility(actor), BattleSession.effectiveAgility(target))
-	if not self:_roll(hitChance) then
+	if self:_roll(hitChance) then
+		self:_hit(actor, ability, target, result)
+	else
 		result.hit = false
 		self:_log(`{actor.name} used {ability.name} on {target.name}, but missed.`)
-		return result
 	end
 
+	-- A knockout already cleared its statuses, so this only pays a summon still standing.
+	result.manaGained = collectManaWhenAttacked(target)
+	if result.manaGained > 0 then
+		self:_log(`{target.name} braced for it: +{result.manaGained} Mana.`)
+	end
+	return result
+end
+
+-- The rest of an attack, once it connects.
+function BattleSession._hit(
+	self: BattleSession,
+	actor: Participant,
+	ability: Abilities.AttackAbility,
+	target: Participant,
+	result: ActionResult
+)
 	local variance = CombatConfig.DamageVariance
 	local damage = (ability.power + statValue(actor.stats, ability.scalingStat) * ability.statRatio)
 		* self.rng:NextNumber(1 - variance, 1 + variance)
-	result.critical = self:_roll(BattleSession.critChanceFor(actor.stats.Luck, ability.critBonus or 0))
+	local critChance = if BattleSession.blocksCriticals(target)
+		then 0
+		else BattleSession.critChanceFor(actor.stats.Luck, ability.critBonus or 0)
+	result.critical = self:_roll(critChance)
 	if result.critical then
 		damage *= CombatConfig.CriticalMultiplier
 	end
-	damage *= 1 - BattleSession.damageReductionFor(target.stats.Endurance)
-	damage *= damageTakenMultiplier(target)
+	damage *= 1 - BattleSession.damageReductionAgainst(target)
 	result.damage = math.max(1, math.round(damage))
 	target.hp = math.max(0, target.hp - result.damage)
 	self:_log(
@@ -656,13 +733,13 @@ function BattleSession._attack(
 		self:_log(`{target.name} is knocked out!`)
 	elseif ailment then
 		local chance = BattleSession.ailmentChanceFor(ailment.chance, actor.stats.Luck, target.stats.Luck)
+			* BattleSession.ailmentChanceMultiplier(target)
 		if self:_roll(chance) then
 			applyStatus(target, ailment.status, ailment.turns)
 			result.inflicted = ailment.status
 			self:_log(`{target.name} is {string.lower(StatusEffects[ailment.status].name)}!`)
 		end
 	end
-	return result
 end
 
 function BattleSession._heal(
@@ -702,6 +779,16 @@ function BattleSession._grantStatus(
 	local onWhom = if ability.targets == "AllAllies" then " on the whole party" else ""
 	self:_log(`{actor.name} used {ability.name}: {def.name}{onWhom} for {ability.turns} turns ({def.description}).`)
 	return results
+end
+
+-- Guard (GDD Step 6): spends the turn bracing (the Bracing status) until this summon's next turn.
+-- The Mana bonus is only armed here; _attack pays it if something actually attacks it.
+function BattleSession._guard(self: BattleSession, actor: Participant, ability: Abilities.GuardAbility): ActionResult
+	applyStatus(actor, ability.status, ability.turns)
+	local result = newResult(actor.id)
+	result.applied = ability.status
+	self:_log(`{actor.name} guards, bracing until its next turn.`)
+	return result
 end
 
 function BattleSession._roll(self: BattleSession, chance: number): boolean

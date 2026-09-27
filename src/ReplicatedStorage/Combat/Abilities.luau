@@ -10,6 +10,9 @@
 		"Heal"    restores power + scalingStat * statRatio Health to one ally. `cleanse` also removes
 		          ailments.
 		"Status"  applies a status (StatusEffects) for `turns` turns.
+		"Guard"   the universal defensive action (GDD Step 6). It's in no summon's list because
+		          every summon can use it instead of an ability: free, no target, and it braces
+		          (the Bracing status) until the summon's own next turn.
 
 	targets: what the player picks
 		"Enemy"      an enemy that's still standing
@@ -68,7 +71,18 @@ export type StatusAbility = {
 	turns: number,
 }
 
-export type Ability = AttackAbility | HealAbility | StatusAbility
+export type GuardAbility = {
+	kind: "Guard",
+	id: string,
+	name: string,
+	description: string,
+	targets: Targeting,
+	manaCost: number,
+	status: string,
+	turns: number,
+}
+
+export type Ability = AttackAbility | HealAbility | StatusAbility | GuardAbility
 
 local Abilities: { [string]: Ability } = {
 	-- Everyone's basic attack. Tung Tung School's melee type is Strike: cheap and reliable.
@@ -161,6 +175,19 @@ local Abilities: { [string]: Ability } = {
 		scalingStat = "Magic",
 		statRatio = 1,
 		cleanse = true,
+	},
+
+	-- Every summon can Guard instead of using an ability. Its numbers are in CombatConfig.
+	Guard = {
+		kind = "Guard",
+		id = "Guard",
+		name = "Guard",
+		description = "Braces until its next turn: less damage, no critical hits, resists ailments, "
+			.. "and some Mana back if it gets attacked.",
+		targets = "Self",
+		manaCost = 0,
+		status = "Bracing",
+		turns = 1,
 	},
 }
 

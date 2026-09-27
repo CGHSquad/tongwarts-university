@@ -30,7 +30,7 @@ local ui = BattleUI.new(localPlayer:WaitForChild("PlayerGui") :: PlayerGui, loca
 	onReadyChanged = function(ready)
 		setReadyRemote:FireServer(ready)
 	end,
-	onAttack = function(abilityId, targetId)
+	onAction = function(abilityId, targetId) -- an ability or Guard; the server decides what happens
 		submitActionRemote:FireServer(abilityId, targetId)
 	end,
 	onTargetChanged = function(targetId, friendly)

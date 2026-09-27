@@ -4,8 +4,9 @@
 
 		lobby    who's here and who's ready, the Ready button, the start countdown
 		battle   whose turn it is (with that player's time left), the turn order with initiative
-		         totals, HP and Mana bars for every summon, and on your turn the ability buttons,
-		         target picker and Attack button. Plus a combat log and a victory/defeat screen.
+		         totals, HP and Mana bars for every summon, and on your turn the ability buttons
+		         (plus Guard, which every summon has), target picker and Attack button. Plus a
+		         combat log and a victory/defeat screen.
 
 	It renders server snapshots and nothing else. The only thing it remembers is the choice you're
 	making right now (ability + target); Attack sends that choice to the server, which decides what
@@ -18,6 +19,7 @@ local Workspace = game:GetService("Workspace")
 local Combat = ReplicatedStorage:WaitForChild("Combat")
 local Abilities = require(Combat:WaitForChild("Abilities"))
 local BattleTypes = require(Combat:WaitForChild("BattleTypes"))
+local CombatConfig = require(Combat:WaitForChild("CombatConfig"))
 local StatusEffects = require(Combat:WaitForChild("StatusEffects"))
 local Summons = require(Combat:WaitForChild("Summons"))
 local BattleTheme = require(script.Parent:WaitForChild("BattleTheme"))
@@ -29,7 +31,7 @@ type ParticipantState = BattleTypes.ParticipantState
 
 export type Callbacks = {
 	onReadyChanged: (ready: boolean) -> (),
-	onAttack: (abilityId: string, targetId: string) -> (),
+	onAction: (abilityId: string, targetId: string) -> (), -- an ability, or Guard
 	onTargetChanged: (targetId: string?, friendly: boolean) -> (), -- friendly = picking an ally
 }
 
@@ -39,6 +41,18 @@ local DESIGN_SIZE = Vector2.new(1280, 720)
 local NOTICE_SECONDS = 3
 local ACTION_PANEL_WIDTH = 520
 local ACTION_PANEL_PADDING = 12
+
+-- Guard is in no summon's ability list: every summon can use it (see Abilities), so it gets its
+-- own button after the summon's abilities.
+local GUARD = Abilities.Guard
+
+-- What guarding does, from CombatConfig, so the button's explanation stays true when it's tuned.
+local function describeGuard(): string
+	local damage = math.round(CombatConfig.GuardDamageReduction * 100)
+	local ailments = math.round((1 - CombatConfig.GuardAilmentChanceMultiplier) * 100)
+	return `Until its next turn: {damage}% less damage, no critical hits, ailments {ailments}% less likely. `
+		.. `+{CombatConfig.GuardManaBonus} Mana if it gets attacked.`
+end
 
 --[[ Small builders, so the layout code below stays readable ]]
 
@@ -489,7 +503,7 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 
 	local actionTitle = newLabel(actionPanel, "", 20, BattleTheme.FontHeavy)
 	actionTitle.LayoutOrder = 1
-	local abilityCaption = newLabel(actionPanel, "1. Choose an ability", 14, BattleTheme.FontBold)
+	local abilityCaption = newLabel(actionPanel, "1. Choose an ability, or Guard", 14, BattleTheme.FontBold)
 	abilityCaption.TextXAlignment = Enum.TextXAlignment.Left
 	abilityCaption.TextColor3 = BattleTheme.SubtleText
 	abilityCaption.LayoutOrder = 2
@@ -960,19 +974,20 @@ function BattleUI._highlightedTarget(self: BattleUI, myTurn: boolean): (string?,
 	return self.selectedTargetId, ability.targets == "Ally"
 end
 
--- Keeps the current choice legal: an ability this summon has and can afford, and a target that
--- ability can take. Falls back to the first affordable ability, and to the first enemy for an
--- attack or the most hurt party member for a heal. Abilities with no pick just name the actor.
+-- Keeps the current choice legal: an ability this summon has and can afford (or Guard), and a
+-- target that ability can take. Falls back to the first affordable ability (Guard if none is), and
+-- to the first enemy for an attack or the most hurt party member for a heal. Abilities with no pick
+-- just name the actor.
 function BattleUI._validateChoices(self: BattleUI, battle: BattleState, actor: ParticipantState)
 	local function usable(abilityId: string?): boolean
-		if abilityId == nil or table.find(actor.abilities, abilityId) == nil then
+		if abilityId == nil or (abilityId ~= GUARD.id and table.find(actor.abilities, abilityId) == nil) then
 			return false
 		end
 		local ability = Abilities[abilityId]
 		return ability ~= nil and actor.mana >= ability.manaCost
 	end
 	if not usable(self.selectedAbilityId) then
-		self.selectedAbilityId = nil
+		self.selectedAbilityId = GUARD.id
 		for _, abilityId in actor.abilities do
 			if usable(abilityId) then
 				self.selectedAbilityId = abilityId
@@ -1024,21 +1039,23 @@ function BattleUI._renderActions(
 
 	self.actionTitle.Text = `Your move: {actor.name}`
 
-	-- Ability buttons, sized so all of this summon's abilities fit on one row.
+	-- Ability buttons, sized so all of this summon's abilities and Guard fit on one row.
 	if self.abilityButtonsFor ~= actor.id then
 		for _, button in self.abilityButtons do
 			button:Destroy()
 		end
 		table.clear(self.abilityButtons)
+		local choices = table.clone(actor.abilities)
+		table.insert(choices, GUARD.id)
 		local rowWidth = ACTION_PANEL_WIDTH - 2 * ACTION_PANEL_PADDING
-		local count = math.max(1, #actor.abilities)
-		local width = math.floor((rowWidth - 8 * (count - 1)) / count)
-		for index, abilityId in actor.abilities do
+		local width = math.floor((rowWidth - 8 * (#choices - 1)) / #choices)
+		for index, abilityId in choices do
 			local ability = Abilities[abilityId]
 			if ability == nil then
 				continue
 			end
-			local button = newButton(self.abilityRow, `{ability.name}\n{ability.manaCost} Mana`, UDim2.fromOffset(width, 44))
+			local cost = if ability.manaCost > 0 then `{ability.manaCost} Mana` else "Free"
+			local button = newButton(self.abilityRow, `{ability.name}\n{cost}`, UDim2.fromOffset(width, 44))
 			button.Name = abilityId
 			button.TextSize = 15
 			button.LayoutOrder = index
@@ -1063,6 +1080,7 @@ function BattleUI._renderActions(
 	self.abilityHint.Text = if selected == nil
 		then ""
 		elseif selected.kind == "Attack" then `{selected.damageType}: {selected.description}`
+		elseif selected.kind == "Guard" then describeGuard()
 		else selected.description
 
 	-- Target picker: only the summons the selected ability can target.
@@ -1087,6 +1105,7 @@ function BattleUI._renderActions(
 	local verb = if selected == nil or selected.kind == "Attack"
 		then "ATTACK!"
 		elseif selected.kind == "Heal" then "HEAL!"
+		elseif selected.kind == "Guard" then "GUARD!"
 		else "USE!"
 	self.attackButton.Text = if self.submittedTurn then "Sending..." else verb
 	styleButton(self.attackButton, if canAct then "attack" else "disabled")
@@ -1101,7 +1120,7 @@ function BattleUI._submitAttack(self: BattleUI)
 	end
 	-- Optimistic "Sending..." until the server answers; the server's result is what counts.
 	self.submittedTurn = battle.turnNumber
-	self.callbacks.onAttack(abilityId, targetId)
+	self.callbacks.onAction(abilityId, targetId)
 	self:_rerender()
 end
 
