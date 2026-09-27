@@ -241,7 +241,8 @@ local function showPopup(block: Block, text: string, color: Color3, startHeight:
 end
 
 -- Plays what an action did: an attacker lunges at its target and hits make the target recoil,
--- then every target gets a popup (damage, CRIT, MISS, an ailment, healing, or the status gained).
+-- then every target gets a popup (damage, CRIT, MISS, an ailment, Mana a guard won back, healing,
+-- GUARD, or the status gained).
 function BattleView._playAction(self: BattleView, action: BattleTypes.ActionRecord)
 	local actor = self.blocks[action.actorId]
 	local ability = Abilities[action.abilityId]
@@ -292,8 +293,13 @@ function BattleView._playAction(self: BattleView, action: BattleTypes.ActionReco
 					showPopup(target, `{if def then def.name else inflicted}!`, BattleTheme.Danger, 1.5)
 				end
 			end
+			if result.manaGained > 0 then
+				showPopup(target, `+{result.manaGained} Mana`, BattleTheme.ManaBar, 3)
+			end
 		elseif ability.kind == "Heal" then
 			showPopup(target, `+{result.healed}`, BattleTheme.HealthBar, 0)
+		elseif ability.kind == "Guard" then
+			showPopup(target, "GUARD", BattleTheme.ManaBar, 0)
 		else
 			local applied = result.applied
 			local def = if applied then StatusEffects[applied] else nil

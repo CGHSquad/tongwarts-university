@@ -46,6 +46,9 @@ local CombatConfig = {
 	-- to MaxDamageReduction. Endurance 10 blocks 20%.
 	DamageReductionPerEndurance = 0.02,
 	MaxDamageReduction = 0.6,
+	-- Statuses like Windbreak's Guarded and Guard's Bracing cut damage further, multiplying with
+	-- Endurance rather than adding to it. Whatever stacks, the total never blocks more than this.
+	MaxTotalDamageReduction = 0.75,
 
 	-- Accuracy vs evasion, both from Agility: every attack rolls to hit.
 	-- hit chance = BaseHitChance + (attacker Agility - target Agility) * HitChancePerAgility,
@@ -66,6 +69,15 @@ local CombatConfig = {
 	-- kept between 0 and MaxAilmentChance.
 	AilmentChancePerLuck = 0.02,
 	MaxAilmentChance = 0.9,
+
+	-- Guard (GDD Step 6, "Guard — a universal defensive action"): any summon can spend its turn
+	-- guarding instead of using an ability. Free, no target; it braces until its own next turn.
+	-- While bracing it:
+	GuardDamageReduction = 0.3, -- takes this much less damage, multiplied with Endurance's cut:
+	-- a maxed-Endurance tank (60%) guarding blocks 1 - 0.4 * 0.7 = 72% in total
+	GuardAilmentChanceMultiplier = 0.5, -- ailments are this much as likely to land on it
+	GuardManaBonus = 6, -- paid once, only if something actually attacks it before its next turn
+	-- (critical hits against a guarding summon are always blocked)
 
 	-- How many combat log lines clients receive.
 	LogLinesShown = 6,

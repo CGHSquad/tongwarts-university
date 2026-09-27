@@ -251,7 +251,8 @@ function BattleDirector._beginNextTurn(self: BattleDirector)
 
 	if session.phase ~= "input" then
 		self:_afterTurn() -- an ailment cost it the turn
-	elseif not session:canAffordAnyAbility(actor) then
+	elseif actor.ownerUserId == nil and not session:canAffordAnyAbility(actor) then
+		-- Only enemies get here: players can always Guard, which is free. The AI doesn't guard.
 		session:passTurn("NoMana")
 		self:_afterTurn()
 	elseif actor.ownerUserId == nil then

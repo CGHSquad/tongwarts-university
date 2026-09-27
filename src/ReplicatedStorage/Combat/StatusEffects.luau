@@ -8,6 +8,8 @@
 	summon already has refreshes it rather than stacking.
 ]]
 
+local CombatConfig = require(script.Parent:WaitForChild("CombatConfig"))
+
 export type StatusKind =
 	"Ailment" -- harmful: Luck resists it, and cleansing removes it
 	| "Buff"
@@ -21,6 +23,9 @@ export type StatusDef = {
 	damageTakenMultiplier: number?, -- incoming damage is multiplied by this
 	agilityBonus: number?, -- extra Agility for accuracy and evasion (never re-sorts turn order)
 	drawsAttacks: boolean?, -- enemies must target this summon
+	blocksCriticals: boolean?, -- attacks against this summon can't be critical hits
+	ailmentChanceMultiplier: number?, -- ailments' chance to land on this summon is multiplied by this
+	manaWhenAttacked: number?, -- Mana it gains, once, the first time it's attacked while this lasts
 }
 
 local StatusEffects: { [string]: StatusDef } = {
@@ -55,6 +60,19 @@ local StatusEffects: { [string]: StatusDef } = {
 		kind = "Buff",
 		description = "more accurate and harder to hit",
 		agilityBonus = 4,
+	},
+
+	-- From the universal Guard action. Separate from Windbreak's Guarded, so both can be up at
+	-- once. Its numbers live in CombatConfig with the rest of Guard's.
+	Bracing = {
+		id = "Bracing",
+		name = "Bracing",
+		kind = "Buff",
+		description = "guarding: less damage, no critical hits, resists ailments",
+		damageTakenMultiplier = 1 - CombatConfig.GuardDamageReduction,
+		blocksCriticals = true,
+		ailmentChanceMultiplier = CombatConfig.GuardAilmentChanceMultiplier,
+		manaWhenAttacked = CombatConfig.GuardManaBonus,
 	},
 }
 
