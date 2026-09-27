@@ -20,7 +20,8 @@
 	evasion, and Luck drives critical hits and ailments. The numbers are all in CombatConfig.
 
 	Besides its own abilities, every summon can Guard (GDD Step 6): free, no target, and it braces
-	until its own next turn. See _guard and _attack.
+	until its own next turn. See _guard and _attack. Every player's party member can also Attack,
+	their character's own free swing ("The player character on the field"); see canUse.
 
 	A fight can open with a bonus turn for one side, depending on how the overworld encounter
 	began (GDD Step 6's initiativeBonus): everyone on that side acts once, in initiative order,
@@ -437,10 +438,16 @@ function BattleSession.canAffordAnyAbility(self: BattleSession, participant: Par
 	return false
 end
 
--- Whether this participant may use the ability: one of its own, or Guard, which every summon has.
+-- Whether this participant may use the ability: one of its own, or a universal one it qualifies
+-- for (Guard for every summon, Attack for every player's party member; see Abilities).
 function BattleSession.canUse(participant: Participant, abilityId: string): boolean
 	local ability = Abilities[abilityId]
-	return ability ~= nil and (ability.kind == "Guard" or table.find(participant.abilities, abilityId) ~= nil)
+	if ability == nil then
+		return false
+	elseif ability.universal == "Everyone" or (ability.universal == "Party" and participant.side == "Party") then
+		return true
+	end
+	return table.find(participant.abilities, abilityId) ~= nil
 end
 
 function BattleSession.getActiveOpponents(self: BattleSession, participant: Participant): { Participant }

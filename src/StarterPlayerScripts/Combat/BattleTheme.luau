@@ -9,6 +9,10 @@ local BattleTheme = {
 	PartyColors = { Color3.fromRGB(70, 150, 255), Color3.fromRGB(90, 210, 130) },
 	EnemyColors = { Color3.fromRGB(235, 85, 75), Color3.fromRGB(245, 165, 60) },
 	KnockedOut = Color3.fromRGB(95, 95, 100),
+	-- The blocky stand-in for a player's character (when their avatar can't be shown): shirt in
+	-- the slot's color, plus these.
+	Skin = Color3.fromRGB(245, 205, 160),
+	Legs = Color3.fromRGB(55, 60, 80),
 
 	Panel = Color3.fromRGB(22, 24, 32),
 	PanelTransparency = 0.12,

@@ -1,14 +1,24 @@
 --!strict
 --[[
-	BattleView — the 3D side of the prototype: one colored block per summon, an outline on whoever
-	is acting and on your chosen target, a small hit effect, and a fixed battle camera.
+	BattleView — the 3D side of the prototype: the combatants on a little stage, an outline on
+	whoever is acting and on your chosen target, a small hit effect, and a fixed battle camera.
 
-	Everything here exists only on this client and is redrawn from server snapshots: the blocks are
-	a picture of the BattleSession, not the real thing. Swapping them for real summon models later
-	won't touch any combat code.
+	Who you see (GDD Step 6, "The player character on the field"):
+		party    each player's own character stands in its spot and does its own moves: Attack and
+		         Guard (and Items, later). Its summon, a colored block, flashes in only while it uses
+		         one of its own abilities (Strike, Gale Clap, Sap Mend, ...), then the character is
+		         back.
+		enemies  just their creature, a block: they have no character/summon split.
+	The character is a copy of that player's avatar, or a blocky stand-in when this client can't see
+	their avatar. Stats, HP and Mana all still belong to the summon; this is only how a turn looks.
+
+	Everything here exists only on this client and is redrawn from server snapshots: it's a picture
+	of the BattleSession, not the real thing. Swapping in real summon models later won't touch any
+	combat code.
 ]]
 
 local Debris = game:GetService("Debris")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
@@ -30,12 +40,24 @@ local STAGE_FLOOR_SIZE = Vector3.new(80, 1, 60)
 local BLOCK_SIZE = Vector3.new(5, 5, 5)
 local CAMERA_POSITION = STAGE_CENTER + Vector3.new(0, 20, 40)
 local CAMERA_FOCUS = STAGE_CENTER + Vector3.new(0, 3, 0)
+local SUMMON_FLASH_SECONDS = 1.2 -- how long a summon stays out to use one of its abilities
 
-type Block = {
-	part: Part,
-	home: CFrame,
+type Showing = "Character" | "Summon"
+
+-- One combatant's spot on the stage. Its folder (named after the participant) holds whichever model
+-- is showing, named "Character" or "Summon", plus the Spot that carries its nameplate and popups.
+type Figure = {
+	folder: Folder,
+	home: CFrame, -- the block's place, facing the other side
+	spot: Part, -- invisible, at home
+	summon: Part, -- the summon's block (for an enemy, its creature)
+	character: Model?, -- party members: the player's character
+	characterRoot: BasePart?,
+	characterHome: CFrame?, -- where the character's root stands
 	highlight: Highlight,
 	hpLabel: TextLabel,
+	showing: Showing,
+	flashes: number, -- bumped by every summon flash-in, so only the latest one swaps back
 }
 
 local BattleView = {}
@@ -43,7 +65,7 @@ BattleView.__index = BattleView
 
 type ViewFields = {
 	folder: Folder?,
-	blocks: { [string]: Block },
+	figures: { [string]: Figure },
 	battle: BattleState?,
 	lastActionSeen: number,
 	targetId: string?,
@@ -53,7 +75,7 @@ type ViewFields = {
 
 export type BattleView = typeof(setmetatable({} :: ViewFields, BattleView))
 
--- Slot 2 stands further out and nearer the camera so the two blocks on a side don't overlap.
+-- Slot 2 stands further out and nearer the camera so the two on a side don't overlap.
 local function slotCFrame(side: string, slot: number): CFrame
 	local direction = if side == "Party" then -1 else 1
 	local position = STAGE_CENTER + Vector3.new(direction * (9 + (slot - 1) * 5), BLOCK_SIZE.Y / 2, (slot - 1.5) * 10)
@@ -73,48 +95,236 @@ local function newBillboardLabel(parent: Instance, size: UDim2, position: UDim2,
 	return label
 end
 
-local function createBlock(participant: ParticipantState, parent: Instance): Block
-	local home = slotCFrame(participant.side, participant.slot)
-
+local function stagePart(name: string, size: Vector3): Part
 	local part = Instance.new("Part")
-	part.Name = participant.id
-	part.Size = BLOCK_SIZE
-	part.CFrame = home
+	part.Name = name
+	part.Size = size
 	part.Anchored = true
 	part.CanCollide = false
 	part.CanTouch = false
 	part.CanQuery = false
 	part.Material = Enum.Material.SmoothPlastic
-	part.Color = BattleTheme.colorFor(participant.side, participant.slot)
+	return part
+end
 
-	local highlight = Instance.new("Highlight")
-	highlight.Adornee = part
-	highlight.DepthMode = Enum.HighlightDepthMode.Occluded
-	highlight.OutlineTransparency = 0
-	highlight.Enabled = false
-	highlight.Parent = part
+--[[ The player's character ]]
+
+-- A copy of a player's avatar to stand on the stage, or nil if this client can't see it (it hasn't
+-- loaded, or it's too far away to have streamed in) or it's dead (in pieces until it respawns).
+local function copyAvatar(userId: number?): Model?
+	local player = if userId then Players:GetPlayerByUserId(userId) else nil
+	local character = if player then player.Character else nil
+	if character == nil or character:FindFirstChild("HumanoidRootPart") == nil then
+		return nil
+	end
+	local living = character:FindFirstChildOfClass("Humanoid")
+	if living and living.Health <= 0 then
+		return nil
+	end
+	local archivable = character.Archivable
+	character.Archivable = true
+	local copy = character:Clone()
+	character.Archivable = archivable
+	if copy == nil then
+		return nil
+	end
+
+	for _, descendant in copy:GetDescendants() do
+		if descendant:IsA("BaseScript") or descendant:IsA("ForceField") then
+			-- No Animate or Health scripts (this copy only poses and lunges), and no spawn shield,
+			-- which would never wear off the copy.
+			descendant:Destroy()
+		elseif descendant:IsA("BasePart") then
+			descendant.Anchored = false -- held by its joints to the root, which is anchored below
+			descendant.CanCollide = false
+			descendant.CanTouch = false
+			descendant.CanQuery = false
+		end
+	end
+	local humanoid = copy:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None -- the stage has its own nameplate
+		humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+	end
+	return copy
+end
+
+type Limb = { name: string, size: Vector3, offset: Vector3, color: Color3 }
+
+-- A blocky figure standing in for a player's character, in its slot's color.
+local function buildStandIn(color: Color3): Model
+	local model = Instance.new("Model")
+	local root = stagePart("HumanoidRootPart", Vector3.new(2, 2, 1))
+	root.Transparency = 1
+	root.CFrame = CFrame.new()
+	root.Parent = model
+	-- Built around the origin and welded to the root, so moving the root moves the whole figure.
+	local limbs: { Limb } = {
+		{ name = "Torso", size = Vector3.new(2, 2, 1), offset = Vector3.new(0, 0, 0), color = color },
+		{ name = "Head", size = Vector3.new(1.2, 1.2, 1.2), offset = Vector3.new(0, 1.6, 0), color = BattleTheme.Skin },
+		{ name = "Left Arm", size = Vector3.new(1, 2, 1), offset = Vector3.new(-1.5, 0, 0), color = color },
+		{ name = "Right Arm", size = Vector3.new(1, 2, 1), offset = Vector3.new(1.5, 0, 0), color = color },
+		{ name = "Left Leg", size = Vector3.new(1, 2, 1), offset = Vector3.new(-0.5, -2, 0), color = BattleTheme.Legs },
+		{ name = "Right Leg", size = Vector3.new(1, 2, 1), offset = Vector3.new(0.5, -2, 0), color = BattleTheme.Legs },
+	}
+	for _, limb in limbs do
+		local part = stagePart(limb.name, limb.size)
+		part.Anchored = false
+		part.CFrame = CFrame.new(limb.offset)
+		part.Color = limb.color
+		part.Parent = model
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = root
+		weld.Part1 = part
+		weld.Parent = part
+	end
+	model.PrimaryPart = root
+	return model
+end
+
+-- How high a character's root stands off the floor.
+local function rootHeight(model: Model, root: BasePart): number
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.RigType == Enum.HumanoidRigType.R15 then
+		return humanoid.HipHeight + root.Size.Y / 2
+	end
+	return 3 -- R6 avatars and the stand-in: 2-stud legs under a 2-stud torso
+end
+
+--[[ Figures ]]
+
+local function createFigure(participant: ParticipantState, parent: Instance): Figure
+	local home = slotCFrame(participant.side, participant.slot)
+	local folder = Instance.new("Folder")
+	folder.Name = participant.id
+
+	local spot = stagePart("Spot", Vector3.new(1, 1, 1))
+	spot.CFrame = home
+	spot.Transparency = 1
+	spot.Parent = folder
 
 	local nameplate = Instance.new("BillboardGui")
 	nameplate.Name = "Nameplate"
-	nameplate.Adornee = part
+	nameplate.Adornee = spot
 	nameplate.Size = UDim2.fromOffset(180, 44)
 	nameplate.StudsOffset = Vector3.new(0, BLOCK_SIZE.Y / 2 + 1.8, 0)
 	nameplate.AlwaysOnTop = true
 	nameplate.LightInfluence = 0
-	nameplate.Parent = part
-
+	nameplate.Parent = spot
 	local nameLabel = newBillboardLabel(nameplate, UDim2.fromScale(1, 0.55), UDim2.fromScale(0, 0), BattleTheme.FontBold)
 	nameLabel.Text = participant.name
 	local hpLabel = newBillboardLabel(nameplate, UDim2.fromScale(1, 0.45), UDim2.fromScale(0, 0.55), BattleTheme.Font)
 
-	part.Parent = parent
-	return { part = part, home = home, highlight = highlight, hpLabel = hpLabel }
+	local summon = stagePart("Summon", BLOCK_SIZE)
+	summon.CFrame = home
+	summon.Color = BattleTheme.colorFor(participant.side, participant.slot)
+
+	local highlight = Instance.new("Highlight")
+	highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+	highlight.OutlineTransparency = 0
+	highlight.Enabled = false
+	highlight.Parent = folder
+
+	local figure: Figure = {
+		folder = folder,
+		home = home,
+		spot = spot,
+		summon = summon,
+		character = nil,
+		characterRoot = nil,
+		characterHome = nil,
+		highlight = highlight,
+		hpLabel = hpLabel,
+		showing = "Summon",
+		flashes = 0,
+	}
+
+	-- A player's party member is their character on the field, with its summon out of sight.
+	local shown: Instance = summon
+	if participant.side == "Party" then
+		local character = copyAvatar(participant.ownerUserId) or buildStandIn(summon.Color)
+		local root = character:FindFirstChild("HumanoidRootPart") :: BasePart
+		character.Name = "Character"
+		local floor = home.Position - Vector3.new(0, BLOCK_SIZE.Y / 2, 0)
+		local characterHome = home.Rotation + floor + Vector3.new(0, rootHeight(character, root), 0)
+		-- Move every part into place (as Model:PivotTo would): until it's on the stage, its joints
+		-- won't carry the rest along with the root. After that, moving the anchored root is enough.
+		local shift = characterHome * root.CFrame:Inverse()
+		for _, descendant in character:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				descendant.CFrame = shift * descendant.CFrame
+			end
+		end
+		root.Anchored = true
+		figure.character = character
+		figure.characterRoot = root
+		figure.characterHome = characterHome
+		figure.showing = "Character"
+		shown = character
+	end
+
+	shown.Parent = folder
+	highlight.Adornee = shown
+	folder.Parent = parent
+	return figure
 end
+
+-- Shows the character or the summon in a figure's spot (enemies only ever show their summon).
+local function show(figure: Figure, which: Showing)
+	local character = figure.character
+	if character == nil then
+		return
+	end
+	figure.showing = which
+	figure.summon.CFrame = figure.home
+	local root, characterHome = figure.characterRoot, figure.characterHome
+	if root and characterHome then
+		root.CFrame = characterHome
+	end
+	character.Parent = if which == "Character" then figure.folder else nil
+	figure.summon.Parent = if which == "Summon" then figure.folder else nil
+	figure.highlight.Adornee = if which == "Character" then character else figure.summon
+end
+
+-- Moves whatever is showing in a figure's spot a little way and straight back: a lunge or a recoil.
+local function nudge(figure: Figure, offset: Vector3, seconds: number, delaySeconds: number)
+	local info = TweenInfo.new(seconds, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true, delaySeconds)
+	local root, characterHome = figure.characterRoot, figure.characterHome
+	if figure.showing == "Character" and root and characterHome then
+		root.CFrame = characterHome
+		TweenService:Create(root, info, { CFrame = characterHome + offset }):Play()
+	else
+		figure.summon.CFrame = figure.home
+		TweenService:Create(figure.summon, info, { CFrame = figure.home + offset }):Play()
+	end
+end
+
+-- A word or number that floats up off a spot and fades: damage, MISS, healing, a status.
+local function showPopup(figure: Figure, text: string, color: Color3, startHeight: number)
+	local popup = Instance.new("BillboardGui")
+	popup.Name = "Popup"
+	popup.Adornee = figure.spot
+	popup.Size = UDim2.fromOffset(160, 40)
+	popup.StudsOffset = Vector3.new(0, startHeight, 0)
+	popup.AlwaysOnTop = true
+	popup.LightInfluence = 0
+	local label = newBillboardLabel(popup, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), BattleTheme.FontHeavy)
+	label.Text = text
+	label.TextColor3 = color
+	popup.Parent = figure.spot
+
+	local rise = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + 3.5, 0) }):Play()
+	TweenService:Create(label, rise, { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
+	Debris:AddItem(popup, 1)
+end
+
+--[[ BattleView ]]
 
 function BattleView.new(): BattleView
 	local fields: ViewFields = {
 		folder = nil,
-		blocks = {},
+		figures = {},
 		battle = nil,
 		lastActionSeen = 0,
 		targetId = nil,
@@ -138,12 +348,12 @@ function BattleView.render(self: BattleView, battle: BattleState?)
 		self:_build(battle)
 	end
 	self:_setBattleCamera(true)
-	self:_refreshBlocks()
+	self:_refreshFigures()
 
 	local action = battle.lastAction
 	if action ~= nil and action.sequence > self.lastActionSeen then
 		self.lastActionSeen = action.sequence
-		self:_playAction(action)
+		self:_playAction(battle, action)
 	end
 end
 
@@ -155,26 +365,20 @@ function BattleView.setTarget(self: BattleView, targetId: string?, friendly: boo
 	end
 	self.targetId = targetId
 	self.targetFriendly = friendly
-	self:_refreshBlocks()
+	self:_refreshFigures()
 end
 
 function BattleView._build(self: BattleView, battle: BattleState)
 	self:_clear()
 	local folder = Instance.new("Folder")
 	folder.Name = "BattleStage"
-	local floor = Instance.new("Part")
-	floor.Name = "Floor"
-	floor.Size = STAGE_FLOOR_SIZE
+	local floor = stagePart("Floor", STAGE_FLOOR_SIZE)
 	floor.CFrame = CFrame.new(STAGE_CENTER - Vector3.new(0, STAGE_FLOOR_SIZE.Y / 2, 0))
-	floor.Anchored = true
-	floor.CanCollide = false
-	floor.CanTouch = false
-	floor.CanQuery = false
 	floor.Material = Enum.Material.Grass
 	floor.Color = Color3.fromRGB(92, 115, 77)
 	floor.Parent = folder
 	for _, participant in battle.participants do
-		self.blocks[participant.id] = createBlock(participant, folder)
+		self.figures[participant.id] = createFigure(participant, folder)
 	end
 	folder.Parent = Workspace
 	self.folder = folder
@@ -183,88 +387,108 @@ function BattleView._build(self: BattleView, battle: BattleState)
 end
 
 function BattleView._clear(self: BattleView)
+	for _, figure in self.figures do
+		figure.flashes += 1 -- any pending swap back is moot now
+		figure.summon:Destroy()
+		if figure.character then
+			figure.character:Destroy()
+		end
+	end
+	table.clear(self.figures)
 	if self.folder then
 		self.folder:Destroy()
 		self.folder = nil
 	end
-	table.clear(self.blocks)
 end
 
-function BattleView._refreshBlocks(self: BattleView)
+function BattleView._refreshFigures(self: BattleView)
 	local battle = self.battle
 	if battle == nil then
 		return
 	end
 
 	for _, participant in battle.participants do
-		local block = self.blocks[participant.id]
-		if block == nil then
+		local figure = self.figures[participant.id]
+		if figure == nil then
 			continue
 		end
 
+		local fade = 0
 		if participant.status == "KnockedOut" then
-			block.part.Color = BattleTheme.KnockedOut
-			block.part.Transparency = 0.35
-			block.hpLabel.Text = "Knocked out"
+			figure.summon.Color = BattleTheme.KnockedOut
+			fade = 0.35
+			figure.hpLabel.Text = "Knocked out"
 		elseif participant.status == "Left" then
-			block.part.Color = BattleTheme.colorFor(participant.side, participant.slot)
-			block.part.Transparency = 0.75
-			block.hpLabel.Text = "Left the battle"
+			figure.summon.Color = BattleTheme.colorFor(participant.side, participant.slot)
+			fade = 0.75
+			figure.hpLabel.Text = "Left the battle"
 		else
-			block.part.Color = BattleTheme.colorFor(participant.side, participant.slot)
-			block.part.Transparency = 0
-			block.hpLabel.Text = `HP {participant.hp}/{participant.maxHp}`
+			figure.summon.Color = BattleTheme.colorFor(participant.side, participant.slot)
+			figure.hpLabel.Text = `HP {participant.hp}/{participant.maxHp}`
+		end
+		figure.summon.Transparency = fade
+		local character = figure.character
+		if character then
+			-- LocalTransparencyModifier keeps parts that are meant to be invisible (the root) invisible.
+			for _, descendant in character:GetDescendants() do
+				if descendant:IsA("BasePart") then
+					descendant.LocalTransparencyModifier = fade
+				elseif descendant:IsA("Decal") then
+					descendant.LocalTransparencyModifier = fade
+				end
+			end
 		end
 
 		local acting = battle.phase == "input" and battle.currentActorId == participant.id
 		if acting then
-			block.highlight.OutlineColor = BattleTheme.Accent
-			block.highlight.FillTransparency = 1
-			block.highlight.Enabled = true
+			figure.highlight.OutlineColor = BattleTheme.Accent
+			figure.highlight.FillTransparency = 1
+			figure.highlight.Enabled = true
 		elseif self.targetId == participant.id then
 			local color = if self.targetFriendly then BattleTheme.HealthBar else BattleTheme.Danger
-			block.highlight.OutlineColor = color
-			block.highlight.FillColor = color
-			block.highlight.FillTransparency = 0.6
-			block.highlight.Enabled = true
+			figure.highlight.OutlineColor = color
+			figure.highlight.FillColor = color
+			figure.highlight.FillTransparency = 0.6
+			figure.highlight.Enabled = true
 		else
-			block.highlight.Enabled = false
+			figure.highlight.Enabled = false
 		end
 	end
 end
 
--- A word or number that floats up off a block and fades: damage, MISS, healing, a status.
-local function showPopup(block: Block, text: string, color: Color3, startHeight: number)
-	local popup = Instance.new("BillboardGui")
-	popup.Name = "Popup"
-	popup.Adornee = block.part
-	popup.Size = UDim2.fromOffset(160, 40)
-	popup.StudsOffset = Vector3.new(0, startHeight, 0)
-	popup.AlwaysOnTop = true
-	popup.LightInfluence = 0
-	local label = newBillboardLabel(popup, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), BattleTheme.FontHeavy)
-	label.Text = text
-	label.TextColor3 = color
-	popup.Parent = block.part
-
-	local rise = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + 3.5, 0) }):Play()
-	TweenService:Create(label, rise, { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
-	Debris:AddItem(popup, 1)
+-- A party member's summon comes out to use one of its own abilities, then the character is back.
+function BattleView._flashSummon(self: BattleView, figure: Figure)
+	figure.flashes += 1
+	local flash = figure.flashes
+	show(figure, "Summon")
+	task.delay(SUMMON_FLASH_SECONDS, function()
+		if figure.flashes == flash then
+			show(figure, "Character")
+		end
+	end)
 end
 
--- Plays what an action did: an attacker lunges at its target and hits make the target recoil,
--- then every target gets a popup (damage, CRIT, MISS, an ailment, Mana a guard won back, healing,
--- GUARD, or the status gained).
-function BattleView._playAction(self: BattleView, action: BattleTypes.ActionRecord)
-	local actor = self.blocks[action.actorId]
+-- Plays what an action did: a party member's summon flashes in if it's the summon's own ability,
+-- the attacker lunges at its target and hits make the target recoil, then every target gets a popup
+-- (damage, CRIT, MISS, an ailment, Mana a guard won back, healing, GUARD, or the status gained).
+function BattleView._playAction(self: BattleView, battle: BattleState, action: BattleTypes.ActionRecord)
+	local actor = self.figures[action.actorId]
 	local ability = Abilities[action.abilityId]
 	if actor == nil or ability == nil then
 		return
 	end
 
+	-- Attack and Guard are the character's own moves; anything in the summon's list brings it out.
+	for _, participant in battle.participants do
+		if participant.id == action.actorId and participant.side == "Party" then
+			if table.find(participant.abilities, ability.id) ~= nil then
+				self:_flashSummon(actor)
+			end
+		end
+	end
+
 	for index, result in action.results do
-		local target = self.blocks[result.targetId]
+		local target = self.figures[result.targetId]
 		if target == nil then
 			continue
 		end
@@ -272,20 +496,10 @@ function BattleView._playAction(self: BattleView, action: BattleTypes.ActionReco
 		if ability.kind == "Attack" and target ~= actor then
 			local toward = (target.home.Position - actor.home.Position).Unit
 			if index == 1 then
-				actor.part.CFrame = actor.home
-				TweenService:Create(
-					actor.part,
-					TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true),
-					{ CFrame = actor.home + toward * 4 }
-				):Play()
+				nudge(actor, toward * 4, 0.15, 0)
 			end
 			if result.hit then
-				target.part.CFrame = target.home
-				TweenService:Create(
-					target.part,
-					TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, true, 0.12),
-					{ CFrame = target.home + toward * 1.5 }
-				):Play()
+				nudge(target, toward * 1.5, 0.1, 0.12)
 			end
 		end
 

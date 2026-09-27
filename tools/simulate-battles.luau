@@ -7,11 +7,12 @@
 		lune run tools/simulate-battles 10000 7      -- battles per party, random seed
 
 	Four play styles for the party:
-		careless   picks any affordable ability (or Guard) and any legal target, like mashing buttons
+		careless   picks any affordable ability (or the character's Attack or Guard) and any legal
+		           target, like mashing buttons
 		sensible   heals anyone under half Health, keeps its buffs up (only taunts while healthy),
 		           guards in the one spot where that pays (a hurt healer that's being attacked and
 		           can't afford its heal, see shouldGuard), otherwise hits the weakest enemy with its
-		           hardest-hitting attack
+		           hardest-hitting attack, the character's own free Attack included
 		no Guard   sensible, but never guards: what Guard adds to sensible play
 		turtle     sensible, but guards whenever its Mana isn't full, then spends it on its biggest
 		           attack: the "guard to max Mana, then alpha-strike" pattern Guard mustn't reward
@@ -129,6 +130,7 @@ local rng = {
 --[[ Party play styles ]]
 
 local GUARD = Abilities.Guard
+local ATTACK = Abilities.Attack -- the player character's own free swing (GDD Step 6)
 
 local function hasStatus(participant, statusId: string): boolean
 	for _, status in participant.statuses do
@@ -162,7 +164,8 @@ local function legalTargets(session, actor, ability)
 	return { actor } -- no pick needed
 end
 
--- Its own abilities it can afford right now. Guard is on top of these, free.
+-- Its own abilities it can afford right now. The character's Attack and Guard are on top of these,
+-- free.
 local function affordable(actor)
 	local list = {}
 	for _, abilityId in actor.abilities do
@@ -176,6 +179,7 @@ end
 
 local function careless(session, actor): (string, string)
 	local options = affordable(actor)
+	table.insert(options, ATTACK)
 	table.insert(options, GUARD)
 	local ability = options[math.random(#options)]
 	local targets = legalTargets(session, actor, ability)
@@ -211,19 +215,19 @@ local function support(session, actor): (string?, string?)
 	return nil, nil
 end
 
--- The hardest-hitting attack it can afford, on the weakest enemy.
+-- The hardest-hitting attack it can afford, the character's own free Attack included, on the
+-- weakest enemy.
 local function attack(session, actor): (string, string)
-	local best, bestDamage = nil, -1
-	for _, ability in affordable(actor) do
+	local options = affordable(actor)
+	table.insert(options, ATTACK)
+	local best, bestDamage = ATTACK, -1
+	for _, ability in options do
 		if ability.kind == "Attack" then
 			local damage = ability.power + actor.stats[ability.scalingStat] * ability.statRatio
 			if damage > bestDamage then
 				best, bestDamage = ability, damage
 			end
 		end
-	end
-	if best == nil then
-		return GUARD.id, actor.id -- nothing affordable to hit with
 	end
 	local target = lowest(session:getActiveOpponents(actor), function(enemy)
 		return enemy.hp
@@ -308,6 +312,7 @@ local function newMemberStats()
 		targeted = 0,
 		knockedOut = 0,
 		actions = 0,
+		attacks = 0, -- turns it used the character's own Attack
 		guards = 0,
 		guardsAttacked = 0, -- guards where something attacked it before its next turn
 		manaWon = 0, -- Mana those attacks paid back
@@ -343,7 +348,9 @@ local function record(session, tally, action, guarding)
 	if actor.side == "Party" then
 		local member = tally.members[actor.slot]
 		member.actions += 1
-		if ability.kind == "Guard" then
+		if ability.id == ATTACK.id then
+			member.attacks += 1
+		elseif ability.kind == "Guard" then
 			member.guards += 1
 			guarding[actor.slot] = true
 		end
@@ -582,6 +589,27 @@ for _, entry in results do
 				mine.manaWon / sensible.battles,
 				percent(theirs.guards, theirs.actions),
 				if theirs.guards > 0 then percent(theirs.guardsAttacked, theirs.guards) else "-"
+			)
+		)
+	end
+end
+
+print("\nAttack (the character's own free swing): share of each member's turns spent on it")
+print("  Party                              Member         careless   sensible     turtle")
+for _, entry in results do
+	for slot, summonId in entry.party do
+		local function share(styleName: string): string
+			local member = entry.tallies[styleName].members[slot]
+			return percent(member.attacks, member.actions)
+		end
+		print(
+			string.format(
+				"  %-34s %-13s %8s   %8s   %8s",
+				if slot == 1 then partyName(entry.party) else "",
+				shortName(summonId),
+				share("careless"),
+				share("sensible"),
+				share("turtle")
 			)
 		)
 	end

@@ -48,6 +48,10 @@ treat it as the current source of truth, not something to hand-edit here.
   bonus opening turn, passed to `BattleSession:rollInitiative`). Tuning and content are data in
   `ReplicatedStorage/Combat/` (`CombatConfig` holds every formula's numbers; `Abilities`,
   `Summons`, `StatusEffects` are content); `BattleTypes.luau` defines what the server sends clients.
+- On the battle stage (`StarterPlayerScripts/Combat/BattleView.luau`), each player's party member
+  is their own character; the summon flashes in only for an ability in its own list, while the
+  universal moves (`universal` in `Abilities`: `Attack` and `Guard`) are the character's. Enemies
+  are just their creature. This is presentation only: summons still own every stat, HP and Mana.
 - After changing combat numbers or rules, run `lune run tools/simulate-battles` (Lune is pinned
   in `rokit.toml`) to see win rates per party comp, what each role does, and how Guard gets used.
   "turtle" play (guard to max Mana, then alpha-strike) must keep losing to "sensible" play.

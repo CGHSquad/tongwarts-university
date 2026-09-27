@@ -3,6 +3,13 @@
 	Abilities — combat abilities as data (GDD Step 5), so new ones can be added here without
 	touching the combat loop. Every summon has the basic Strike plus its own abilities (Summons).
 
+	A few moves aren't in any summon's list because they're universal:
+		universal = "Everyone"  every summon can use it: Guard
+		universal = "Party"     every player's party member can: Attack, their character's own swing
+	On the field, a player's character performs the universal moves itself; the summon only flashes
+	in for the abilities in its own list (GDD Step 6, "The player character on the field"). Stats,
+	HP and Mana still all belong to the summon, so Attack scales with the summon's Strength.
+
 	kind
 		"Attack"  hits one enemy. Rolls to hit (Agility vs Agility), then deals
 		          power + scalingStat * statRatio, cut by the target's Endurance. Luck can make it a
@@ -10,9 +17,8 @@
 		"Heal"    restores power + scalingStat * statRatio Health to one ally. `cleanse` also removes
 		          ailments.
 		"Status"  applies a status (StatusEffects) for `turns` turns.
-		"Guard"   the universal defensive action (GDD Step 6). It's in no summon's list because
-		          every summon can use it instead of an ability: free, no target, and it braces
-		          (the Bracing status) until the summon's own next turn.
+		"Guard"   the universal defensive action (GDD Step 6): free, no target, and it braces (the
+		          Bracing status) until the summon's own next turn.
 
 	targets: what the player picks
 		"Enemy"      an enemy that's still standing
@@ -25,6 +31,7 @@
 
 export type StatName = "Strength" | "Magic" | "Endurance" | "Agility" | "Luck"
 export type Targeting = "Enemy" | "Ally" | "Self" | "AllAllies"
+export type Universal = "Everyone" | "Party" -- who has it without it being in their summon's list
 
 export type AilmentChance = {
 	status: string, -- an Ailment from StatusEffects
@@ -39,6 +46,7 @@ export type AttackAbility = {
 	description: string,
 	targets: Targeting,
 	manaCost: number,
+	universal: Universal?,
 	damageType: "Strike" | "Wind", -- melee type or element; the MVP weakness axis will key off this
 	power: number,
 	scalingStat: StatName,
@@ -54,6 +62,7 @@ export type HealAbility = {
 	description: string,
 	targets: Targeting,
 	manaCost: number,
+	universal: Universal?,
 	power: number,
 	scalingStat: StatName,
 	statRatio: number,
@@ -67,6 +76,7 @@ export type StatusAbility = {
 	description: string,
 	targets: Targeting,
 	manaCost: number,
+	universal: Universal?,
 	status: string, -- a StatusEffects entry
 	turns: number,
 }
@@ -78,6 +88,7 @@ export type GuardAbility = {
 	description: string,
 	targets: Targeting,
 	manaCost: number,
+	universal: Universal?,
 	status: string,
 	turns: number,
 }
@@ -85,7 +96,24 @@ export type GuardAbility = {
 export type Ability = AttackAbility | HealAbility | StatusAbility | GuardAbility
 
 local Abilities: { [string]: Ability } = {
-	-- Everyone's basic attack. Tung Tung School's melee type is Strike: cheap and reliable.
+	-- A player character's own basic attack (GDD Step 6, "The player character on the field"): free,
+	-- and it scales with the summon's Strength until weapons exist to change it. Weaker than a
+	-- summon's Strike, so it's for when you'd rather not spend Mana.
+	Attack = {
+		kind = "Attack",
+		id = "Attack",
+		name = "Attack",
+		description = "Your character's own swing. Free, but weaker than a summon's Strike; scales with Strength.",
+		targets = "Enemy",
+		manaCost = 0,
+		universal = "Party",
+		damageType = "Strike",
+		power = 4,
+		scalingStat = "Strength",
+		statRatio = 1,
+	},
+
+	-- Every summon's basic attack. Tung Tung School's melee type is Strike: cheap and reliable.
 	Strike = {
 		kind = "Attack",
 		id = "Strike",
@@ -186,6 +214,7 @@ local Abilities: { [string]: Ability } = {
 			.. "and some Mana back if it gets attacked.",
 		targets = "Self",
 		manaCost = 0,
+		universal = "Everyone",
 		status = "Bracing",
 		turns = 1,
 	},
