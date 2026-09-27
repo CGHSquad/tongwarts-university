@@ -44,7 +44,7 @@ Proposing four launch variants built around one recognizable base character, eac
 1. **Tung Tung Sahur (Base)** — the balanced/default variant. Even Strength/Vitality/Agility, no glaring weakness. Kit: a reliable Strike basic attack, one Wind skill (small AoE or minor push/knockback — fits a "clapping wood" motion), one light self-buff. This is the one every new player gets first, so it should read as fully viable, not a tutorial-only unit.
 2. **Tung Tung Sahur, Elder (Tank)** — higher Vitality, lower Agility. A bigger, gnarled/older-tree-styled recolor. Kit: a taunt-style ability (draws enemy targeting), a Wind-based damage-reduction or knockback-on-hit defensive skill.
 3. **Tung Tung Sahur, Sapling (Damage/Glass cannon)** — higher Strength and Agility, lower Vitality. Smaller, faster-looking recolor with more aggressive posture. Kit: a hard-hitting single-target Strike skill with a higher pip cost, lower Mana pool.
-4. **Tung Tung Sahur, Grove-Keeper (Support/Utility)** — higher Magic/Intelligence, lower Strength. Kit: a Wind-based party buff (e.g., party-wide Agility or accuracy boost — ties nicely back into the initiative system below) and a minor heal or status-cleanse.
+4. **Tung Tung Sahur, Grove-Keeper (Support/Utility)** — higher Magic, lower Strength. Kit: a Wind-based party buff (e.g., party-wide Agility or accuracy boost — ties nicely back into the initiative system below) and a minor heal or status-cleanse.
 
 All four share the same base model with palette/silhouette variation (bark color, size, posture) rather than fully unique art — keeps this achievable for a 5-person team's art budget while still giving four distinct-*feeling* summons at launch, matching the "3–4 starting summons" scope from Step 2/11.
 
@@ -69,7 +69,14 @@ You're weighing the classic Atlus stat block (Strength, Magic, Vitality, Agility
 Given the game already leans on summons (BrainRot characters) as the combat roster, the Persona-model split is the one that scales best here:
 
 - **Player character carries progression identity**: level, HP/Mana pool size, equipment slots, school affiliation, and social stats (Charisma, Guts, etc. from the Social Stats system above). The player is *who you are*.
-- **Summon/BrainRot carries combat stats**: Strength, Magic, Vitality, Agility, Intelligence, Luck live on the summoned character, since that's what's actually swinging or casting. The summon is *what you fight with*.
+- **Summon/BrainRot carries combat stats — finalized:** Strength, Magic, Endurance, Agility, Luck (the modern combined Atlus model — Magic and Intelligence merged into one stat, not kept separate). HP and Mana stay named Health and Mana (not "SP"), but scale the same way:
+  - **Strength** — physical/Strike damage
+  - **Magic** — elemental (Wind, etc.) damage and boosts max Mana
+  - **Endurance** — reduces incoming physical *and* magical damage, and is the largest factor in max Health
+  - **Agility** — turn order (the initiative roll bonus) *and* base accuracy/evasion
+  - **Luck** — critical hit rate, chance to inflict/resist status ailments, and resist/succeed on instant-kill effects; minor effect on escape success and item drops
+
+  This replaces the earlier 6-stat draft (which kept Intelligence separate) — Intelligence is gone, folded into Magic (damage) and Agility/Luck (accuracy, status). Live on the summoned character, since that's what's actually swinging or casting. The summon is *what you fight with*.
 - **The bridge between them**: player level and equipped gear scale the summon's stat ceiling (like a Persona's level being capped by the player's level in the source games), so switching summons doesn't waste your progression, but each summon still has a distinct stat spread and personality in combat.
 
 This keeps the collect/swap loop (multiple BrainRot summons) meaningful — you're not just re-skinning one character, you're changing your stat profile — while player-side progression (the thing that persists no matter which summon is active) stays legible.
