@@ -458,6 +458,10 @@ Damage/Tank/Healer/Support/Debuffer/Crowd-Control/Utility are useful *design lan
 
 **Later:** full elemental/BrainRot-type chart with multiple weaknesses per unit, team attacks (multi-player combo abilities), chain effects, ultimate abilities with charge meters. These add real depth but each multiplies QA surface area — sequence them after the MVP loop is proven fun, not before.
 
+**Affinity tier scoping — confirmed.** The MVP damage-type axis above uses three tiers: **Weak / Neutral / Resist**. The fuller SMT/Persona-style set — **Null, Repel, Absorb** — stays in the "Later" bucket, not because the idea's wrong (it's a great thematic fit) but because Repel/Absorb specifically invert or redirect damage rather than just scale it, which is exactly the kind of thing that could quietly produce a new unkillable "turtle" build (stack Endurance + a Repel/Absorb affinity against a common attack type) that `tools/simulate-battles` wasn't originally built to catch — that combination needs its own dedicated balance pass before it ships, not a casual addition on top of the MVP loop. Null is the cheapest of the three to pull forward early if wanted, since it's a flat zero rather than a redirect.
+
+**Design-ahead is fine, implementation is not:** full Weak/Neutral/Resist/Null/Repel/Absorb affinity values can be designed now in the team's content spreadsheet for every archetype/build (cheap, it's just data) — the gate is specifically on turning Null/Repel/Absorb affinities on in a live build before they've had a dedicated balance pass.
+
 ### Guard — a universal defensive action
 
 Every summon gets a **Guard** option on its turn, alongside its abilities — no Mana cost, no target. Combines Persona's Guard command with Wizard101's "pass to bank resources" idea, adapted to our Mana economy instead of pips:
