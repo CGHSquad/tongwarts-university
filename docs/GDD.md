@@ -102,6 +102,14 @@ Player level and summon level are tracked independently, but both advance from t
 - **Summon level** is per-instance and auto-growth (no manual stat allocation): each summon instance gains its own XP and levels up on its archetype's own growth curve.
 - **Player level is the gate/ceiling**, not a second stat pool. It caps how high a summon's level (and therefore its stats) can currently reach, and it's the number evolution and acquisition checks read against — **not** the summon's own level. A freshly-acquired or freshly-started archetype is bounded by the player's level the same way every other summon is.
 
+### Player-level Health/Mana floor
+
+**Confirmed:** player level grants a universal bonus to max Health and max Mana, on top of whatever the active summon's Endurance/Magic already provide — the standard "leveling up gives you a bigger bar" convention, so it needs no explanation for players. This is scoped to Health/Mana only, not the full stat block — offense (Strength/Magic damage output) stays entirely summon-owned, so an under-leveled or off-meta summon is still noticeably weaker to fight *with*, it just doesn't get you killed instantly to fight *as*.
+
+Why this over the alternative (letting Health/Mana scale only through the existing player-level ceiling on summon growth): the ceiling is invisible — it only manifests as "my summon's growth is capped," which a player has no clear way to notice or feel. A direct player-level bonus to the bars is something every player already intuitively understands from nearly every other RPG, at the cost of one extra formula to tune (a flat or scaling bonus per player level, additive to the summon's own Endurance/Magic-derived pool).
+
+**Relationship to Mentor Bond:** this is the permanent floor; Mentor Bond (the temporary, decaying stat-assist borrowed from another owned summon) is unchanged and still does its own job — it stays in as described, closing the gap faster for a specific under-leveled build rather than replacing this universal bonus.
+
 ### Stats stay fully summon-owned
 
 Confirmed (reverting an earlier considered split): all five combat stats — Strength, Magic, Endurance, Agility, Luck — live entirely on the summon, along with the HP/Mana pools. The player character carries no combat stat block of its own. This keeps every school's priority-stat identity mapped 1:1 with no asymmetry: Tungwarts → Endurance, Cappuccino Assassino → Agility, Tralalero Tralala → Strength, Ballerina Cappuccino → Magic, all expressed the same way (that school's summon roster leans its growth curve toward that stat).
