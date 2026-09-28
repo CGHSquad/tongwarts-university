@@ -65,6 +65,65 @@ All four share the same base model with palette/silhouette variation (bark color
 
 This is exactly the "second axis needed for balance" gap already flagged in the Launch School section above — acquisition is how a contrasting melee-type/element family actually enters the game post-launch.
 
+## Skill Variety, Evolution Branching, Leveling & Cards
+
+This section extends the evolution/acquisition model above and locks in the leveling architecture that everything else (evolution gates, acquisition gates, catch-up balance) hooks into.
+
+### Fortune — a skill category for Luck
+
+Luck currently has nothing to *cast* (it's crit rate + ailment infliction/resist, a passive-only stat). Rather than add a 5th element — which multiplies the melee×element type-chart math and art budget — **Fortune** is a separate skill category: status/crit-focused abilities that aren't melee or elemental at all (bleeds, stuns, debuff-stacking, execute-on-low-HP, gamble-for-bigger-effect skills). Every school can carry 1-2 Fortune skills alongside its main melee+element axis, regardless of which of the four schools it is.
+
+### Evolution branching (usage-based)
+
+Instead of a single fixed evolved form per archetype, each **summon instance** (your specific Tung Tung Sahur, not the species) tracks usage counters on its non-universal kit abilities — anything in its own ability list (Strike/elemental/Fortune skills). The character's universal actions (`Attack`, `Guard`, future `Items`) are never tracked, since they aren't part of the summon's kit at all.
+
+At the archetype's evolution level-gate, whichever tracked ability has the highest usage count decides which evolved form the instance becomes (e.g., a Wind-leaning Tung Tung Sahur (Base) evolves into a different form than a self-buff-leaning one). Every branch table has a **default fallback** for players who never clearly favor one ability, so nothing is ever blocked. This doesn't change the four independent archetype lines (Base/Elder/Sapling/Grove-Keeper each still evolve into a stronger version of themselves) — it just means "a stronger version of itself" can have two or three possible shapes depending on how it was played. Same recolor + stat-bump art cost as a single evolution path, just one branch table and one extra recolor per archetype.
+
+### Per-school subclass divergence
+
+The four-role skeleton (Balanced / Tank / Glass-Cannon / Support — Base / Elder / Sapling / Grove-Keeper for Tung Tung) is reused by every school, but **how** each role fulfills its job should differ by school identity so schools don't read as reskins of each other by school #3-4. For example, an Agility-priority school's "tank" role can be built as an evasion tank (dodge-based) rather than an Endurance-mitigation tank; a Strength-priority school's "support" role can lean armor-shred/debuff rather than healing, keeping healing as another school's actual signature. Same low art cost as the shared skeleton — the divergence is in kit design, not new models.
+
+### Tiered cross-school skill transfer
+
+Replaces the earlier open "cross-school premium" brainstorm with a concrete rule. Transferable skills split into three tiers:
+
+- **Common** — basic attacks, generic buffs. Cheap, freely transferable.
+- **Signature** — anything tied to a school's primary axis (e.g. Tung Tung's Wind knockback). **Locked, never transferable.** This is what protects "why pick this school" as the roster grows.
+- **Rare/Fortune** — status-based skills. Transferable, but pricier — the main currency sink for cross-school customization, and it reinforces Fortune as a genuine progression sink rather than a stat afterthought.
+
+### On adding a 5th school (or a 4th melee type)
+
+The real ceiling isn't elements (Fortune buys headroom there) — it's melee types. Slash/Strike/Pierce are already covered across schools #1-3. A future 5th school should double up on an existing melee type with a different element/stat pairing rather than introduce a 4th melee category; hold off on a new melee type until 3-4 schools have shipped and the grid is proven thin, matching the Step 2 "don't build past what's proven" discipline.
+
+### Leveling: player level and summon level are separate tracks
+
+Player level and summon level are tracked independently, but both advance from the same activity (combat) — they level **simultaneously**, not on a shared counter.
+
+- **Summon level** is per-instance and auto-growth (no manual stat allocation): each summon instance gains its own XP and levels up on its archetype's own growth curve.
+- **Player level is the gate/ceiling**, not a second stat pool. It caps how high a summon's level (and therefore its stats) can currently reach, and it's the number evolution and acquisition checks read against — **not** the summon's own level. A freshly-acquired or freshly-started archetype is bounded by the player's level the same way every other summon is.
+
+### Stats stay fully summon-owned
+
+Confirmed (reverting an earlier considered split): all five combat stats — Strength, Magic, Endurance, Agility, Luck — live entirely on the summon, along with the HP/Mana pools. The player character carries no combat stat block of its own. This keeps every school's priority-stat identity mapped 1:1 with no asymmetry: Tungwarts → Endurance, Cappuccino Assassino → Agility, Tralalero Tralala → Strength, Ballerina Cappuccino → Magic, all expressed the same way (that school's summon roster leans its growth curve toward that stat).
+
+### Card system
+
+A third equip layer, distinct from Gear (direct stat/damage modifiers) and from summon kit abilities (what the summon can *do*). Cards are **Persona Trait-style passive procs** — conditional triggers like "chance for next attack to double damage" — rather than flat stat sticks.
+
+- **Equip:** a card is equipped on the **player character**, not the summon, and its passive effect is **universal** — it applies no matter which summon is currently active. Confirmed: **1 card slot** to start, with **2 slots** as a possible future expansion.
+- **Acquisition:** gameplay-first — dungeon drops, rotating reward tables, and a soft in-game currency — as the core acquisition loop. Robux spend is reserved for **convenience and cosmetics only** (faster drop rates, extra inventory/loadout slots, cosmetic card skins), never for buying power directly. This avoids pay-to-win/loot-box perception, which matters for Roblox's disclosure norms around randomized paid rewards and for a younger-skewing audience.
+
+### Level cap pacing
+
+Start with a **shorter, lower level cap for MVP/testing** rather than committing to a large number (e.g. 99) up front. Treat cap increases as a **post-launch content lever** — each raise ships with new unlock bands (stat tiers, evolution/acquisition gates, card slots) — the same pattern most live-service RPGs use to keep bringing players back. The full leveling curve/formula is still to be jotted down in detail.
+
+### Catch-up mechanics for under-leveled summons
+
+Two related but distinct problems, with two different fixes:
+
+- **"Mentor Bond" (using a summon that's genuinely behind):** pick another owned summon as a mentor for an under-leveled or freshly-started archetype. The mentored summon gets a **temporary, percentage-based, decaying stat assist**, sized to the level gap and leaning toward survivability (Endurance / damage reduction) rather than offense, so it isn't crushed by current-tier content without also hitting as hard as a fully-leveled summon. The assist shrinks to zero as the summon catches up on its own growth curve — it's training wheels, not a permanent stat transplant, and it doesn't undercut the incentive to actually level the archetype.
+- **Encounter-level-sync (helping a lower-level party member/friend):** when joining content well below your own tier, the encounter (or your effective combat power within it) scales down to match that content's intended difficulty, rather than requiring the player to deliberately bench their main summon for a weak one. Keeps low-tier content fair for the lower-level player without penalizing the higher-level one.
+
 ## Combat philosophy
 
 Turn-based combat is flagged as **the** foundational pillar — explicitly not a real-time action RPG. It's meant to run on turn order, strategic decisions, team composition, and school synergy rather than reflexes. Because of that, party-based multiplayer isn't a bolt-on feature — it's a direct consequence of the combat choice: fights are built around 3-4 players filling roles like damage, healing, tank, and utility, though the doc is careful to say these roles aren't finalized or mandatory.
