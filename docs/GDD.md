@@ -462,6 +462,15 @@ Damage/Tank/Healer/Support/Debuffer/Crowd-Control/Utility are useful *design lan
 
 **Design-ahead is fine, implementation is not:** full Weak/Neutral/Resist/Null/Repel/Absorb affinity values can be designed now in the team's content spreadsheet for every archetype/build (cheap, it's just data) — the gate is specifically on turning Null/Repel/Absorb affinities on in a live build before they've had a dedicated balance pass.
 
+**Refinement, confirmed: Repel/Absorb are asymmetric between player and enemy.** Weak / Neutral / Resist / Null can be innate, static affinities on both sides (player summons and enemies/bosses alike) — that part ships as originally scoped. **Repel and Absorb are player-accessible only as a temporary, activated skill, not an innate stat:**
+
+- **Costed** — Mana and/or the turn itself, same philosophy as Guard: an active read with real opportunity cost, not a free passive.
+- **Single-category, not blanket** — the player picks one damage category (e.g. Wind) to Repel/Absorb that activation, not "immune to everything." This is what makes it a skill expression (read the incoming attack, react correctly) instead of a panic button.
+- **Short duration** — until the player's next turn, or a small fixed number of turns.
+- **Natural home: a Fortune-category skill** — fits Fortune's "gamble for bigger effect" flavor (you're betting on a correct read), and keeps it distinct from Cards (which are meant to be always-on/universal, not a per-turn activation).
+- **Enemies and bosses keep full access to permanent, innate Repel/Absorb** — this is standard SMT/Persona design (a boss nulling/absorbing your favorite element punishes blind attacking) and doesn't reintroduce the turtle-build risk, since that risk was specifically about a *player* stacking a permanent version.
+- **Dependency to plan for:** this read-and-react loop only feels fair if enemies/bosses telegraph their next move (a wind-up animation, a UI tell) — `EnemyAI.luau`'s move-choice tables would need to expose "what's coming" to the client somehow. Worth scoping as its own small system alongside this, not assumed for free.
+
 ### Guard — a universal defensive action
 
 Every summon gets a **Guard** option on its turn, alongside its abilities — no Mana cost, no target. Combines Persona's Guard command with Wizard101's "pass to bank resources" idea, adapted to our Mana economy instead of pips:
