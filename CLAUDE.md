@@ -57,3 +57,21 @@ treat it as the current source of truth, not something to hand-edit here.
   in `rokit.toml`) to see win rates per party comp, what each role does, and how Guard gets used.
   "turtle" play (guard to max Mana, then alpha-strike) must keep losing to "sensible" play.
 - All scripts are `--!strict` Luau; keep them free of type errors.
+
+## Art source assets
+
+- Raw art (meshes, rigs, animations, textures) from the team's art tool lives in
+  `art-source/`, organized to mirror `Summons.luau`'s `id` field
+  (`art-source/Summons/<id>/`, e.g. `art-source/Summons/TungTungSahur/`). These are
+  **not** Rojo-synced or runtime-usable as-is — Roblox needs meshes and animations
+  imported through Studio's 3D Importer and uploaded to get asset IDs before anything
+  in `src/` can reference them (`rbxassetid://...`). That import/upload step happens
+  in Studio, not from this repo.
+- Per summon, expect: an optimized mesh (the one to import — check for a note on
+  which file is optimized vs. a raw/unoptimized export), a rigged T-pose FBX for
+  animation, and an `Animation/` folder of clips (idle, walk/swing/attack, death, etc.
+  varies per summon). Textures sit alongside the mesh.
+- Once a mesh/animation is imported and uploaded in Studio, its asset ID belongs in
+  that summon's entry in `Summons.luau` (or a new field there) — not hardcoded into
+  `BattleView.luau` — so content stays data-driven like everything else in
+  `ReplicatedStorage/Combat/`.
