@@ -53,8 +53,7 @@ local ROW_LABEL_WIDTH = 64
 local function describeGuard(): string
 	local damage = math.round(CombatConfig.GuardDamageReduction * 100)
 	local ailments = math.round((1 - CombatConfig.GuardAilmentChanceMultiplier) * 100)
-	return `Until its next turn: {damage}% less damage, no critical hits, ailments {ailments}% less likely. `
-		.. `+{CombatConfig.GuardManaBonus} Mana if it gets attacked.`
+	return `Until its next turn: {damage}% less damage, no critical hits, ailments {ailments}% less likely.`
 end
 
 --[[ Small builders, so the layout code below stays readable ]]

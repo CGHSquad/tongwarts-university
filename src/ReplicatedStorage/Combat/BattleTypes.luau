@@ -57,7 +57,6 @@ export type ActionResult = {
 	inflicted: string?, -- ailment the hit inflicted, e.g. "Dazed"
 	applied: string?, -- status a Status ability or Guard applied, e.g. "Guarded"
 	cleansed: boolean, -- ailments removed by a heal
-	manaGained: number, -- Mana a guarding target got back for being attacked
 }
 
 export type ActionRecord = {

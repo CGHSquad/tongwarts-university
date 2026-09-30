@@ -55,7 +55,8 @@ treat it as the current source of truth, not something to hand-edit here.
   This is presentation only: summons still own every stat, HP and Mana.
 - After changing combat numbers or rules, run `lune run tools/simulate-battles` (Lune is pinned
   in `rokit.toml`) to see win rates per party comp, what each role does, and how Guard gets used.
-  "turtle" play (guard to max Mana, then alpha-strike) must keep losing to "sensible" play.
+  "turtle" play (guard whenever it's likely to be attacked, stacking Guard's damage cut) must keep
+  losing to "sensible" play. Guard gives no Mana (GDD Step 6), so sensible play currently never guards.
 - Before pushing gameplay or UI changes, run the headless tests from the repo root:
   `lune run tests/run` (about a minute; `quick` and a test-name filter are options, see
   `tests/run.luau`). They build the place with Rojo and play it on a fake Roblox

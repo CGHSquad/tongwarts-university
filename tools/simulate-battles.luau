@@ -6,17 +6,17 @@
 		lune run tools/simulate-battles              -- 2000 battles per party and play style
 		lune run tools/simulate-battles 10000 7      -- battles per party, random seed
 
-	Four play styles for the party:
+	Three play styles for the party:
 		careless   picks any affordable ability (or the character's Attack or Guard) and any legal
 		           target, like mashing buttons
 		sensible   heals anyone under half Health, keeps its buffs up (only taunts while healthy),
-		           guards in the one spot where that pays (a hurt healer that's being attacked and
-		           can't afford its heal, see shouldGuard), otherwise hits the weakest enemy with its
-		           hardest-hitting attack, the character's own free Attack included
-		no Guard   sensible, but never guards: what Guard adds to sensible play
-		turtle     sensible, but guards whenever its Mana isn't full, then spends it on its biggest
-		           attack: the "guard to max Mana, then alpha-strike" pattern Guard mustn't reward
-		           (GDD Step 6, "Guard"). If it beat sensible play, Guard would be too strong.
+		           otherwise hits the weakest enemy with its hardest-hitting attack, the character's
+		           own free Attack included. It never guards: Guard gives no Mana back (GDD Step 6),
+		           and against these enemies every guarding rule tried so far lost more than it saved
+		           (see sensible below).
+		turtle     sensible, but guards whenever the enemies are likely to come after it, stacking
+		           Guard's damage cut (with Endurance, and Windbreak's) instead of attacking. If it
+		           beat sensible play, Guard would be too strong.
 	Enemies use the game's own EnemyAI every time.
 
 	Fights open neutrally, except in the "Opening turn" table: there, sensible play is replayed
@@ -249,35 +249,12 @@ local function likelyTarget(session, actor): boolean
 	end) == actor
 end
 
--- When sensible play guards: a healer that's under half Health and can't afford its heal, while
--- it's the one the enemies are going after. It takes less damage, the bet is likely to pay, and
--- the Mana it wins back pays for next turn's heal. Everyone else does better attacking: in the
--- simulator, guarding to bank Mana for a big attack, or just to put off a knockout, costs more
--- than it saves. (Even this healer does better not guarding when the Mana bonus is set to 0.)
-local function shouldGuard(session, actor): boolean
-	if healthShare(actor) >= 0.5 then
-		return false
-	end
-	for _, abilityId in actor.abilities do
-		local ability = Abilities[abilityId]
-		if ability.kind == "Heal" and actor.mana < ability.manaCost then
-			return likelyTarget(session, actor)
-		end
-	end
-	return false
-end
-
+-- Sensible play never guards. Now that Guard is purely defensive, these rules for when to guard
+-- all lost win rate against never guarding (4000 battles per comp): a hurt healer that's being
+-- attacked and can't afford its heal (up to -2 points), a hurt member that's being attacked while a
+-- teammate can heal it next (up to -7), a hurt taunting tank (up to -12) and anyone being attacked
+-- under 35% Health (up to -37). The turn spent guarding costs more than the damage it saves.
 local function sensible(session, actor): (string, string)
-	local abilityId, targetId = support(session, actor)
-	if abilityId and targetId then
-		return abilityId, targetId
-	elseif shouldGuard(session, actor) then
-		return GUARD.id, actor.id
-	end
-	return attack(session, actor)
-end
-
-local function noGuard(session, actor): (string, string)
 	local abilityId, targetId = support(session, actor)
 	if abilityId and targetId then
 		return abilityId, targetId
@@ -289,7 +266,7 @@ local function turtle(session, actor): (string, string)
 	local abilityId, targetId = support(session, actor)
 	if abilityId and targetId then
 		return abilityId, targetId
-	elseif actor.mana < actor.maxMana then
+	elseif likelyTarget(session, actor) then
 		return GUARD.id, actor.id
 	end
 	return attack(session, actor)
@@ -297,7 +274,6 @@ end
 
 local STYLES = {
 	{ name = "careless", choose = careless },
-	{ name = "no Guard", choose = noGuard },
 	{ name = "sensible", choose = sensible },
 	{ name = "turtle", choose = turtle },
 }
@@ -315,7 +291,6 @@ local function newMemberStats()
 		attacks = 0, -- turns it used the character's own Attack
 		guards = 0,
 		guardsAttacked = 0, -- guards where something attacked it before its next turn
-		manaWon = 0, -- Mana those attacks paid back
 	}
 end
 
@@ -373,7 +348,6 @@ local function record(session, tally, action, guarding)
 				tally.enemyAttacks += 1
 				member.targeted += 1
 				member.taken += result.damage
-				member.manaWon += result.manaGained
 				if guarding[target.slot] then
 					member.guardsAttacked += 1
 					guarding[target.slot] = nil
@@ -505,7 +479,7 @@ for _, entry in results do
 	end
 end
 
-print("Win rate                              careless   no Guard   sensible     turtle   rounds (sensible)")
+print("Win rate                              careless   sensible     turtle   rounds (sensible)")
 for _, entry in results do
 	local function winRate(styleName: string): string
 		local tally = entry.tallies[styleName]
@@ -514,10 +488,9 @@ for _, entry in results do
 	local sensible = entry.tallies.sensible
 	print(
 		string.format(
-			"  %-34s %8s   %8s   %8s   %8s   %6.1f",
+			"  %-34s %8s   %8s   %8s   %6.1f",
 			partyName(entry.party),
 			winRate("careless"),
-			winRate("no Guard"),
 			winRate("sensible"),
 			winRate("turtle"),
 			sensible.rounds / sensible.battles
@@ -573,22 +546,20 @@ for _, entry in results do
 	end
 end
 
-print("\nGuard: share of each member's turns spent guarding, and how often a guard got attacked (paying Mana)")
-print("  Party                              Member         sensible   attacked   Mana/battle     turtle   attacked")
+print("\nGuard (turtle play; sensible play never guards): share of each member's turns spent guarding,")
+print("and how often a guard got attacked")
+print("  Party                              Member         guarding   attacked")
 for _, entry in results do
-	local sensible, turtle = entry.tallies.sensible, entry.tallies.turtle
+	local turtle = entry.tallies.turtle
 	for slot, summonId in entry.party do
-		local mine, theirs = sensible.members[slot], turtle.members[slot]
+		local member = turtle.members[slot]
 		print(
 			string.format(
-				"  %-34s %-13s %8s   %8s   %11.1f   %8s   %8s",
+				"  %-34s %-13s %8s   %8s",
 				if slot == 1 then partyName(entry.party) else "",
 				shortName(summonId),
-				percent(mine.guards, mine.actions),
-				if mine.guards > 0 then percent(mine.guardsAttacked, mine.guards) else "-",
-				mine.manaWon / sensible.battles,
-				percent(theirs.guards, theirs.actions),
-				if theirs.guards > 0 then percent(theirs.guardsAttacked, theirs.guards) else "-"
+				percent(member.guards, member.actions),
+				if member.guards > 0 then percent(member.guardsAttacked, member.guards) else "-"
 			)
 		)
 	end

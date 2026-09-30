@@ -127,7 +127,7 @@ function Observer.attach(sim)
 		prevHp = {},
 		prevMana = {},
 		prevTurn = nil,
-		guardUnpaid = {}, -- [id] = true while a Guard's Mana bonus hasn't paid out yet
+		guardWaiting = {}, -- [id] = true from a Guard until something attacks it or its next turn comes
 		bonusTurnTotals = {}, -- initiative totals of who acted in this battle's bonus turn, in order
 		openings = { Party = 0, Enemy = 0, None = 0 }, -- how each battle opened
 		timeouts = 0,
@@ -184,7 +184,7 @@ function Observer:check(snapshot)
 		self.battleStartTime = self.sim.now
 		self.prevHp = {}
 		self.prevMana = {}
-		self.guardUnpaid = {}
+		self.guardWaiting = {}
 		self.bonusTurnTotals = {}
 		local opening = battle.opening or "None"
 		self.openings[opening] += 1
@@ -273,7 +273,7 @@ function Observer:check(snapshot)
 		self:fail("turn number went backwards")
 	end
 	if battle.turnNumber > self.lastTurnSeen and battle.currentActorId then
-		self.guardUnpaid[battle.currentActorId] = nil -- its Guard ended as its turn began
+		self.guardWaiting[battle.currentActorId] = nil -- its Guard ended as its turn began
 	end
 	self.lastTurnSeen = battle.turnNumber
 
@@ -363,24 +363,15 @@ function Observer:check(snapshot)
 
 				if ability.kind == "Attack" then
 					self.attacks = (self.attacks or 0) + 1
-					-- Guard's Mana bonus: paid at most once per Guard, only to a guarding target that's
-					-- still standing, and it's exactly the Mana the target gained.
-					if result.manaGained < 0 or result.manaGained > self.Config.GuardManaBonus then
-						self:fail(`manaGained {result.manaGained} out of range`)
-					end
-					if result.manaGained > 0 then
-						self.manaPaid = (self.manaPaid or 0) + 1
-						if not self.guardUnpaid[target.id] or result.knockedOut then
-							self:fail(`{target.id} got Guard's Mana without a Guard waiting to pay`)
-						end
-					end
-					if self.guardUnpaid[target.id] then
+					-- Being attacked never changes the target's Mana, guarding or not: Guard is purely
+					-- defensive (GDD Step 6, "Guard's Mana bonus removed entirely").
+					if self.guardWaiting[target.id] then
 						self.guardsAttacked = (self.guardsAttacked or 0) + 1
 					end
-					self.guardUnpaid[target.id] = nil
+					self.guardWaiting[target.id] = nil
 					local before = self.prevMana[target.id]
-					if before and self.prevTurn == battle.turnNumber and target.mana ~= before + result.manaGained then
-						self:fail(`{target.id} mana {before} + {result.manaGained} ~= {target.mana}`)
+					if before and self.prevTurn == battle.turnNumber and target.mana ~= before then
+						self:fail(`attacking {target.id} changed its Mana: {before} -> {target.mana}`)
 					end
 					if not result.hit then
 						self.misses = (self.misses or 0) + 1
@@ -452,7 +443,7 @@ function Observer:check(snapshot)
 				else
 					if ability.kind == "Guard" then
 						self.guards = (self.guards or 0) + 1
-						self.guardUnpaid[target.id] = true
+						self.guardWaiting[target.id] = true
 						if ability.manaCost ~= 0 or target.id ~= attacker.id then
 							self:fail("Guard should be free and affect only its user")
 						end
@@ -585,7 +576,7 @@ local function checkActionPanel(observer, client, battle, actor)
 		for _, child in actions:GetChildren() do
 			if child:IsA("TextLabel") then
 				explained = explained
-					or (string.find(child.Text, "% less damage", 1, true) ~= nil and string.find(child.Text, "Mana if it gets attacked", 1, true) ~= nil)
+					or (string.find(child.Text, "% less damage", 1, true) ~= nil and string.find(child.Text, "Mana", 1, true) == nil)
 				captioned = captioned or child.Text == "2. Target: itself"
 			end
 		end
@@ -876,7 +867,7 @@ function Bot:takeTurn()
 	end
 
 	-- 1. Pick an ability: "greedy" takes the priciest one it can afford, "guard" alternates Guard
-	-- with that (so it has spent Mana for Guard to win back), otherwise any.
+	-- with that, otherwise any.
 	local abilities = clickableChildren(actions.Abilities)
 	for _, button in clickableChildren(actions.Moves) do
 		table.insert(abilities, button)
@@ -1330,12 +1321,6 @@ test("every summon can Guard: free, no target, even with no Mana", function()
 	local result = session.lastAction.results[1]
 	expect(result.targetId == "P1" and result.applied == "Bracing", "it braces itself")
 	expect(string.find(session.log[#session.log], "guards", 1, true), "logged")
-	local state = session:getState()
-	for _, p in state.participants do
-		for _, status in p.statuses do
-			expect(status.unpaidMana == nil, "the pending bonus stays on the server")
-		end
-	end
 	session:beginNextTurn() -- E1: the rules let enemies Guard too (the AI just doesn't choose it)
 	assert(session:performEnemyAction("Guard", "E1"))
 end)
@@ -1414,40 +1399,43 @@ test("guarding halves the chance of an ailment landing", function()
 	expectEqual(session.lastAction.results[1].inflicted, "Dazed", "0.15 lands inside the full 20%")
 end)
 
-test("Guard's Mana pays once, only if it's attacked before its next turn (hit or miss)", function()
+test("Guard never gives Mana: attacked while guarding, hit or miss, it gets nothing back", function()
 	local session, _, rng = sessionFixture({ 20, 1, 10, 2 }) -- P1, E1, E2, P2
 	session:rollInitiative()
 	local p1, p2 = session.byId.P1, session.byId.P2
-	session:beginNextTurn() -- P1 guards
+	session:beginNextTurn() -- P1 guards with Mana to spare
 	p1.mana = 5
 	assert(session:submitAction(1, "Guard", "P1"))
-	session:beginNextTurn() -- E1 attacks it and misses: that still counts
+	expectEqual(p1.mana, 5, "free, and no Mana for guarding either")
+	session:beginNextTurn() -- E1 attacks it and misses
 	rng.chances = { 0.99 }
 	assert(session:performEnemyAction("Strike", "P1"))
 	local result = session.lastAction.results[1]
 	expect(not result.hit, "missed")
-	expectEqual(result.manaGained, 6)
-	expectEqual(p1.mana, 11)
-	expect(string.find(session.log[#session.log], "braced for it: +6 Mana", 1, true), "logged")
-	session:beginNextTurn() -- E2 attacks it again: already paid
+	expectEqual((result :: any).manaGained, nil, "results don't carry Mana anymore")
+	expectEqual(p1.mana, 5, "a miss pays nothing")
+	session:beginNextTurn() -- E2 attacks it and hits
+	rng.chances = { 0, 0.99 }
 	assert(session:performEnemyAction("Strike", "P1"))
-	expectEqual(session.lastAction.results[1].manaGained, 0, "once per Guard")
-	expectEqual(p1.mana, 11)
+	expect(session.lastAction.results[1].hit, "hit")
+	expectEqual(p1.mana, 5, "a hit pays nothing")
+	for _, line in session.log do
+		expect(not string.find(line, "Mana.", 1, true) or string.find(line, "out of Mana", 1, true), `no Mana payout logged: {line}`)
+	end
 
-	session:beginNextTurn() -- P2 guards, but nothing attacks it before its next turn
+	session:beginNextTurn() -- P2 guards, and nothing attacks it before its next turn
 	p2.mana = 5
 	assert(session:submitAction(2, "Guard", "P2"))
 	session:beginNextTurn() -- P1: its Guard ended as its turn began
 	expectEqual(#p1.statuses, 0, "Bracing lasts until its own next turn")
-	expectEqual(p1.mana, 14, "11 + 3 regen")
-	assert(session:submitAction(1, "Strike", "E1"))
+	expectEqual(p1.mana, 8, "5 + 3 regen, the only Mana it got")
+	session:passTurn("Timeout")
 	session:beginNextTurn() -- E1
-	assert(session:performEnemyAction("Strike", "P1"))
-	expectEqual(session.lastAction.results[1].manaGained, 0, "no longer guarding")
+	session:passTurn("NoValidAction")
 	session:beginNextTurn() -- E2
 	session:passTurn("NoValidAction")
 	session:beginNextTurn() -- P2
-	expectEqual(p2.mana, 8, "5 + 3 regen and no bonus: nothing attacked it")
+	expectEqual(p2.mana, 8, "5 + 3 regen either way")
 	expectEqual(#p2.statuses, 0, "and its Guard is over")
 end)
 
@@ -1467,17 +1455,16 @@ test("Guard lasts until its summon's next turn, through every turn in between", 
 	expect(not BattleSession.blocksCriticals(p1), "over once its own turn comes around")
 end)
 
-test("guarding at full Mana, or into a knockout, pays nothing", function()
+test("guarding on empty Mana, even into a knockout, leaves it empty", function()
 	local session = sessionFixture({ 20, 1, 10, 2 }) -- P1, E1, E2, P2
 	session:rollInitiative()
 	local p1, p2 = session.byId.P1, session.byId.P2
-	session:beginNextTurn() -- P1 guards at full Mana
+	session:beginNextTurn() -- P1 guards on empty
+	p1.mana = 0
 	assert(session:submitAction(1, "Guard", "P1"))
 	session:beginNextTurn() -- E1
 	assert(session:performEnemyAction("Strike", "P1"))
-	expectEqual(session.lastAction.results[1].manaGained, 0, "already full")
-	expectEqual(p1.mana, p1.maxMana)
-	expect(not string.find(session.log[#session.log], "braced", 1, true), "nothing to report")
+	expectEqual(p1.mana, 0, "attacked while guarding: still empty")
 	session:beginNextTurn() -- E2
 	session:passTurn("NoValidAction")
 	session:beginNextTurn() -- P2 guards on 1 Health
@@ -1487,9 +1474,7 @@ test("guarding at full Mana, or into a knockout, pays nothing", function()
 	session:passTurn("Timeout")
 	session:beginNextTurn() -- E1 knocks it out anyway
 	assert(session:performEnemyAction("Strike", "P2"))
-	local result = session.lastAction.results[1]
-	expect(result.knockedOut, "knocked out")
-	expectEqual(result.manaGained, 0, "a knocked-out summon gets nothing")
+	expect(session.lastAction.results[1].knockedOut, "knocked out")
 	expectEqual(p2.mana, 0)
 end)
 
@@ -1557,13 +1542,13 @@ test("Guard through the UI: its own button, no target, and it braces", function(
 	local sim, observer = newWorld(4200) -- two Tung Tung Sahurs, the default lineup
 	join(sim, observer, -1, "Guardian", { engage = "random", thinkMin = 0.3, thinkMax = 1.5, engageDelay = 0.5, policy = "guard" })
 	join(sim, observer, -2, "Striker", { engage = "random", thinkMin = 0.3, thinkMax = 1.5, engageDelay = 0.5, policy = "greedy" })
-	-- Keep fighting until a Guard has been attacked with Mana to win back (one fight may not).
+	-- Keep fighting until a Guard has been attacked (one fight may not). The observer fails the run
+	-- if that attack changed the guard's Mana.
 	expect(sim:runUntil(function()
-		return observer.battlesFinished >= 1 and (observer.manaPaid or 0) > 0 and backInOverworld(observer)
-	end, 3600), "no Guard ever paid out")
+		return observer.battlesFinished >= 1 and (observer.guardsAttacked or 0) > 0 and backInOverworld(observer)
+	end, 3600), "no Guard was ever attacked")
 	assertClean(sim, observer)
 	expect((observer.guards or 0) >= 2, "the Guardian guarded through the UI")
-	expect((observer.guardsAttacked or 0) > 0 and (observer.manaPaid or 0) > 0, "got attacked while guarding and paid out")
 end)
 
 test("with no Mana at all, the character's Attack and Guard still work: the UI starts on Attack", function()
@@ -2351,7 +2336,7 @@ test("each new party comp plays full battles through the UI (taunt, guard, party
 		{ "TungTungElder", "TungTungSapling" },
 		{ "TungTungSahur", "TungTungGroveKeeper" },
 	}
-	local totals = { heals = 0, buffs = 0, misses = 0, crits = 0, inflicted = 0, attacks = 0, guards = 0, guardsAttacked = 0, manaPaid = 0 }
+	local totals = { heals = 0, buffs = 0, misses = 0, crits = 0, inflicted = 0, attacks = 0, guards = 0, guardsAttacked = 0 }
 	local sawLostTurn = false
 	for index, lineup in lineups do
 		local sim, observer = newWorld(4000 + index)
@@ -2387,10 +2372,10 @@ test("each new party comp plays full battles through the UI (taunt, guard, party
 		`       UI-driven: {totals.attacks} attacks ({totals.misses} missed, {totals.crits} crits, {totals.inflicted} dazes), {totals.heals} heals, {totals.buffs} statuses applied`
 	)
 	print(
-		`       Guard: used {totals.guards} times, attacked while guarding {totals.guardsAttacked} times, paid Mana {totals.manaPaid} times`
+		`       Guard: used {totals.guards} times, attacked while guarding {totals.guardsAttacked} times (Mana unchanged every time)`
 	)
 	expect(totals.heals > 0 and totals.buffs > 0, "heals and buffs were used through the UI")
-	expect(totals.guards > 0 and totals.manaPaid > 0, "Guard was used through the UI and paid out")
+	expect(totals.guards > 0 and totals.guardsAttacked > 0, "Guard was used through the UI and attacked")
 	expect(totals.misses > 0 and totals.crits > 0 and totals.inflicted > 0, "misses, crits and dazes all happened")
 	expect(sawLostTurn, "some summon lost a turn to Dazed")
 end)
