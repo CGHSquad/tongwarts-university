@@ -211,8 +211,7 @@ local Abilities: { [string]: Ability } = {
 		kind = "Guard",
 		id = "Guard",
 		name = "Guard",
-		description = "Braces until its next turn: less damage, no critical hits, resists ailments, "
-			.. "and some Mana back if it gets attacked.",
+		description = "Braces until its next turn: less damage, no critical hits, resists ailments.",
 		targets = "Self",
 		manaCost = 0,
 		universal = "Everyone",

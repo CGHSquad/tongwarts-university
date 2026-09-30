@@ -74,11 +74,11 @@ local CombatConfig = {
 
 	-- Guard (GDD Step 6, "Guard — a universal defensive action"): any summon can spend its turn
 	-- guarding instead of using an ability. Free, no target; it braces until its own next turn.
+	-- It's purely defensive: it never gives Mana back.
 	-- While bracing it:
 	GuardDamageReduction = 0.3, -- takes this much less damage, multiplied with Endurance's cut:
 	-- a maxed-Endurance tank (60%) guarding blocks 1 - 0.4 * 0.7 = 72% in total
 	GuardAilmentChanceMultiplier = 0.5, -- ailments are this much as likely to land on it
-	GuardManaBonus = 6, -- paid once, only if something actually attacks it before its next turn
 	-- (critical hits against a guarding summon are always blocked)
 
 	-- Overworld encounters (GDD "Combat philosophy"): walking into an enemy starts a fight, and where

@@ -537,9 +537,6 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: B
 					showPopup(target, `{if def then def.name else inflicted}!`, BattleTheme.Danger, 1.5)
 				end
 			end
-			if result.manaGained > 0 then
-				showPopup(target, `+{result.manaGained} Mana`, BattleTheme.ManaBar, 3)
-			end
 		elseif ability.kind == "Heal" then
 			showPopup(target, `+{result.healed}`, BattleTheme.HealthBar, 0)
 		elseif ability.kind == "Guard" then

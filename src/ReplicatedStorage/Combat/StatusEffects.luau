@@ -25,7 +25,6 @@ export type StatusDef = {
 	drawsAttacks: boolean?, -- enemies must target this summon
 	blocksCriticals: boolean?, -- attacks against this summon can't be critical hits
 	ailmentChanceMultiplier: number?, -- ailments' chance to land on this summon is multiplied by this
-	manaWhenAttacked: number?, -- Mana it gains, once, the first time it's attacked while this lasts
 }
 
 local StatusEffects: { [string]: StatusDef } = {
@@ -72,7 +71,6 @@ local StatusEffects: { [string]: StatusDef } = {
 		damageTakenMultiplier = 1 - CombatConfig.GuardDamageReduction,
 		blocksCriticals = true,
 		ailmentChanceMultiplier = CombatConfig.GuardAilmentChanceMultiplier,
-		manaWhenAttacked = CombatConfig.GuardManaBonus,
 	},
 }
 

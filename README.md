@@ -117,11 +117,9 @@ top of that, your character always has Attack and Guard (see Rules):
     maxed-Endurance tank guarding blocks 72%, and nothing ever blocks more than 75%.
   - can't be hit by a critical hit.
   - is half as likely to get an ailment.
-  - gets 6 Mana back if something attacks it before its next turn (hit or miss, once). If
-    nothing does, it gets nothing.
 
-  It's a bet that you'll be the one attacked, and it costs your whole turn. It's separate from the
-  Elder's Windbreak, and the two stack. (Enemies don't guard yet.)
+  It's purely defensive: it never gives Mana back, and it costs your whole turn. It's separate
+  from the Elder's Windbreak, and the two stack. (Enemies don't guard yet.)
 - **Statuses** (taunt, Windbreak, Tailwind, Dazed, and Guard's Bracing) last a few of that
   summon's own turns. Buffs never change the turn order mid-battle.
 - **Mana:** every ability costs Mana (Attack and Guard are free), and each summon gets +3 at the
@@ -164,24 +162,21 @@ lune run tools/simulate-battles 10000 7  # more battles, different random seed
 ```
 
 It runs the real `BattleSession` and `EnemyAI` code (no Studio needed) against the enemies in
-`CombatConfig`. Each party comp plays four ways:
+`CombatConfig`. Each party comp plays three ways:
 
 - **careless:** random buttons, the character's Attack and Guard included.
 - **sensible:** heal the hurt, keep buffs up, and hit the weakest enemy with the hardest-hitting
-  attack you can afford (the character's free Attack counts). Guard only in the one spot where it
-  pays: a healer that's hurt, being attacked, and can't afford its heal.
-- **no Guard:** sensible, but never guards.
-- **turtle:** sensible, but it guards whenever its Mana isn't full, then spends it all on its
-  biggest attack. This is the "guard to max Mana, then alpha-strike" pattern Guard mustn't
-  reward (GDD Step 6).
+  attack you can afford (the character's free Attack counts). It never guards (see below).
+- **turtle:** sensible, but it guards whenever the enemies are likely to come after it, stacking
+  Guard's damage cut on Endurance (and Windbreak) instead of attacking. If it beat sensible play,
+  Guard would be too strong (GDD Step 6).
 
 For each party comp it reports:
 
-- **win rates** for the four play styles
+- **win rates** for the three play styles
 - **what each member does:** damage dealt and taken, healing, and the share of enemy attacks
   aimed at it
-- **Guard:** how often each member guards, how often those guards got attacked (paying Mana), and
-  the same for the turtle
+- **Guard:** how often each turtle member guards, and how often those guards got attacked
 - **Attack:** how often each member uses the character's free Attack
 - **the dice:** hits, crits, dazes and turns lost
 - **the opening turn:** sensible play again, with the party or the enemies taking the bonus turn,
@@ -189,44 +184,42 @@ For each party comp it reports:
 
 To compare other comps, edit `PARTIES` at the top of the script. With the current numbers:
 
-| Party | Sensible | No Guard | Turtle | Rounds (sensible) |
-| --- | --- | --- | --- | --- |
-| Sahur + Sahur | 78% | 77% | 7% | 7.3 |
-| Elder + Sapling | 91% | 92% | 1% | 8.3 |
-| Sapling + Grove-Keeper | 77% | 70% | 45% | 12.7 |
-| Elder + Grove-Keeper | 90% | 80% | 0% | 22.6 |
-| Sahur + Grove-Keeper | 82% | 80% | 28% | 10.9 |
-| Sapling + Sapling | 50% | 50% | 7% | 5.7 |
+| Party | Sensible | Turtle | Rounds (sensible) |
+| --- | --- | --- | --- |
+| Sahur + Sahur | 79% | 2% | 7.3 |
+| Elder + Sapling | 92% | 43% | 8.3 |
+| Sapling + Grove-Keeper | 72% | 11% | 8.9 |
+| Elder + Grove-Keeper | 81% | 18% | 17.8 |
+| Sahur + Grove-Keeper | 79% | 57% | 9.9 |
+| Sapling + Sapling | 51% | 1% | 5.7 |
 
 Careless play wins 0–7%.
 
 - **Attack is never the best pick.** Sensible play never uses it (0% of turns): a summon's Strike
   costs only 2 Mana, Mana comes back 3 a turn, and Strike always hits harder. Only button-mashing
-  uses it (19–27% of careless turns). Take Attack out of careless play and every other table
-  comes out exactly as it did before Attack existed, so the small shifts from earlier versions of
-  these tables are just the dice landing differently.
+  uses it (20–27% of careless turns).
 
-- **Turtling loses badly.** Guarding until Mana is full, then alpha-striking, loses in every comp.
-- **Guard helps in one spot.** A healer that's hurt, being attacked, and can't afford its heal
-  should guard. It guards on 5–9% of its turns, nearly every guard gets attacked, and the Mana it
-  wins back pays for the heal. That adds 5–9 points of win rate to two of the three healer comps.
-- **Everyone else should attack.** In the simulator, guarding to bank Mana for a big attack, or
-  to put off a knockout, costs more than it saves.
-
-A handful of healer battles (up to about 1%) are still going after 100 rounds and count as losses: a
-lone Grove-Keeper alternating Guard and Sap Mend can outlast the last enemy without ever killing
-it.
+- **Turtling loses badly.** Guarding whenever you're likely to be attacked loses in every comp,
+  by 22 to 77 points. The turtle's guards nearly all get attacked (85–98%), so the damage cut is
+  real, but the turns it doesn't attack cost more than the damage it saves.
+- **Guard doesn't pay anywhere yet.** With no Mana coming back, every rule tried for when sensible
+  play should guard lost win rate against never guarding: a hurt healer that's being attacked
+  and can't afford its heal (up to 2 points), a hurt member that's being attacked while a teammate
+  can heal it next (up to 7), a hurt taunting tank (up to 12), and anyone being attacked under 35%
+  Health (up to 37). Against these enemies the turn is worth more than the damage it saves, so
+  sensible play never guards. A tougher enemy, or one that telegraphs a big hit, is where Guard
+  should start to earn its place.
 
 Striking first is worth a lot. The same sensible play, depending on how the fight opened:
 
 | Party | Party's bonus turn | Even start | Enemies' bonus turn |
 | --- | --- | --- | --- |
-| Sahur + Sahur | 96% | 78% | 39% |
-| Elder + Sapling | 98% | 91% | 56% |
-| Sapling + Grove-Keeper | 93% | 77% | 48% |
-| Elder + Grove-Keeper | 96% | 90% | 77% |
-| Sahur + Grove-Keeper | 94% | 82% | 62% |
-| Sapling + Sapling | 89% | 50% | 11% |
+| Sahur + Sahur | 96% | 79% | 38% |
+| Elder + Sapling | 99% | 92% | 56% |
+| Sapling + Grove-Keeper | 90% | 72% | 44% |
+| Elder + Grove-Keeper | 93% | 81% | 62% |
+| Sahur + Grove-Keeper | 94% | 79% | 60% |
+| Sapling + Sapling | 89% | 51% | 14% |
 
 ### Headless tests
 

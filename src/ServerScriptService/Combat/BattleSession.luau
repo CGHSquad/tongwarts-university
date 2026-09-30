@@ -52,7 +52,6 @@ export type RosterEntry = {
 export type ActiveStatus = {
 	id: string,
 	turnsLeft: number,
-	unpaidMana: number?, -- its manaWhenAttacked, until the first attack pays it out
 }
 
 -- A summon in this battle (the GDD's participant entry; its characterRef is summonId).
@@ -199,24 +198,10 @@ local function applyStatus(participant: Participant, statusId: string, turns: nu
 	for _, status in participant.statuses do
 		if status.id == statusId then
 			status.turnsLeft = math.max(status.turnsLeft, turns)
-			status.unpaidMana = def.manaWhenAttacked
 			return
 		end
 	end
-	table.insert(participant.statuses, { id = statusId, turnsLeft = turns, unpaidMana = def.manaWhenAttacked })
-end
-
--- Pays out every manaWhenAttacked still pending on this participant (Guard's bet coming off).
--- Returns how much Mana it actually gained, which is less when it was nearly full.
-local function collectManaWhenAttacked(participant: Participant): number
-	local bonus = 0
-	for _, status in participant.statuses do
-		bonus += status.unpaidMana or 0
-		status.unpaidMana = nil
-	end
-	local before = participant.mana
-	participant.mana = math.min(participant.maxMana, participant.mana + bonus)
-	return participant.mana - before
+	table.insert(participant.statuses, { id = statusId, turnsLeft = turns })
 end
 
 local function removeAilments(participant: Participant): boolean
@@ -270,7 +255,6 @@ local function newResult(targetId: string): ActionResult
 		inflicted = nil,
 		applied = nil,
 		cleansed = false,
-		manaGained = 0,
 	}
 end
 
@@ -719,7 +703,7 @@ end
 
 -- One attack on one target: roll to hit, roll for a critical hit, cut the damage by the target's
 -- Endurance and statuses, then check for a knockout, and roll for the ailment if it's still up.
--- A guarding target can't be crit, resists the ailment, and gets its Mana bonus, hit or miss.
+-- A guarding target can't be crit and resists the ailment.
 function BattleSession._attack(
 	self: BattleSession,
 	actor: Participant,
@@ -734,12 +718,6 @@ function BattleSession._attack(
 	else
 		result.hit = false
 		self:_log(`{actor.name} used {ability.name} on {target.name}, but missed.`)
-	end
-
-	-- A knockout already cleared its statuses, so this only pays a summon still standing.
-	result.manaGained = collectManaWhenAttacked(target)
-	if result.manaGained > 0 then
-		self:_log(`{target.name} braced for it: +{result.manaGained} Mana.`)
 	end
 	return result
 end
@@ -828,7 +806,6 @@ function BattleSession._grantStatus(
 end
 
 -- Guard (GDD Step 6): spends the turn bracing (the Bracing status) until this summon's next turn.
--- The Mana bonus is only armed here; _attack pays it if something actually attacks it.
 function BattleSession._guard(self: BattleSession, actor: Participant, ability: Abilities.GuardAbility): ActionResult
 	applyStatus(actor, ability.status, ability.turns)
 	local result = newResult(actor.id)
