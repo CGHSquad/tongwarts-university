@@ -65,18 +65,21 @@ treat it as the current source of truth, not something to hand-edit here.
 
 ## Art source assets
 
-- Raw art (meshes, rigs, animations, textures) from the team's art tool lives in
-  `art-source/`, organized to mirror `Summons.luau`'s `id` field
-  (`art-source/Summons/<id>/`, e.g. `art-source/Summons/TungTungSahur/`). These are
-  **not** Rojo-synced or runtime-usable as-is — Roblox needs meshes and animations
-  imported through Studio's 3D Importer and uploaded to get asset IDs before anything
-  in `src/` can reference them (`rbxassetid://...`). That import/upload step happens
-  in Studio, not from this repo.
-- Per summon, expect: an optimized mesh (the one to import — check for a note on
-  which file is optimized vs. a raw/unoptimized export), a rigged T-pose FBX for
-  animation, and an `Animation/` folder of clips (idle, walk/swing/attack, death, etc.
-  varies per summon). Textures sit alongside the mesh.
-- Once a mesh/animation is imported and uploaded in Studio, its asset ID belongs in
-  that summon's entry in `Summons.luau` (or a new field there) — not hardcoded into
+- The pipeline moved: art now gets imported and rigged **directly in Roblox Studio**
+  (mesh + animation FBX both imported there), not staged as loose files in this repo
+  first. A session with access to the team's Studio place (e.g. through a Studio MCP
+  connection) may be able to work with an already-imported summon's mesh, rig, and
+  animations straight from Studio, without needing anything checked in here.
+- `art-source/Summons/<id>/` (mirroring `Summons.luau`'s `id` field, e.g.
+  `art-source/Summons/TungTungSahur/`) still holds the **first** batch of raw
+  source files (mesh, rig, animations, textures) checked in before this shift. Treat
+  them as historical/reference only, not a current mirror of what's imported in
+  Studio — they are not being kept in sync with Studio going forward, so don't assume
+  a summon's art-source folder reflects its latest imported state, and don't rely on
+  its absence to mean a summon hasn't been imported yet.
+- Whatever the source, the rule stays the same: once a mesh/animation is imported and
+  uploaded in Studio, its resulting asset ID (`rbxassetid://...`) belongs in that
+  summon's entry in `Summons.luau` (or a new field there) — not hardcoded into
   `BattleView.luau` — so content stays data-driven like everything else in
-  `ReplicatedStorage/Combat/`.
+  `ReplicatedStorage/Combat/`. That wiring hasn't happened yet for Tung Tung Sahur
+  (`Summons.luau` has no asset ID fields yet) even though it's imported in Studio.
