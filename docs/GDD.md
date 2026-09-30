@@ -73,6 +73,15 @@ This section extends the evolution/acquisition model above and locks in the leve
 
 Luck currently has nothing to *cast* (it's crit rate + ailment infliction/resist, a passive-only stat). Rather than add a 5th element — which multiplies the melee×element type-chart math and art budget — **Fortune** is a separate skill category: status/crit-focused abilities that aren't melee or elemental at all (bleeds, stuns, debuff-stacking, execute-on-low-HP, gamble-for-bigger-effect skills). Every school can carry 1-2 Fortune skills alongside its main melee+element axis, regardless of which of the four schools it is.
 
+**Concrete Fortune content, to anchor the category:** Fortune's identity is "the payoff is a bet, not a guarantee," and it's the one category that scales off **Luck** specifically rather than Strength/Magic — that's the mechanical tell separating it from Melee/Elemental skills. Starting content ideas:
+
+- Stacking debuffs (Accuracy Down, Defense Down, Attack Down — multiple casts compound)
+- Ailments (Poison/DoT, Stun, Sleep, Charm — make a target act randomly or attack an ally)
+- Execute effects (bonus damage below an HP threshold)
+- Gamble skills (wide damage variance — can whiff or crit unusually hard)
+- The temporary Repel/Absorb skill (single-category, costed, short-duration — this is Fortune's actual home, not an innate affinity)
+- A minor drain/steal effect (HP or Mana), Luck-scaled — distinct from the full Absorb affinity
+
 ### Evolution branching (usage-based)
 
 Instead of a single fixed evolved form per archetype, each **summon instance** (your specific Tung Tung Sahur, not the species) tracks usage counters on its non-universal kit abilities — anything in its own ability list (Strike/elemental/Fortune skills). The character's universal actions (`Attack`, `Guard`, future `Items`) are never tracked, since they aren't part of the summon's kit at all.
@@ -83,6 +92,8 @@ At the archetype's evolution level-gate, whichever tracked ability has the highe
 
 The four-role skeleton (Balanced / Tank / Glass-Cannon / Support — Base / Elder / Sapling / Grove-Keeper for Tung Tung) is reused by every school, but **how** each role fulfills its job should differ by school identity so schools don't read as reskins of each other by school #3-4. For example, an Agility-priority school's "tank" role can be built as an evasion tank (dodge-based) rather than an Endurance-mitigation tank; a Strength-priority school's "support" role can lean armor-shred/debuff rather than healing, keeping healing as another school's actual signature. Same low art cost as the shared skeleton — the divergence is in kit design, not new models.
 
+**The Glass-Cannon role's cross-school signature, confirmed: HP-cost skills.** Most physical skills spend Mana (Metaphor-style, not Persona's all-HP model), but the Glass-Cannon role in every school's roster (Sapling, for Tung Tung) spends **Health** instead of Mana for some of its kit — trading survivability directly for burst damage. This is a deliberate identity marker for that role specifically, not a random per-class assignment: it's mechanically exactly what "glass cannon" should feel like, and it gives that role a distinct resource-management puzzle (risk your own Health for damage) that no other role has, on top of its existing stat lean.
+
 ### Tiered cross-school skill transfer
 
 Replaces the earlier open "cross-school premium" brainstorm with a concrete rule. Transferable skills split into three tiers:
@@ -90,6 +101,8 @@ Replaces the earlier open "cross-school premium" brainstorm with a concrete rule
 - **Common** — basic attacks, generic buffs. Cheap, freely transferable.
 - **Signature** — anything tied to a school's primary axis (e.g. Tung Tung's Wind knockback). **Locked, never transferable.** This is what protects "why pick this school" as the roster grows.
 - **Rare/Fortune** — status-based skills. Transferable, but pricier — the main currency sink for cross-school customization, and it reinforces Fortune as a genuine progression sink rather than a stat afterthought.
+
+**Common/Signature pairing for elemental skills, confirmed:** every element gets a generic, cheap, cross-school-available Common version — a tiered Basic/Medium/High single-target spell (with a possible AoE variant), the same shape across every school (e.g. TungWarts's Wind version: Gale / Galen / Galor, names W.I.P.). Basic buffs are Common too, same reasoning. Each school's actual **Signature** spell for that element is the stronger, flashier, locked version of the same element — giving every element a clean weak/strong pairing (a generic option anyone can use, and a school-specific upgrade that's the real reason to pick that school) instead of two unrelated skill lists.
 
 ### On adding a 5th school (or a 4th melee type)
 
@@ -109,6 +122,28 @@ Player level and summon level are tracked independently, but both advance from t
 Why this over the alternative (letting Health/Mana scale only through the existing player-level ceiling on summon growth): the ceiling is invisible — it only manifests as "my summon's growth is capped," which a player has no clear way to notice or feel. A direct player-level bonus to the bars is something every player already intuitively understands from nearly every other RPG, at the cost of one extra formula to tune (a flat or scaling bonus per player level, additive to the summon's own Endurance/Magic-derived pool).
 
 **Relationship to Mentor Bond:** this is the permanent floor; Mentor Bond (the temporary, decaying stat-assist borrowed from another owned summon) is unchanged and still does its own job — it stays in as described, closing the gap faster for a specific under-leveled build rather than replacing this universal bonus.
+
+### HP/Mana curve, stat ceilings & the level cap
+
+Refines the leveling model above with the actual curve shape and how the player-level floor and summon stats split the total.
+
+**Priority-stat pool rule, confirmed:** each school's priority stat determines which pool (Health or Mana) is highest in that school's roster — Endurance-priority schools have the highest Health totals, Magic-priority schools have the highest Mana totals. This isn't a separate mechanic to build, it's a rule for picking the numbers: when setting a school's HP/Mana totals, the priority stat's matching pool should be the highest among the four schools.
+
+**Curve shape — different for each pool, not mirrored:**
+
+- **Mana** follows a diminishing-returns (concave) curve — large gains early, flattening at higher levels — e.g. `MP(L) = MP1 + (MP99 − MP1) × ((L−1)/98)^p` with `p` roughly 0.6–0.75. This keeps early game from feeling Mana-starved without making the late-game pool unbounded.
+- **Health** is more linear. HP and Mana don't have to share a curve shape — they serve different jobs (survivability needs to keep pace with enemy damage scaling; Mana needs to avoid an early dry spell), so they're tuned independently.
+
+**Floor/gap split, confirmed:** each school's full HP/Mana total (as sketched in the team's numbers) splits into two sources:
+
+- **Player-level floor** (\~70–75% of the total) — flat, universal, already locked above. This is the safety-net portion; it doesn't change based on which summon is active.
+- **Summon's own Endurance/Magic contribution** (\~25–30% of the total) — closes the remaining gap, scaling with the active summon's stats. A fresh or under-leveled summon sits at roughly the floor; a fully-invested one closes the gap.
+
+**Stat contribution is multiplicative, not additive, confirmed:** `MaxMP = FloorMP × (1 + Magic × k)` (same shape for `MaxHP`/`Endurance`), not a flat bonus added on top. A flat bonus becomes a rounding error once the level-based floor is large, which would make summon choice matter less at exactly the levels where it should matter most. Multiplicative scaling keeps the stat's contribution meaningful at every level. **Tuning risk to plan for:** multiplicative stacking can run away if uncapped (the same risk already flagged for Guard's Endurance reduction) — put a soft cap or diminishing curve on the multiplier itself once real numbers are being tuned, not left open-ended.
+
+**Stat ceilings are per-archetype, not shared, confirmed.** A shared ceiling (every archetype's best stat capping at the same number) would make different archetypes converge at max level, undercutting the whole point of archetype choice. Instead: a "High" stat lean (per the Stat Growth Lean table already in the team's content spreadsheet) tops out around 70 at level 90+, and Medium/Low leans scale down proportionally from that anchor — per archetype, per stat. Sapling's Strength ceiling should sit well above what Elder's Strength ceiling ever gets, and vice versa for Endurance, so the trade-off stays meaningful all the way to max level, not just early game.
+
+**Level cap: design the full curve now, gate the live cap separately.** Build the HP/Mana/stat formulas across the full intended range (the team is designing against a Level 1–99 shape) rather than a smaller range that would need rebuilding later. The actual level cap players can reach *at launch* stays a separate, lower configuration value layered on top of that formula (per "Level cap pacing" above) — raising the cap post-launch just moves the gate, it doesn't require redesigning the curve.
 
 ### Stats stay fully summon-owned
 
@@ -480,8 +515,9 @@ Every summon gets a **Guard** option on its turn, alongside its abilities — no
 - **Damage reduction:** a moderate additional cut (\~25–30%), applied **multiplicatively with Endurance's own reduction**, not stacked on top additively — a tank guarding gets meaningfully tankier, but doesn't approach near-immunity. (Endurance alone caps at 60% per the current formula; guarding a fully-built Endurance tank should land somewhere around 70–75% total reduction, not 80%+.)
 - **Blocks critical hits:** an attacker cannot land a critical hit against a guarding target, regardless of their Luck.
 - **Resists ailments (not blocks):** the attacker's effective Luck (or the resist roll) is reduced against a guarding target — meaningfully harder to daze, not immune.
-- **Bonus Mana — conditional, not free:** guarding grants no automatic Mana bonus just for choosing it. The bonus only pays out **if the guarding summon is actually attacked** before its next turn — you're betting the enemy targets you, the same risk Wizard101's passing carries in spirit (saving up costs you tempo either way, but only *pays off* if the bet was right). Guarding into an attack that never comes should feel like a wasted turn, not a free banked resource.
 - **Duration:** lasts exactly until this summon's own next turn, same as other turn-scoped statuses.
+
+**Update — Guard's Mana bonus removed entirely.** Guard no longer grants any Mana, conditional or otherwise — it's now purely a defensive action (damage reduction, crit immunity, softened ailment resist). This is a further revision on top of the fix above, not a reversal of it: the conditional-Mana fix solved the original "free and resource-positive" brokenness, but the new HP/Mana leveling model (below) reworks the Mana economy enough that Guard doesn't need to be a Mana faucet at all anymore — removing it keeps Guard's job simple (a defensive choice, not a resource mechanic) and avoids the two systems fighting over the same lever.
 
 **What doesn't carry over from Persona, and why:** Persona's Guard also negates a would-be Knockdown when a hit lands on an elemental weakness — we don't have a weakness/knockdown/"1 More" bonus-turn system yet (that's tied to the still-open Slash/Pierce type chart, currently on hold). Guard's damage/crit/ailment protection ports over cleanly now; the weakness-negation piece becomes relevant once a real type-weakness system exists.
 
