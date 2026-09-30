@@ -9,8 +9,8 @@ Code lives in `src/` and syncs into Roblox Studio with [Rojo](https://rojo.space
 
 1. Install [Rokit](https://github.com/rojo-rbx/rokit), then run `rokit install` in this folder.
    That installs the tool versions pinned in `rokit.toml` (Rojo 7.7.0, plus Lune for the scripts
-   in `tools/`), so everyone uses the same ones. The first time, answer yes when it asks you to
-   trust each tool.
+   in `tools/` and `tests/`), so everyone uses the same ones. The first time, answer yes when it
+   asks you to trust each tool.
 2. Install the matching Studio plugin: `rojo plugin install`.
 3. Then either:
    - **Day to day:** run `rojo serve`, open a place in Studio (the Baseplate template is fine),
@@ -150,6 +150,7 @@ top of that, your character always has Attack and Guard (see Rules):
 | `StarterPlayerScripts/BattleClient.client.luau` | Client entry point: draws each server update, sends button presses. |
 | `StarterPlayerScripts/Combat/BattleUI.luau`, `BattleView.luau`, `BattleTheme.luau` | The overworld panel and battle HUD; the stage (each player's character, with its summon appearing behind it for the summon's own abilities, and the enemy blocks) and battle camera, in its own arena past the edge of the map; and their colors and fonts. |
 | `tools/simulate-battles.luau` | Plays thousands of battles with the real rules to compare party comps (see below). |
+| `tests/run.luau`, `tests/Sim.luau` | Headless tests: bots play the real game on a fake Roblox, no Studio needed (see below). |
 
 ### Tuning and the battle simulator
 
@@ -226,3 +227,25 @@ Striking first is worth a lot. The same sensible play, depending on how the figh
 | Elder + Grove-Keeper | 96% | 90% | 77% |
 | Sahur + Grove-Keeper | 94% | 82% | 62% |
 | Sapling + Sapling | 89% | 50% | 11% |
+
+### Headless tests
+
+`tests/` plays the real game without Studio. It builds the place with Rojo, then runs it in Lune
+on a fake Roblox (`tests/Sim.luau`): a server plus a client per test player, all running the real
+scripts from `src/`. Bots walk into enemies and click the real battle UI, and every update each
+client receives is checked: whose turn it is, what the HUD offers, who's on the stage, and so on.
+
+```
+lune run tests/run                # everything, about a minute
+lune run tests/run quick          # fewer seeded battles at the end
+lune run tests/run quick Guard    # only the tests whose names contain "Guard"
+```
+
+Run them from the repo root before pushing gameplay or UI changes. They cover the combat rules and
+stat model, Guard, two players through the UI, disconnects, cheating clients, overworld
+encounters, the battle stage, every summon variant, and a few hundred seeded battles checked turn
+by turn.
+
+They can't tell you how anything looks: there's no rendering or physics, tweens jump straight to
+where they end, and players' avatars are simple stand-ins. Check those in Studio. When you change
+how the game behaves on purpose, change the tests that pin that behavior down with it.

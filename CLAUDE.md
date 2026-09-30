@@ -56,6 +56,11 @@ treat it as the current source of truth, not something to hand-edit here.
 - After changing combat numbers or rules, run `lune run tools/simulate-battles` (Lune is pinned
   in `rokit.toml`) to see win rates per party comp, what each role does, and how Guard gets used.
   "turtle" play (guard to max Mana, then alpha-strike) must keep losing to "sensible" play.
+- Before pushing gameplay or UI changes, run the headless tests from the repo root:
+  `lune run tests/run` (about a minute; `quick` and a test-name filter are options, see
+  `tests/run.luau`). They build the place with Rojo and play it on a fake Roblox
+  (`tests/Sim.luau`), with bots using the real UI. When behavior changes on purpose, update the
+  tests that pin it down. They can't check visuals; those need a look in Studio.
 - All scripts are `--!strict` Luau; keep them free of type errors.
 
 ## Art source assets
