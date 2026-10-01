@@ -167,6 +167,7 @@ function Sim.new(placePath, options)
 	self.warnings = {}
 	self.tweening = setmetatable({}, { __mode = "k" }) -- instance -> property -> the tween driving it
 	self.tweenLog = {} -- every tween played: { instance, goals, info, time }
+	self.animationLog = {} -- every animation track played or stopped: { env, animator, id, event, speed, time }
 	self.remotes = {}
 	self.clients = {}
 	self.clientOrder = {}
@@ -352,7 +353,97 @@ function Sim:createEnv(name, side, client)
 		modules = {},
 		signals = {}, -- [instance][eventName] = Signal
 		characters = {}, -- clients: [userId] = this client's copy of that player's character
+		modelScales = setmetatable({}, { __mode = "k" }), -- Model -> its ScaleTo scale
 	}
+
+	-- A stand-in for an AnimationTrack: it keeps the state the game sets and reads (Looped, Priority,
+	-- IsPlaying, ...) and logs every Play and Stop to sim.animationLog. Nothing moves, and Length
+	-- stays 0, as it is in the engine while a clip is still downloading.
+	local function newAnimationTrack(animator, animationId)
+		local track = {
+			Animation = animationId,
+			Looped = false,
+			Priority = roblox.Enum.AnimationPriority.Core,
+			Length = 0,
+			IsPlaying = false,
+			TimePosition = 0,
+			Speed = 1,
+			Stopped = Signal.new(sim, `{name} AnimationTrack.Stopped`),
+		}
+		local function log(event)
+			table.insert(sim.animationLog, {
+				env = name,
+				animator = animator,
+				id = animationId,
+				event = event,
+				speed = track.Speed,
+				time = sim.now,
+			})
+		end
+		function track.Play(_, fadeTime, weight, speed)
+			assert(fadeTime == nil or type(fadeTime) == "number", "Play's fadeTime must be a number")
+			assert(weight == nil or type(weight) == "number", "Play's weight must be a number")
+			track.IsPlaying = true
+			track.Speed = speed or 1
+			log("Play")
+		end
+		function track.Stop(_, fadeTime)
+			assert(fadeTime == nil or type(fadeTime) == "number", "Stop's fadeTime must be a number")
+			track.IsPlaying = false
+			log("Stop")
+		end
+		function track.AdjustSpeed(_, speed)
+			assert(type(speed) == "number", "AdjustSpeed needs a number")
+			track.Speed = speed
+		end
+		return track
+	end
+
+	-- Engine-only members of some classes, which Lune's instances don't have.
+	local function engineMember(instance, key)
+		if instance:IsA("Model") then
+			if key == "ScaleTo" then
+				return function(_, scale)
+					assert(type(scale) == "number" and scale > 0, "Model:ScaleTo needs a positive number")
+					-- Like the engine: every part grows or shrinks around the model's pivot (here its
+					-- PrimaryPart, or else its first part). Bones and attachments aren't modelled.
+					local ratio = scale / (env.modelScales[instance] or 1)
+					env.modelScales[instance] = scale
+					local pivotPart = instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart", true)
+					if pivotPart == nil then
+						return
+					end
+					local pivot = pivotPart.CFrame.Position
+					for _, part in instance:GetDescendants() do
+						if part:IsA("BasePart") then
+							part.Size = part.Size * ratio
+							part.CFrame = part.CFrame - part.CFrame.Position + pivot + (part.CFrame.Position - pivot) * ratio
+						end
+					end
+				end
+			elseif key == "GetScale" then
+				return function()
+					return env.modelScales[instance] or 1
+				end
+			end
+		elseif instance.ClassName == "Animator" and key == "LoadAnimation" then
+			return function(_, animation)
+				local real = unwrap(animation)
+				assert(typeof(real) == "Instance" and real.ClassName == "Animation", "LoadAnimation needs an Animation")
+				assert(string.match(real.AnimationId, "^rbxassetid://%d+$"), `not an animation id: {real.AnimationId}`)
+				-- As in the engine, an Animator can only load animations once it's in the DataModel.
+				local ancestor = instance.Parent
+				while ancestor ~= nil and ancestor ~= env.dm do
+					ancestor = ancestor.Parent
+				end
+				if ancestor == nil then
+					error(`LoadAnimation on {instance:GetFullName()}, which isn't in the DataModel`, 2)
+				end
+				return newAnimationTrack(instance, real.AnimationId)
+			end
+		end
+		return nil
+	end
 
 	local function instanceSignal(instance, eventName)
 		local set = env.signals[instance]
@@ -439,6 +530,11 @@ function Sim:createEnv(name, side, client)
 					end
 				elseif className == "Camera" and key == "ViewportSize" then
 					return env.viewportSize or roblox.Vector2.new(1280, 720)
+				end
+
+				local member = engineMember(instance, key)
+				if member ~= nil then
+					return member
 				end
 
 				if EVENTS[key] then
@@ -748,8 +844,9 @@ function Sim:spawnCharacter(userId)
 end
 
 -- Gives one client its copy of a player's character, like Roblox replicating it: a Model with a
--- HumanoidRootPart, a Torso, a Head, a Humanoid and an Animate script, not Archivable (as Roblox
--- characters aren't). Clients that shouldn't see it (say, it hasn't streamed in) can drop it.
+-- HumanoidRootPart, a Torso and a Head joined by R6's RootJoint and Neck, a Humanoid and an Animate
+-- script, not Archivable (as Roblox characters aren't). Clients that shouldn't see it (say, it
+-- hasn't streamed in) can drop it.
 function Sim:replicateCharacter(client, userId)
 	local characters = client.env.characters
 	if characters[userId] then
@@ -768,6 +865,19 @@ function Sim:replicateCharacter(client, userId)
 		part.Size = spec[2]
 		part.Anchored = spec[1] == "HumanoidRootPart"
 		part.Parent = model
+	end
+	-- R6's joints, with Roblox's own C0/C1 values.
+	local r6 = function(x, y, z)
+		return roblox.CFrame.new(x, y, z, -1, 0, 0, 0, 0, 1, 0, 1, 0)
+	end
+	for _, spec in { { "RootJoint", "HumanoidRootPart", "Torso", r6(0, 0, 0), r6(0, 0, 0) }, { "Neck", "Torso", "Head", r6(0, 1, 0), r6(0, -0.5, 0) } } do
+		local joint = roblox.Instance.new("Motor6D")
+		joint.Name = spec[1]
+		joint.Part0 = model[spec[2]]
+		joint.Part1 = model[spec[3]]
+		joint.C0 = spec[4]
+		joint.C1 = spec[5]
+		joint.Parent = model[spec[2]]
 	end
 	local humanoid = roblox.Instance.new("Humanoid")
 	humanoid.MaxHealth = 100 -- Roblox's defaults (Lune has none for these)

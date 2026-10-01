@@ -34,8 +34,9 @@ type: `.server.luau` is a Script, `.client.luau` a LocalScript, plain `.luau` a 
 
 The GDD's Phase 1 goal: prove the turn-based loop works with placeholder art. You walk around a
 baseplate where packs of Wild Saplings (red blocks with eyes) patrol or stand around, and walking
-into one starts a fight: your party of two Tung Tung summons (colored blocks) against two Wild
-Saplings.
+into one starts a fight: your party of two Tung Tung summons against two Wild Saplings. The four
+Tung Tung summons have their real 3D models and animations on the battle stage; the Wild Saplings
+are still colored blocks.
 
 ### Playtest it with two people
 
@@ -104,10 +105,13 @@ top of that, your character always has Attack and Guard (see Rules):
     summon's 2-Mana Strike, so it's the move for when you'd rather not spend Mana.
   - **Guard:** see below.
 
-  Your summon, a colored block, only appears for one of its own abilities (Strike, Gale Clap,
-  Windbreak, Sap Mend and so on). Like a JoJo Stand or a Persona, it materializes behind your
-  character, up over its shoulder, performs the move and dismisses again, while your character
-  stays on the field the whole time. The summon still owns all the stats, Health and Mana; this is
+  Your summon only appears for one of its own abilities (Strike, Gale Clap, Windbreak, Sap Mend
+  and so on): its model, idling, swinging its attack clip for an attack, or a colored block for a
+  summon with no model yet (`art` in `Summons.luau`; the models are `.rbxm` files in
+  `src/ReplicatedStorage/SummonModels/`). It comes out once more to play its death clip when it's
+  knocked out. Like a JoJo Stand or a Persona, it materializes behind your character, up over its
+  shoulder, performs the move and dismisses again, while your character stays on the field the
+  whole time. When you're hit, your character flinches. The summon still owns all the stats, Health and Mana; this is
   how a turn looks, not who fights. Enemies are just their creature. The character on the field is
   a copy of your avatar, or a blocky stand-in if a teammate's avatar hasn't loaded on your screen
   or they're mid-respawn.

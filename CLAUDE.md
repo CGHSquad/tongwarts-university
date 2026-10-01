@@ -83,5 +83,10 @@ treat it as the current source of truth, not something to hand-edit here.
   uploaded in Studio, its resulting asset ID (`rbxassetid://...`) belongs in that
   summon's entry in `Summons.luau` (or a new field there) — not hardcoded into
   `BattleView.luau` — so content stays data-driven like everything else in
-  `ReplicatedStorage/Combat/`. That wiring hasn't happened yet for Tung Tung Sahur
-  (`Summons.luau` has no asset ID fields yet) even though it's imported in Studio.
+  `ReplicatedStorage/Combat/`.
+- Wired so far: the four Tung Tung archetypes. Each rig (skinned mesh + AnimationController,
+  facing -Z) is saved from Studio as `src/ReplicatedStorage/SummonModels/<id>.rbxm`, which Rojo
+  syncs into `ReplicatedStorage.SummonModels`; its `art` entry in `Summons.luau` names the model and
+  holds its stage height, clip IDs by beat (idle/attack/death/walk) and, while the uploaded clips
+  still carry a stray hip offset, a `groundOffset`. A summon with no `art` (e.g. `WildSapling`)
+  stays a colored block. Missing clips: the Elder's idle/death, all of the Grove-Keeper's.

@@ -621,11 +621,32 @@ end
 local SUMMON_SECONDS = 1.2 -- BattleView's
 local SUMMON_FADE_SECONDS = 0.2
 
+-- A summon on the stage is a Model: its real model (Summons art) or a colored block. Its body is
+-- its tallest part (the block, or a rig's skinned mesh), which BattleView places; its root is the
+-- anchored part the rest hangs off, which lunges.
+local function summonBody(summon)
+	local tallest = nil
+	for _, part in summon:GetDescendants() do
+		if part:IsA("BasePart") and (tallest == nil or part.Size.Y > tallest.Size.Y) then
+			tallest = part
+		end
+	end
+	return tallest
+end
+
+local function summonRoot(summon)
+	return summon.PrimaryPart or summonBody(summon)
+end
+
 -- Where a summon that's out stands, measured from its spot (which faces the enemies): behind the
--- character and up over its shoulder, clear of it.
-local function socketOffset(spot)
-	local offset = spot.Summon.CFrame.Position - spot.Spot.CFrame.Position -- (Lune can't read Part.Position)
-	return offset:Dot(-spot.Spot.CFrame.LookVector), offset.Y
+-- character and up over its shoulder, clear of it. That's where it shows once its clips play: a
+-- model whose clips lift it (Summons art.groundOffset) is placed that much lower.
+local function socketOffset(spot, summonDef)
+	local body = summonBody(spot.Summon)
+	local art = summonDef.art
+	local lift = if art and art.groundOffset and spot.Summon:FindFirstChild("Block") == nil then art.groundOffset * body.Size.Y else 0
+	local offset = body.CFrame.Position - spot.Spot.CFrame.Position -- (Lune can't read Part.Position)
+	return offset:Dot(-spot.Spot.CFrame.LookVector), offset.Y + lift
 end
 
 local function checkStage(observer, client, battle, stage)
@@ -649,7 +670,13 @@ local function checkStage(observer, client, battle, stage)
 			observer:fail(`{client.name}: {p.id}'s character left the field`)
 		else
 			local expectSummon = nil -- nil: it may be on its way out
-			if fresh and action.actorId == p.id then
+			client.seenDown = client.seenDown or {}
+			local downKey = `{battle.battleId}:{p.id}`
+			if p.status == "KnockedOut" and not client.seenDown[downKey] then
+				-- Knocked out just now: its summon may come out to fall (with a death clip).
+				client.seenDown[downKey] = true
+				client.summonUntil[p.id] = math.max(client.summonUntil[p.id] or 0, now + SUMMON_SECONDS)
+			elseif fresh and action.actorId == p.id then
 				expectSummon = table.find(p.abilities, action.abilityId) ~= nil
 				if expectSummon then
 					client.summonUntil[p.id] = now + SUMMON_SECONDS
@@ -663,7 +690,7 @@ local function checkStage(observer, client, battle, stage)
 				observer:fail(`{client.name}: {p.id}'s summon should only be out for its own abilities`)
 			end
 			if summon ~= nil then
-				local behind, up = socketOffset(spot)
+				local behind, up = socketOffset(spot, observer.Summons[p.summonId])
 				if behind < 3 or up < 3 then
 					observer:fail(`{client.name}: {p.id}'s summon should be behind and above its character ({behind}, {up})`)
 				end
@@ -2219,16 +2246,17 @@ local function playMoves(sim, observer, client, moves)
 			local tween = sim.tweenLog[index]
 			if tween.goals.CFrame ~= nil and rawequal(tween.instance, root) then
 				lunged = if lunged == "-" then "character" else lunged .. "+character"
-			elseif tween.goals.CFrame ~= nil and summon ~= nil and rawequal(tween.instance, summon) then
+			elseif tween.goals.CFrame ~= nil and summon ~= nil and rawequal(tween.instance, summonRoot(summon)) then
 				lunged = if lunged == "-" then "summon" else lunged .. "+summon"
 			end
 		end
 		if summon ~= nil then
-			expect(summon.Transparency == 1, "the summon starts out see-through and materializes")
+			local summonPart = summonBody(summon)
+			expect(summonPart.LocalTransparencyModifier == 1, "the summon starts out see-through and materializes")
 			sim:run(SUMMON_FADE_SECONDS + 0.05)
-			expect(spot:FindFirstChild("Summon") == summon and summon.Transparency == 0, "then it's all there")
+			expect(spot:FindFirstChild("Summon") == summon and summonPart.LocalTransparencyModifier == 0, "then it's all there")
 			expect(spot:FindFirstChild("Character") == character, "together with the character")
-			local behind, up = socketOffset(spot)
+			local behind, up = socketOffset(spot, observer.Summons[actor.summonId])
 			expect(behind >= 3 and up >= 3, `behind the character and over its shoulder ({behind}, {up})`)
 		end
 		sim:run(SUMMON_SECONDS)
@@ -2264,8 +2292,104 @@ test("on the field: your character does Attack and Guard and never leaves; your 
 	local result = playMoves(sim, observer, client, { "Attack", "Strike", "Guard", "GaleClap" })
 	expectEqual(
 		result,
-		"Attack:character:character Strike:character+summon:summon Guard:character:- GaleClap:character+summon:summon"
+		-- The character lunges for its own Attack; the summon's model swings its clip instead.
+		"Attack:character:character Strike:character+summon:- Guard:character:- GaleClap:character+summon:-"
 	)
+	assertClean(sim, observer)
+end)
+
+-- Summons' art (Summons.luau): the ids of every clip a summon has, by beat.
+local function clipIds(sim, summonId)
+	local Summons = sim.server.require(sim.server.dm:GetService("ReplicatedStorage").Combat.Summons)
+	return Summons[summonId].art.animations
+end
+
+local function playedClip(sim, client, id)
+	for _, entry in sim.animationLog do
+		if entry.env == client.env.name and entry.id == id and entry.event == "Play" then
+			return true
+		end
+	end
+	return false
+end
+
+test("summons with art are their real model and animations; the rest are blocks", function()
+	local sim, observer = newWorld(853)
+	local config = sim.server.require(sim.server.dm:GetService("ReplicatedStorage").Combat.CombatConfig)
+	config.PartySummons = { "TungTungSahur", "TungTungSahur" }
+	config.EnemySummons = { "TungTungSapling", "WildSapling" } -- a creature with art, and one without
+	local client = join(sim, observer, -1, "Ann", { thinkMin = 0.3, thinkMax = 1, policy = "greedy" })
+	sim:run(1)
+	touch(sim, observer, -1, "SouthLookout", "side")
+	sim:run(0.5)
+
+	local stage = client.env.dm:GetService("Workspace").BattleStage
+	local sahur, sapling = clipIds(sim, "TungTungSahur"), clipIds(sim, "TungTungSapling")
+	for _, p in observer.last.battle.participants do
+		local spot = stage[p.id]
+		if p.side == "Party" then
+			expect(spot:FindFirstChild("Summon") == nil, "a party summon waits off the field")
+		elseif p.summonId == "WildSapling" then
+			local creature = spot.Summon
+			expect(creature:FindFirstChild("Block") and creature:FindFirstChildOfClass("AnimationController") == nil, "no art: a block")
+		else
+			local creature = spot.Summon
+			expect(creature:FindFirstChild("Block") == nil, "its real model, not a block")
+			expect(creature:FindFirstChildOfClass("AnimationController"), "an animated rig")
+			local body = summonBody(creature)
+			local bottom = body.CFrame.Position.Y - body.Size.Y / 2
+			local Summons = sim.server.require(sim.server.dm:GetService("ReplicatedStorage").Combat.Summons)
+			local sunk = (Summons[p.summonId].art.groundOffset or 0) * body.Size.Y -- its clips lift it back up
+			expect(math.abs(bottom + sunk) < 0.01, `standing on the stage floor once its clips play ({bottom})`)
+			expect(summonRoot(creature).Anchored, "held in place by its root")
+			expect(client.env.modelScales[Sim.unwrap(creature)] ~= nil, "scaled to its art's height")
+		end
+	end
+	expect(playedClip(sim, client, sapling.idle), "the creature idles from the start")
+
+	-- A party summon comes out for its own attack: idle, then its swing.
+	expect(sim:runUntil(function()
+		return playedClip(sim, client, sahur.attack)
+	end, 120), "no Tung Tung Sahur ever swung its attack clip")
+	expect(playedClip(sim, client, sahur.idle), "it idles while it's out")
+
+	-- Someone falls by the end: the creature (on the floor) or a party member's summon (it comes
+	-- out to fall).
+	expect(sim:runUntil(function()
+		return observer.battlesFinished >= 1 and backInOverworld(observer)
+	end, 3600), "the battle never finished")
+	expect(playedClip(sim, client, sapling.death) or playedClip(sim, client, sahur.death), "a death clip played")
+
+	-- Hit, a player's character flinches: its joints rock back and spring back.
+	local flinched = {}
+	for _, tween in sim.tweenLog do
+		if tween.goals.C0 ~= nil and tween.instance.ClassName == "Motor6D" then
+			flinched[tween.instance.Name] = true
+			expect(tween.info.Reverses, "and springs back")
+		end
+	end
+	expect(flinched.RootJoint and flinched.Neck, "the character flinched at the waist and the neck")
+	assertClean(sim, observer)
+end)
+
+test("a summon whose model isn't in the place is a block, with one warning", function()
+	local sim, observer = newWorld(854)
+	local client = join(sim, observer, -1, "Ann", nil)
+	client.env.dm:GetService("ReplicatedStorage").SummonModels.TungTungSahur:Destroy()
+	sim:run(1)
+	touch(sim, observer, -1, "SouthLookout", "side")
+	local result = playMoves(sim, observer, client, { "Strike" })
+	expectEqual(result, "Strike:character+summon:summon")
+	local stage = client.env.dm:GetService("Workspace").BattleStage
+	for _, p in observer.last.battle.participants do
+		if p.side == "Party" and p.ownerUserId == -1 then
+			local spot = stage[p.id]
+			expect(spot:FindFirstChild("Summon") == nil, "back off the field")
+		end
+	end
+	expectEqual(#sim.warnings, 1, "warned once, not per figure")
+	expect(string.find(sim.warnings[1].message, "TungTungSahur", 1, true), "naming the missing model")
+	table.clear(sim.warnings)
 	assertClean(sim, observer)
 end)
 
