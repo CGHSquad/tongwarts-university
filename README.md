@@ -8,9 +8,9 @@ BrainRot meme characters like Tung Tung Sahur. The design lives in [`docs/GDD.md
 Code lives in `src/` and syncs into Roblox Studio with [Rojo](https://rojo.space).
 
 1. Install [Rokit](https://github.com/rojo-rbx/rokit), then run `rokit install` in this folder.
-   That installs the tool versions pinned in `rokit.toml` (Rojo 7.7.0, plus Lune for the scripts
-   in `tools/` and `tests/`), so everyone uses the same ones. The first time, answer yes when it
-   asks you to trust each tool.
+   That installs the tool versions pinned in `rokit.toml` (Rojo 7.7.0, Lune for the scripts
+   in `tools/` and `tests/`, and luau-lsp for type checking), so everyone uses the same ones.
+   The first time, answer yes when it asks you to trust each tool.
 2. Install the matching Studio plugin: `rojo plugin install`.
 3. Then either:
    - **Day to day:** run `rojo serve`, open a place in Studio (the Baseplate template is fine),
@@ -148,6 +148,7 @@ top of that, your character always has Attack and Guard (see Rules):
 | `StarterPlayerScripts/BattleClient.client.luau` | Client entry point: draws each server update, sends button presses. |
 | `StarterPlayerScripts/Combat/BattleUI.luau`, `BattleView.luau`, `BattleTheme.luau` | The overworld panel and battle HUD; the stage (each player's character, with its summon appearing behind it for the summon's own abilities, and the enemy blocks) and battle camera, in its own arena past the edge of the map; and their colors and fonts. |
 | `tools/simulate-battles.luau` | Plays thousands of battles with the real rules to compare party comps (see below). |
+| `tools/typecheck.luau` | Type-checks `src/` the way Studio sees it: `lune run tools/typecheck`. |
 | `tests/run.luau`, `tests/Sim.luau` | Headless tests: bots play the real game on a fake Roblox, no Studio needed (see below). |
 
 ### Tuning and the battle simulator

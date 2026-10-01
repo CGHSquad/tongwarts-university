@@ -62,7 +62,8 @@ treat it as the current source of truth, not something to hand-edit here.
   `tests/run.luau`). They build the place with Rojo and play it on a fake Roblox
   (`tests/Sim.luau`), with bots using the real UI. When behavior changes on purpose, update the
   tests that pin it down. They can't check visuals; those need a look in Studio.
-- All scripts are `--!strict` Luau; keep them free of type errors.
+- All scripts are `--!strict` Luau; keep them free of type errors. `lune run tools/typecheck` checks
+  `src/` with luau-lsp (pinned in `rokit.toml`) against Roblox's API and the Rojo sourcemap.
 
 ## Art source assets
 
