@@ -62,7 +62,8 @@ treat it as the current source of truth, not something to hand-edit here.
   `tests/run.luau`). They build the place with Rojo and play it on a fake Roblox
   (`tests/Sim.luau`), with bots using the real UI. When behavior changes on purpose, update the
   tests that pin it down. They can't check visuals; those need a look in Studio.
-- All scripts are `--!strict` Luau; keep them free of type errors.
+- All scripts are `--!strict` Luau; keep them free of type errors. `lune run tools/typecheck` checks
+  `src/` with luau-lsp (pinned in `rokit.toml`) against Roblox's API and the Rojo sourcemap.
 
 ## Art source assets
 
@@ -82,5 +83,10 @@ treat it as the current source of truth, not something to hand-edit here.
   uploaded in Studio, its resulting asset ID (`rbxassetid://...`) belongs in that
   summon's entry in `Summons.luau` (or a new field there) — not hardcoded into
   `BattleView.luau` — so content stays data-driven like everything else in
-  `ReplicatedStorage/Combat/`. That wiring hasn't happened yet for Tung Tung Sahur
-  (`Summons.luau` has no asset ID fields yet) even though it's imported in Studio.
+  `ReplicatedStorage/Combat/`.
+- Wired so far: the four Tung Tung archetypes. Each rig (skinned mesh + AnimationController,
+  facing -Z) is saved from Studio as `src/ReplicatedStorage/SummonModels/<id>.rbxm`, which Rojo
+  syncs into `ReplicatedStorage.SummonModels`; its `art` entry in `Summons.luau` names the model and
+  holds its stage height, clip IDs by beat (idle/attack/death/walk) and, while the uploaded clips
+  still carry a stray hip offset, a `groundOffset`. A summon with no `art` (e.g. `WildSapling`)
+  stays a colored block. Missing clips: the Elder's idle/death, all of the Grove-Keeper's.
