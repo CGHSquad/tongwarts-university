@@ -3312,6 +3312,49 @@ test("M2: a real fight on the new HUD: Attack, Spell and Guard through the ring,
 end)
 
 
+test("M2: a reset during my own turn brings the enemy plates and my pick straight back, before any new snapshot", function()
+	local sim, observer = newWorld(6106)
+	local client = joinHud(sim, observer, -1, "Ann", PHONE)
+	local Theme = m2Modules(client).Theme
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "front")
+	local safeArea = client.playerGui.CombatHUD.SafeArea
+	hudTurn(sim, client)
+	sim:click(client, safeArea.Ring.Attack)
+	expect(safeArea.TargetPanel.Visible, "picking a target")
+	local enemies = client.playerGui.CombatHUDEnemies
+	-- Move the pick off the default enemy when there is another one, so the pick itself is tested.
+	local other = nil
+	for _, gui in enemies:GetChildren() do
+		if Sim.isClickable(gui.Root.Plate) and gui.Root.BracketLeft.BackgroundColor3 ~= Theme.Colors.Gold then
+			other = gui
+		end
+	end
+	if other then
+		sim:click(client, other.Root.Plate)
+	end
+	local chosen = if other then other.Name else "Enemy_E1"
+	local snapshotBefore = client.lastSnapshot
+	local sequenceBefore = lastSequence(client)
+
+	sim:spawnCharacter(-1) -- a reset: PlayerGui cleared, CharacterAdded fired, nothing from the server
+	expect(client.lastSnapshot == snapshotBefore, "no new snapshot arrived")
+	local folder = client.playerGui:FindFirstChild("CombatHUDEnemies")
+	expect(folder ~= nil and folder ~= enemies, "a fresh plate folder, at once")
+	for _, gui in folder:GetChildren() do
+		expect(gui.Enabled and gui.Root.BracketLeft.Visible and Sim.isClickable(gui.Root.Plate), gui.Name .. " is back and pickable")
+	end
+	expect(folder[chosen].Root.BracketLeft.BackgroundColor3 == Theme.Colors.Gold, "the chosen enemy still has the gold brackets")
+	expect(safeArea.TargetPanel.Visible and Sim.isClickable(safeArea.TargetPanel.Confirm), "the target panel is still up")
+
+	sim:click(client, folder[chosen].Root.Plate) -- tapping the fresh plate of the pick confirms it
+	local played = waitPlayed(sim, client, sequenceBefore, "Attack")
+	expectEqual(played.abilityId, "Attack")
+	expectEqual(played.results[1].targetId, string.sub(chosen, 7))
+	sim:run(1)
+	assertClean(sim, observer)
+end)
+
 print("\nEvery summon variant, through the UI")
 
 local function setLineup(sim, lineup)

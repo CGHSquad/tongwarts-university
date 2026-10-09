@@ -60,17 +60,29 @@ local function myBattle(snapshot: BattleTypes.Snapshot): BattleTypes.BattleState
 	return nil
 end
 
-stateUpdateRemote.OnClientEvent:Connect(function(snapshot: BattleTypes.Snapshot)
+-- The latest snapshot, kept so a respawn can be drawn again without a round trip.
+local lastSnapshot: BattleTypes.Snapshot? = nil
+
+local function render(snapshot: BattleTypes.Snapshot)
+	lastSnapshot = snapshot
 	local mine = myBattle(snapshot)
 	view:render(mine)
 	ui:render(snapshot)
 	-- Touch controls off while in a fight, keyed off every snapshot (M0 report R21).
 	Controls.setEnabled(mine == nil)
-end)
+end
+
+stateUpdateRemote.OnClientEvent:Connect(render)
 
 -- A fresh character (a reset mid-fight, the respawn after a loss) gets the same controls back.
+-- A respawn also clears PlayerGui of everything but the opted-out ScreenGuis (the HUD's enemy
+-- plates among the casualties) and the server sends nothing for it, so the last snapshot is
+-- drawn again at once: the plates, and the pick being made, come straight back.
 localPlayer.CharacterAdded:Connect(function()
 	Controls.reapply()
+	if lastSnapshot then
+		render(lastSnapshot)
+	end
 end)
 
 noticeRemote.OnClientEvent:Connect(function(message: string)
