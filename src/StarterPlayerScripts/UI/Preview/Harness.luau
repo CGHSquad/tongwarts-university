@@ -342,9 +342,9 @@ function Harness.open(playerGui: PlayerGui): Handle
 		end
 	end)
 
-	-- The live combat HUD (old or new) stays out of the way while the harness is up.
+	-- The live combat HUD stays out of the way while the harness is up.
 	local hidden: { ScreenGui } = {}
-	for _, liveName in { "BattleUI", "CombatHUD" } do
+	for _, liveName in { "CombatHUD" } do
 		local live = playerGui:FindFirstChild(liveName)
 		if live and live:IsA("ScreenGui") and live.Enabled then
 			live.Enabled = false

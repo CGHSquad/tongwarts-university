@@ -13,6 +13,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Combat = ReplicatedStorage:WaitForChild("Combat")
 local Abilities = require(Combat:WaitForChild("Abilities"))
 local BattleTypes = require(Combat:WaitForChild("BattleTypes"))
+local CombatConfig = require(Combat:WaitForChild("CombatConfig"))
 local StatusEffects = require(Combat:WaitForChild("StatusEffects"))
 local Flags = require(script.Parent:WaitForChild("Flags"))
 local Strings = require(script.Parent:WaitForChild("Strings"))
@@ -31,6 +32,16 @@ local Bindings = {}
 Bindings.CHARACTER_MOVES = { "Attack", "Guard" }
 
 local PHASES: { [string]: UITypes.HudPhase } = { setup = "Setup", input = "Input", resolve = "Resolve", reward = "Reward" }
+
+Bindings.RECENT_LOG_LINES = 3
+
+local function recentLog(log: { string }): { string }
+	local lines = {}
+	for index = math.max(1, #log - Bindings.RECENT_LOG_LINES + 1), #log do
+		table.insert(lines, log[index])
+	end
+	return lines
+end
 
 function Bindings.participant(p: ParticipantState, localUserId: number): HudParticipant
 	local statuses = {}
@@ -95,8 +106,28 @@ function Bindings.battle(battle: BattleState, localUserId: number): HudBattle
 		overworldReturnAt = battle.overworldReturnAt,
 		lastActionSequence = if battle.lastAction then battle.lastAction.sequence else 0,
 		lastLogLine = battle.log[#battle.log],
+		recentLog = recentLog(battle.log),
 		allEnemiesDown = false,
 	}
+end
+
+-- What Guard does, from CombatConfig, so the line stays true when it's tuned.
+function Bindings.guardDescription(): string
+	local damage = math.round(CombatConfig.GuardDamageReduction * 100)
+	local ailments = math.round((1 - CombatConfig.GuardAilmentChanceMultiplier) * 100)
+	return Strings.format.guard(damage, ailments)
+end
+
+-- The one-line description for a command ribbon while it's hovered or held: the character's own
+-- moves have one, like the spell rows do.
+function Bindings.commandHint(id: UITypes.CommandId): string?
+	if id == "Guard" then
+		return Bindings.guardDescription()
+	elseif id == "Attack" then
+		local attack = Abilities.Attack
+		return if attack then attack.description else nil
+	end
+	return nil
 end
 
 -- Whether this player has a summon in the battle.

@@ -171,16 +171,21 @@ function SkillList.build(gui: ScreenGui, safeArea: Frame, callbacks: Callbacks):
 	local function layout(virtual: Vector2)
 		local regions = Layout.regions(virtual)
 		local right, topRight = regions.right, regions.topRight
+		-- The party column is narrow on a phone; the list takes the right half of the screen instead
+		-- (the cards hide while it's open), still above the bottom-right corner.
+		local x = math.max(regions.bottomCenter.x, math.floor(virtual.X * 0.5))
+		local width = right.x + right.w - x
+		local top = regions.topCenter.y + regions.topCenter.h -- under the turn bar
 		back.button.Size = UDim2.fromOffset(88, Theme.Sizes.TapMin)
 		back.button.Position = UDim2.fromOffset(topRight.x + topRight.w - 88, topRight.y)
-		header.Position = UDim2.fromOffset(right.x, right.y)
-		header.Size = UDim2.fromOffset(math.floor(right.w * 0.6), 40)
-		local listTop = right.y + 46
+		header.Position = UDim2.fromOffset(x, top)
+		header.Size = UDim2.fromOffset(math.min(width, 200), 40)
+		local listTop = top + 46
 		local confirmHeight = Theme.Sizes.TapComfortable
-		list.Position = UDim2.fromOffset(right.x, listTop)
-		list.Size = UDim2.fromOffset(right.w, right.y + right.h - listTop - confirmHeight - Theme.Sizes.Gap)
-		confirm.button.Size = UDim2.fromOffset(right.w, confirmHeight)
-		confirm.button.Position = UDim2.fromOffset(right.x, right.y + right.h - confirmHeight)
+		list.Position = UDim2.fromOffset(x, listTop)
+		list.Size = UDim2.fromOffset(width, right.y + right.h - listTop - confirmHeight - Theme.Sizes.Gap)
+		confirm.button.Size = UDim2.fromOffset(width, confirmHeight)
+		confirm.button.Position = UDim2.fromOffset(x, right.y + right.h - confirmHeight)
 	end
 	layout(ScreenManager.virtualSize(safeArea))
 

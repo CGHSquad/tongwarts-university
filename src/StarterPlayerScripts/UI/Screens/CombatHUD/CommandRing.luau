@@ -2,7 +2,8 @@
 --[[
 	CommandRing — the ribbons on the left: Attack, Spell, Guard (Item and Pass behind flags), each a
 	big tap target in its fixed color (handoff S1). They burst in with a stagger when it's the
-	local player's turn and hide otherwise. Keyboard players see [1]..[5].
+	local player's turn and hide otherwise. Keyboard players see [1]..[5]. Hovering or holding a
+	ribbon reports it (onHint), so the HUD can show what the move does, like a spell row's description.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -46,7 +47,7 @@ local ART: { [string]: string } = {
 
 local CommandRing = {}
 
-function CommandRing.new(parent: Instance, onCommand: (id: UITypes.CommandId) -> ()): CommandRing
+function CommandRing.new(parent: Instance, onCommand: (id: UITypes.CommandId) -> (), onHint: ((id: UITypes.CommandId?) -> ())?): CommandRing
 	local frame = Gui.frame(parent, "Ring")
 	frame.Visible = false
 	local ribbons: { Ribbon } = {}
@@ -85,6 +86,22 @@ function CommandRing.new(parent: Instance, onCommand: (id: UITypes.CommandId) ->
 				end,
 			})
 			button.setEnabled(command.enabled)
+			if onHint then
+				local hint = onHint :: (id: UITypes.CommandId?) -> ()
+				local object = button.button
+				object.MouseEnter:Connect(function()
+					hint(id)
+				end)
+				object.MouseButton1Down:Connect(function()
+					hint(id)
+				end)
+				object.MouseLeave:Connect(function()
+					hint(nil)
+				end)
+				object.MouseButton1Up:Connect(function()
+					hint(nil)
+				end)
+			end
 			table.insert(ribbons, { button = button, id = id })
 		end
 		place()

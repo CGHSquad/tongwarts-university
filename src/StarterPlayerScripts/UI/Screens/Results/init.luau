@@ -134,20 +134,21 @@ function Results.build(gui: ScreenGui, safeArea: Frame, callbacks: Callbacks): R
 		local panel = SlicedPanel.new(rowsFrame, { name = `Row{index}`, assetKey = "Results_PartyRow", look = { fill = Theme.Colors.Obsidian, fillTransparency = 0.05, trim = Theme.Colors.Gold, trimThickness = 1 }, padding = 4, size = UDim2.new(1, 0, 0, ROW_HEIGHT), layoutOrder = index })
 		panel.frame.Visible = false
 		local head = HeadIcon.new(panel.content, { name = "Head", userId = nil, fallbackText = "", size = 32 })
-		local name = Gui.label(panel.content, "Title", { size = Theme.Sizes.TextBody, font = Theme.Fonts.Bold, align = Enum.TextXAlignment.Left })
+		-- The name on the first line, the level and the EXP gained on the second, the badge at the right:
+		-- fits a small phone's half column.
+		local name = Gui.label(panel.content, "Title", { size = Theme.Sizes.TextLabel + 2, font = Theme.Fonts.Bold, align = Enum.TextXAlignment.Left })
 		name.Position = UDim2.fromOffset(38, 0)
-		name.Size = UDim2.new(0.4, -38, 1, 0)
-		local level = Gui.label(panel.content, "Level", { size = Theme.Sizes.TextLabel + 1, color = Theme.Colors.TextDim, align = Enum.TextXAlignment.Left })
-		level.Position = UDim2.new(0.4, 4, 0, 0)
-		level.Size = UDim2.new(0, 56, 1, 0)
-		local gained = Gui.label(panel.content, "Gained", { size = Theme.Sizes.TextBody, font = Theme.Fonts.Display, color = Theme.Colors.Gold, align = Enum.TextXAlignment.Right, stroke = 1 })
-		gained.AnchorPoint = Vector2.new(1, 0)
-		gained.Position = UDim2.new(1, -90, 0, 0)
-		gained.Size = UDim2.new(0, 70, 1, 0)
+		name.Size = UDim2.new(1, -38 - 80, 0, 18)
+		local level = Gui.label(panel.content, "Level", { size = Theme.Sizes.TextLabel, color = Theme.Colors.TextDim, align = Enum.TextXAlignment.Left })
+		level.Position = UDim2.fromOffset(38, 18)
+		level.Size = UDim2.fromOffset(52, 16)
+		local gained = Gui.label(panel.content, "Gained", { size = Theme.Sizes.TextLabel + 2, font = Theme.Fonts.Display, color = Theme.Colors.Gold, align = Enum.TextXAlignment.Left, stroke = 1 })
+		gained.Position = UDim2.fromOffset(94, 17)
+		gained.Size = UDim2.fromOffset(70, 18)
 		local badge = Fallbacks.image(panel.content, "LevelUp", "Badge_LevelUp", { fill = Theme.Colors.HpGreen, fillTransparency = 0, trim = Theme.Colors.Ink, trimThickness = 1, corner = 4 })
 		badge.AnchorPoint = Vector2.new(1, 0.5)
 		badge.Position = UDim2.new(1, 0, 0.5, 0)
-		badge.Size = UDim2.fromOffset(84, 22)
+		badge.Size = UDim2.fromOffset(76, 22)
 		badge.Visible = false
 		local badgeText = Gui.label(badge, "Label", { text = Strings.LevelUp, size = Theme.Sizes.TextLabel, font = Theme.Fonts.Display, stroke = 1 })
 		badgeText.Visible = badge.Image == ""
