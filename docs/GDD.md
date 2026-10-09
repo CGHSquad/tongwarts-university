@@ -166,6 +166,45 @@ Refines the leveling model above with the actual curve shape and how the player-
 
 **Launch kits and Level 1 stats come from the archetype sheet, confirmed.** The Stage 0 kits in the archetype sheet (Base: Cur, Tor, Brace, Strike One, Wind Ward, Dizzying Gale, Clap Gust; Elder: Groundshake Taunt, Windbreak, Band Aid, Blind Strike, Hardwood Sap, All-Defense, Heartwood Stand; Sapling: Vital Strike, Stick Driver, Wake-Up Call, Strike Evade, Dead Wood, Grudge, Timber Fall; Grove-Keeper: Tor, Guarja, Gator, Sap Mend, Mana Font, Rilenda, Grove Bond) replace the Phase 1 prototype kits (Strike, Gale Clap, Knock on Wood, Splinter Slam, Tailwind and the rest). The sheet's Level 1 stats replace the prototype stat blocks (Base 10/10/12/10/10, Elder 6/8/14/6/10, Sapling 12/6/8/13/11, Grove-Keeper 6/13/11/10/10 in Strength/Magic/Endurance/Agility/Luck order), growing linearly toward each archetype's ceiling. Evolution stays out of this build.
 
+**Launch kit numbers, confirmed (starting values, tuned with `simulate-battles`).** Costs follow Metaphor's model: Mana skills cost a fixed amount (weak single-target 4, weak all-target 6, buffs/debuffs 8), Health skills cost a percentage of the caster's HP. Damage = (power + stat × ratio), then the usual variance, crit and Endurance cut; heals skip variance. At Lv 1 a weak skill takes about 7–9 hits to knock out a summon, close to today's fights. Fortune skills scale off Luck.
+
+| Archetype | Ability (unlock Lv) | What it does | Numbers | Cost |
+| --- | --- | --- | --- | --- |
+| Base | Cur (1) | Heal one ally | 15 + Magic × 1.0 | 4 MP |
+| Base | Tor (1) | Wind, one enemy | 12 + Magic × 1.0 | 4 MP |
+| Base | Brace (5) | Self Defence up (light) | damage taken × 0.85, 3 turns | 5 MP |
+| Base | Strike One (10) | Strike, one enemy | 12 + Strength × 1.0 | 4 MP |
+| Base | Wind Ward (15) | Target enemy's next Wind skill within 3 turns is negated | — | 6 MP |
+| Base | Dizzying Gale (20) | Passive: user's Daze chances × 1.5 | — | — |
+| Base | Clap Gust (25, Signature) | Wind, all enemies, high Daze chance | 6 + Magic × 0.6; Daze 45%, 2 turns | 8 MP |
+| Elder | Groundshake Taunt (1) | Taunt: enemies must target Elder | 1 turn | 4 MP |
+| Elder | Windbreak (5, Signature) | Self Guarded; attackers that hit it may be Dazed | damage taken × 0.6, 2 turns; Daze 25%, 1 turn | 6 MP |
+| Elder | Band Aid (9) | Heal one ally, main menu only | not usable in battle | — |
+| Elder | Blind Strike (13) | Strike, one enemy, plus Hit/Evasion down (Fokanda) | 10 + Strength × 1.0 | 6 MP |
+| Elder | Hardwood Sap (17) | Passive: Defence +10% | damage taken × 0.9 | — |
+| Elder | All-Defense (21) | Passive: starts every battle with Defence up | Guarja for the first 3 turns | — |
+| Elder | Heartwood Stand (25, Signature) | Taunt + big damage cut + heals when hit | 2 turns; damage taken × 0.5; heal 5% max HP per hit | 12 MP |
+| Sapling | Vital Strike (1) | Strike, one enemy, stronger at high HP | (12 + Strength × 1.0) × (0.5 + 0.7 × HP%) | 8% HP |
+| Sapling | Stick Driver (5) | Strike, one enemy, may Daze | 12 + Strength × 1.0; Daze 30%, 2 turns | 10% HP |
+| Sapling | Wake-Up Call (9) | Self Attack and Agility up (Rileja + Zippja) | 3 turns | 8 MP |
+| Sapling | Strike Evade (13) | Passive: harder to hit with Strike | incoming Strike hit chance −15 points | — |
+| Sapling | Dead Wood (17, Fortune) | Strike, one enemy; big crit bonus below 30% HP | 12 + Luck × 1.0; +40% crit chance vs targets under 30% HP | 6 MP |
+| Sapling | Grudge (21) | Passive: Strength +2 each time it takes damage (own HP costs count) | up to 5 stacks per battle | — |
+| Sapling | Timber Fall (25, Signature) | Strike, all enemies, plus Defence down (Guarnda) | 8 + Strength × 0.9 | 25% of current HP (can't KO) |
+| Grove-Keeper | Tor (1) | Wind, one enemy | 12 + Magic × 1.0 | 4 MP |
+| Grove-Keeper | Guarja (5) | One ally Defence up | damage taken × 0.8, 3 turns | 8 MP |
+| Grove-Keeper | Gator (9) | Wind, all enemies | 8 + Magic × 0.8 | 6 MP |
+| Grove-Keeper | Sap Mend (13, Fortune) | Small heal; Luck-based chance to cure one ailment | 10 + Magic × 0.8; cure 40% + Luck × 2% | 5 MP |
+| Grove-Keeper | Mana Font (17) | Passive: max Mana +10% | — | — |
+| Grove-Keeper | Rilenda (21) | One enemy Attack down | damage dealt × 0.8, 3 turns | 8 MP |
+| Grove-Keeper | Grove Bond (25, Signature) | Passive: Tung Tung allies deal more damage | +5%, +5% per other Tung Tung archetype in the party, max +15% | — |
+
+**Buff/debuff roots (3 turns, re-applying refreshes, never stacks):** Rile (Attack): ×1.25 damage dealt up / ×0.8 down. Guar (Defence): ×0.8 damage taken up / ×1.25 down. Foka (Hit/Evasion): ±10 points on hit and evade chances. Zipp (Agility): ±4 Agility for accuracy and evasion (turn order is never re-sorted mid-battle). Every damage-cut source still multiplies and stays under the existing 75% total cap.
+
+**"Certain attacks defy this" (taunts):** all-target attacks and a boss's charged attack ignore taunts. Wild enemies use their matching archetype's kit at their own level.
+
+**Mana between and during fights.** Mana and HP refill at the start of every battle, as today. Per-turn Mana regen starts at 0, since the new pools (55–65 at Lv 1) already cover a normal fight; the simulator tunes it only if needed. With fixed costs this low, Mana mostly matters in long boss fights. **Open question:** whether Mana should instead carry between fights (Metaphor-style) is a later economy decision, not part of this build.
+
 **Base stat hard boundary, confirmed explicit.** No archetype's BASE stat value may exceed 70 unless that stat's Growth Lean is "High" (the one \~70-ceiling stat each archetype specializes in) — this restates what the per-archetype ceiling table above already enforces, now as an explicit rule rather than an implication. A stat can only read above 70 through an EXTERNAL source — gear, consumables, or an active buff skill — never from leveling alone. The external-buff/gear system is still Later/Could-have scope (see the Gear System section); don't design specific numbers against it yet.
 
 **Level cap: design the full curve now, gate the live cap separately.** Build the HP/Mana/stat formulas across the full intended range (the team is designing against a Level 1–99 shape) rather than a smaller range that would need rebuilding later. The actual level cap players can reach *at launch* stays a separate, lower configuration value layered on top of that formula (per "Level cap pacing" above) — raising the cap post-launch just moves the gate, it doesn't require redesigning the curve.
@@ -521,6 +560,8 @@ Damage/Tank/Healer/Support/Debuffer/Crowd-Control/Utility are useful *design lan
 **Later:** full elemental/BrainRot-type chart with multiple weaknesses per unit, team attacks (multi-player combo abilities), chain effects, ultimate abilities with charge meters. These add real depth but each multiplies QA surface area — sequence them after the MVP loop is proven fun, not before.
 
 **Affinity tier scoping — confirmed.** The MVP damage-type axis above uses three tiers: **Weak / Neutral / Resist**. The fuller SMT/Persona-style set — **Null, Repel, Absorb** — stays in the "Later" bucket, not because the idea's wrong (it's a great thematic fit) but because Repel/Absorb specifically invert or redirect damage rather than just scale it, which is exactly the kind of thing that could quietly produce a new unkillable "turtle" build (stack Endurance + a Repel/Absorb affinity against a common attack type) that `tools/simulate-battles` wasn't originally built to catch — that combination needs its own dedicated balance pass before it ships, not a casual addition on top of the MVP loop. Null is the cheapest of the three to pull forward early if wanted, since it's a flat zero rather than a redirect.
+
+**Update — affinities ship in this build, with Null, confirmed.** Tiers and multipliers: Weak ×1.5, Neutral ×1, Resist ×0.5, Null ×0 (Null is pulled forward as the note above allowed; Repel and Absorb stay later). Damage categories: Melee Strike / Slash / Pierce and Elemental Wind; Fire, Water and Elec rows exist in the data but nothing deals them yet. The archetype sheet's **Fortune** row changes how likely ailments are to land on that summon (Weak ×1.5 chance, Resist ×0.5, Null immune), not damage. Party summons use the archetype sheet's affinity profiles as written. **Wild enemies get their own profiles**, not copies of the party's: the Tung Tung roster resists or nulls its own Strike and Wind by design, so copying those profiles onto wild Tung Tungs would make most party attacks deal half or no damage. Each wild enemy gets at least one weakness. A weakness is revealed to the party after it's been hit once (the HUD's WEAK markers). The Down / ONE MORE! system stays off.
 
 **Design-ahead is fine, implementation is not:** full Weak/Neutral/Resist/Null/Repel/Absorb affinity values can be designed now in the team's content spreadsheet for every archetype/build (cheap, it's just data) — the gate is specifically on turning Null/Repel/Absorb affinities on in a live build before they've had a dedicated balance pass.
 
