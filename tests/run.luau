@@ -2234,6 +2234,53 @@ test("after a win the enemy is gone until it respawns; everyone gets a moment to
 	assertClean(sim, observer)
 end)
 
+test("a party that wins and stays put isn't pulled into a new fight when the enemy respawns", function()
+	-- The fight leaves the party standing where it touched the enemy: right on its spot. The enemy
+	-- comes back there, so it has to wait until they've walked off, or a win would start the next
+	-- fight by itself (seen live on the campus gym's sparring stage).
+	local sim, observer = newWorld(816)
+	local summons = sim.server.require(sim.server.dm:GetService("ReplicatedStorage").Combat.Summons)
+	local config = sim.server.require(sim.server.dm:GetService("ReplicatedStorage").Combat.CombatConfig)
+	summons.WildSapling.stats = { Strength = 1, Magic = 1, Endurance = 0, Agility = 1, Luck = 0 } -- a pushover
+	local client = join(sim, observer, -1, "Ann", { thinkMin = 0.3, thinkMax = 1, policy = "greedy" })
+	sim:run(1)
+	expect(client.coreGui.Backpack == false, "the backpack hotbar (Roblox's own 1-9 keys) is off")
+
+	-- Up on the campus, 1-on-1 with the gym's sparring sapling (ground y = 403.5 there).
+	touch(sim, observer, -1, "GymWildSapling", "front")
+	expect(sim:runUntil(function()
+		return observer.battlesFinished >= 1 and backInOverworld(observer)
+	end, 600), "the fight never finished")
+	expectEqual(observer.results[1].winner, "Party")
+	expect(sim:overworldEnemies().GymWildSapling == nil, "the beaten sapling is gone")
+	local root = sim:rootPart(-1)
+	local stood = root.CFrame.Position
+	expect(not root.Anchored, "Ann is free to move")
+
+	-- Ann doesn't move (chatting, or away from the keyboard). Long after the cooldown and the respawn
+	-- time have passed, nothing has happened to her...
+	sim:run(config.EncounterCooldownSeconds + config.EnemyRespawnSeconds + 5)
+	expectEqual(observer.battlesStarted, 1, "no second fight while she stands on its spot")
+	expect(sim:overworldEnemies().GymWildSapling == nil, "the sapling waits to come back")
+	expect((root.CFrame.Position - stood).Magnitude < 0.01, "and she hasn't been moved")
+
+	-- ...she walks off its spot, and it comes back where it stood...
+	root.CFrame = root.CFrame + roblox.Vector3.new(12, 0, 0)
+	expect(sim:runUntil(function()
+		return sim:overworldEnemies().GymWildSapling ~= nil
+	end, 2), "it respawns once she's clear")
+	local back = sim:overworldEnemies().GymWildSapling
+	local position = back.CFrame.Position
+	expect(math.abs(position.X - 4182) < 0.01 and math.abs(position.Z - -56) < 0.01, "at its spot")
+	sim:run(1)
+	expectEqual(observer.battlesStarted, 1, "and still no fight")
+
+	-- ...and walking back into it is a fight again, as ever.
+	touch(sim, observer, -1, "GymWildSapling", "front")
+	expectEqual(observer.battlesStarted, 2)
+	assertClean(sim, observer)
+end)
+
 test("after a loss the party respawns at the spawn point, and the enemy stays", function()
 	local sim, observer = newWorld(815)
 	local summons = sim.server.require(sim.server.dm:GetService("ReplicatedStorage").Combat.Summons)

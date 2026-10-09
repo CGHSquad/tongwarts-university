@@ -9,7 +9,9 @@
 	fight runs, that enemy holds still, the party's characters are frozen where they stood, and no
 	other fight can start. When it's over (endBattle):
 
-		the party won   the enemy vanishes and comes back EnemyRespawnSeconds later
+		the party won   the enemy vanishes and comes back EnemyRespawnSeconds later, at its start point,
+		                but not while anyone is standing on that spot (the party is left where it stood,
+		                and until they walk off, it waits: a win never turns into a new fight on its own)
 		the party lost  everyone in it respawns, and `returnBeaten` (from BattleServer) brings them back
 		                to the arrival circle of the zone they fought in (EnemySpawn.zone)
 		either way      the party gets EncounterCooldownSeconds to walk away before another fight
@@ -40,6 +42,9 @@ export type ReturnBeaten = (player: Player, zone: EnemySpawns.Zone) -> ()
 local BODY_SIZE = Vector3.new(4, 6, 4)
 local BODY_COLOR = Color3.fromRGB(196, 78, 64)
 local RETRY_SECONDS = 1 -- after a touch that couldn't start a fight, before that player can try again
+-- A beaten enemy's spot has to be clear this many touching distances around before it comes back,
+-- so it never reappears in someone's face.
+local RESPAWN_CLEARANCE = 2
 -- Enemies turn smoothly instead of snapping: this fast (radians per second). A patroller that has to
 -- turn more than TURN_BEFORE_WALK toward its next point turns in place first, then walks.
 local TURN_SPEED = math.rad(160)
@@ -266,6 +271,18 @@ local function touching(playerPosition: Vector3, enemyPosition: Vector3, reach: 
 		and math.abs(offset.Y) <= BODY_SIZE.Y
 end
 
+-- Whether any player's character stands within `clearance` touching distances of `position`.
+local function anyoneNear(position: Vector3, reach: number?, clearance: number): boolean
+	local radius = (reach or CombatConfig.EncounterContactDistance) * clearance
+	for _, player in Players:GetPlayers() do
+		local root = characterParts(player)
+		if root and touching(root.CFrame.Position, position, radius) then
+			return true
+		end
+	end
+	return false
+end
+
 --[[ Overworld ]]
 
 function Overworld.new(startBattle: StartBattle, returnBeaten: ReturnBeaten?): Overworld
@@ -357,7 +374,9 @@ function Overworld._step(self: Overworld, dt: number)
 	for _, enemy in self.enemies do
 		local respawnAt = enemy.respawnAt
 		if respawnAt then
-			if self.clock >= respawnAt then
+			-- Due back, and nobody is standing on its spot (the party that beat it is left right there
+			-- until they walk off; coming back onto them would start the next fight by itself).
+			if self.clock >= respawnAt and not anyoneNear(standingAt(enemy.spawn.path[1]), enemy.spawn.reach, RESPAWN_CLEARANCE) then
 				enemy.respawnAt = nil
 				placeAtStart(enemy)
 				enemy.body.Parent = self.folder

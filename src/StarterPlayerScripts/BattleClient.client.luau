@@ -11,6 +11,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
 local Workspace = game:GetService("Workspace")
 
 local BattleTypes = require(ReplicatedStorage:WaitForChild("Combat"):WaitForChild("BattleTypes"))
@@ -28,6 +29,11 @@ local noticeRemote = remotes:WaitForChild("Notice") :: RemoteEvent
 
 local localPlayer = Players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui") :: PlayerGui
+
+-- Roblox's backpack hotbar claims the number keys whenever a Tool is in the backpack, and the HUD
+-- uses 1-5 for its commands. Nothing in the game hands out Tools, so the Backpack is off for good.
+-- (If Tools ever arrive, switch it per snapshot the way Controls handles the touch controls.)
+StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
 -- The HUD draws the enemies' plates itself (M0 report R19).
 local view = BattleView.new({ enemyNameplates = false })
 local callbacks = {
