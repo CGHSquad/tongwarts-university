@@ -813,6 +813,10 @@ local function attachClientChecker(sim, observer, client)
 					if card.Content.StatusTag.Visible ~= (p.status ~= "Active") then
 						observer:fail(`{client.name}: {p.id}'s KO tag is wrong`)
 					end
+					local owner = if p.ownerUserId == client.userId then Strings.format.you(p.ownerName or "") else (p.ownerName or "")
+					if card.Content.Owner.Text ~= owner then
+						observer:fail(`{client.name}: {p.id}'s card says "{card.Content.Owner.Text}", not whose summon it is`)
+					end
 					for _, status in p.statuses do
 						local def = observer.StatusEffects[status.id]
 						if not string.find(card.Content.Statuses.Text, if def then def.name else status.id, 1, true) then
@@ -831,7 +835,35 @@ local function attachClientChecker(sim, observer, client)
 					observer:fail(`{client.name}: {p.id}'s plate isn't over its enemy`)
 				elseif spot.Nameplate.Enabled then
 					observer:fail(`{client.name}: BattleView's plate for {p.id} is still on (R19)`)
+				else
+					local tags = 0
+					for _, tag in plate.Root.Statuses:GetChildren() do
+						if tag:IsA("ImageLabel") then
+							tags += 1
+							local known = false
+							for _, status in p.statuses do
+								local def = observer.StatusEffects[status.id]
+								known = known or tag.Label.Text == Strings.format.statusTurns(if def then def.name else status.id, status.turnsLeft)
+							end
+							if not known then
+								observer:fail(`{client.name}: {p.id}'s plate shows a status it doesn't have ({tag.Label.Text})`)
+							end
+						end
+					end
+					if tags ~= #p.statuses then
+						observer:fail(`{client.name}: {p.id}'s plate shows {tags} status tags for {#p.statuses} statuses`)
+					end
 				end
+			end
+		end
+		-- The recent-actions feed shows the last log lines while the fight is on.
+		local feedOn = (battle.phase == "input" or battle.phase == "resolve") and #battle.log > 0
+		if safeArea.Log.Visible ~= feedOn then
+			observer:fail(`{client.name}: the recent-actions feed visible={safeArea.Log.Visible}`)
+		elseif feedOn then
+			local last = battle.log[#battle.log]
+			if string.sub(safeArea.Log.Lines.Text, -#last) ~= last then
+				observer:fail(`{client.name}: the feed doesn't end with the latest log line`)
 			end
 		end
 		if (battle.phase == "reward") ~= results.Enabled then
@@ -2585,6 +2617,8 @@ local function uiModules(client)
 end
 
 local PHONE = roblox.Vector2.new(844, 390)
+local SMALL_PHONE = roblox.Vector2.new(667, 375) -- a small phone in landscape, below the design size
+local SMALL_PC = roblox.Vector2.new(1024, 576) -- a small PC window
 local TABLET = roblox.Vector2.new(1024, 768)
 local DESKTOP = roblox.Vector2.new(1920, 1080)
 
@@ -3006,48 +3040,62 @@ test("M2: Bindings turn a snapshot into the HUD's view-model and mirror the serv
 	assertClean(sim, observer)
 end)
 
-test("M2: the combat HUD renders every mock state from the harness at phone size, clear of the safe zones", function()
+-- Every mock state through the harness's HUD mode at one screen size: what shows when, the
+-- cards and plates, the feed, the safe zones and the tap sizes.
+local function checkHudStatesAt(label, viewport)
 	local sim, observer = newWorld(6101)
-	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local client = joinAt(sim, observer, -1, "Ann", viewport)
 	local ui = m2Modules(client)
 	local Layout, Strings = ui.Layout, ui.Strings
 	local handle = ui.Harness.open(localPlayer(client):WaitForChild("PlayerGui"))
 	handle.setHudMode(true)
 	local gui = client.playerGui:FindFirstChild("HarnessCombatHUD")
-	expect(gui ~= nil and gui.Enabled, "the harness opened the HUD on mock data")
+	expect(gui ~= nil and gui.Enabled, `{label}: the harness opened the HUD on mock data`)
 	local safeArea = gui.SafeArea
-	expectEqual(safeArea.Size.X.Offset, 844)
+	expectEqual(safeArea.Size.X.Offset, math.round(viewport.X / Layout.scaleFor(viewport)), `{label}: the SafeArea is the screen in design pixels`)
 	local expectedCards = { One = 1, TwoSolo = 2, Two = 2, Four = 4 }
 
 	for index, state in ui.MockData.states() do
+		local name = `{label} {state.name}`
 		handle.setState(index)
 		sim:run(0.05)
 		local battle = ui.MockData.snapshot(state.size, state.scenario).battle
 		local actor = if battle.currentActorId then participantById(battle, battle.currentActorId) else nil
 		local myTurn = battle.phase == "input" and actor ~= nil and actor.ownerUserId == -1
-		expectEqual(safeArea.Ring.Visible, myTurn, `{state.name}: the ring shows only on my turn`)
-		expectEqual(safeArea.Reveal.Visible, battle.phase == "setup", `{state.name}: the initiative reveal`)
-		expectEqual(safeArea.TurnBar.Visible, battle.phase ~= "setup" and battle.phase ~= "reward", `{state.name}: the turn bar`)
+		expectEqual(safeArea.Ring.Visible, myTurn, `{name}: the ring shows only on my turn`)
+		expectEqual(safeArea.Reveal.Visible, battle.phase == "setup", `{name}: the initiative reveal`)
+		expectEqual(safeArea.TurnBar.Visible, battle.phase ~= "setup" and battle.phase ~= "reward", `{name}: the turn bar`)
 		local resultsGui = client.playerGui.HarnessResults
-		expectEqual(resultsGui.Enabled, battle.phase == "reward", `{state.name}: the results screen`)
+		expectEqual(resultsGui.Enabled, battle.phase == "reward", `{name}: the results screen`)
 		if battle.phase == "reward" then
-			expectEqual(resultsGui.SafeArea.Title.Text.Text, if battle.winner == "Party" then Strings.Victory else Strings.Defeat, state.name)
-			expect(resultsGui.SafeArea.Returning.Text ~= "", `{state.name}: the return countdown`)
+			expectEqual(resultsGui.SafeArea.Title.Text.Text, if battle.winner == "Party" then Strings.Victory else Strings.Defeat, name)
+			expect(resultsGui.SafeArea.Returning.Text ~= "", `{name}: the return countdown`)
+			checkSafeZones(Layout, resultsGui, name)
 		end
 		if battle.phase == "setup" then
-			expect(string.find(safeArea.Reveal.Panel.Content.Rolls.Text, "+ 5 =", 1, true) ~= nil, `{state.name}: the rolls are listed`)
+			expect(string.find(safeArea.Reveal.Panel.Content.Rolls.Text, "+ 5 =", 1, true) ~= nil, `{name}: the rolls are listed`)
 		end
 		if myTurn then
-			for _, name in { "Attack", "Spell", "Guard" } do
-				expect(Sim.isClickable(safeArea.Ring[name]), `{state.name}: the {name} ribbon`)
+			for _, ribbon in { "Attack", "Spell", "Guard" } do
+				expect(Sim.isClickable(safeArea.Ring[ribbon]), `{name}: the {ribbon} ribbon`)
 			end
-			expect(safeArea.Ring:FindFirstChild("Item") == nil and safeArea.Ring:FindFirstChild("Pass") == nil, `{state.name}: Item and Pass stay behind their flags`)
-			expect(string.find(safeArea.Status.Title.Text, Strings.YourTurn, 1, true) ~= nil, `{state.name}: says it's my turn`)
-			expect(string.find(safeArea.Status.Detail.Text, "s left", 1, true) ~= nil, `{state.name}: with the time left`)
-			expect(safeArea.ManaPlate.Visible and safeArea.ManaPlate.Plate.Content.Mana.Value.Text ~= "", `{state.name}: the hero Mana plate`)
+			expect(safeArea.Ring:FindFirstChild("Item") == nil and safeArea.Ring:FindFirstChild("Pass") == nil, `{name}: Item and Pass stay behind their flags`)
+			expect(string.find(safeArea.Status.Title.Text, Strings.YourTurn, 1, true) ~= nil, `{name}: says it's my turn`)
+			expect(string.find(safeArea.Status.Detail.Text, "s left", 1, true) ~= nil, `{name}: with the time left`)
+			expect(safeArea.ManaPlate.Visible and safeArea.ManaPlate.Plate.Content.Mana.Value.Text ~= "", `{name}: the hero Mana plate`)
 		else
-			expect(not safeArea.ManaPlate.Visible, `{state.name}: no Mana plate off my turn`)
-			expect(not safeArea.TargetPanel.Visible, `{state.name}: no target panel off my turn`)
+			expect(not safeArea.ManaPlate.Visible, `{name}: no Mana plate off my turn`)
+			expect(not safeArea.TargetPanel.Visible, `{name}: no target panel off my turn`)
+		end
+		-- The recent-actions feed: the last log lines while the fight is on, out of the way otherwise.
+		local feedOn = (battle.phase == "input" or battle.phase == "resolve") and #battle.log > 0
+		expectEqual(safeArea.Log.Visible, feedOn, `{name}: the recent-actions feed`)
+		if feedOn then
+			local text = safeArea.Log.Lines.Text
+			local last = battle.log[#battle.log]
+			expect(string.sub(text, -#last) == last, `{name}: the feed ends with the latest log line`)
+			local _, lineBreaks = string.gsub(text, "\n", "")
+			expect(lineBreaks < 3, `{name}: at most three lines in the feed`)
 		end
 		local cards = 0
 		for _, child in safeArea.Party:GetChildren() do
@@ -3055,33 +3103,89 @@ test("M2: the combat HUD renders every mock state from the harness at phone size
 				cards += 1
 				local id = string.sub(child.Name, 6)
 				local p = participantById(battle, id)
-				expectEqual(child.Content.Hp.Value.Text, Strings.format.hp(p.hp, p.maxHp), `{state.name}: {child.Name} HP`)
-				expectEqual(child.Content.StatusTag.Visible, p.status ~= "Active", `{state.name}: {child.Name} KO tag`)
+				expectEqual(child.Content.Hp.Value.Text, Strings.format.hp(p.hp, p.maxHp), `{name}: {child.Name} HP`)
+				expectEqual(child.Content.StatusTag.Visible, p.status ~= "Active", `{name}: {child.Name} KO tag`)
+				expectEqual(child.Content.Owner.Text, if p.ownerUserId == -1 then Strings.format.you(p.ownerName) else p.ownerName, `{name}: {child.Name} says whose summon it is`)
 			end
 		end
-		expectEqual(cards, expectedCards[state.size], `{state.name}: one card per member`)
+		expectEqual(cards, expectedCards[state.size], `{name}: one card per member`)
+		-- Each enemy's statuses as tags on its plate (the plates themselves need a stage to show).
+		local plates = client.playerGui.HarnessCombatHUDEnemies
+		for _, p in battle.participants do
+			if p.side == "Enemy" then
+				local plate = plates:FindFirstChild("Enemy_" .. p.id)
+				expect(plate ~= nil, `{name}: a plate for {p.id}`)
+				local tags = {}
+				for _, tag in plate.Root.Statuses:GetChildren() do
+					if tag:IsA("ImageLabel") then
+						table.insert(tags, tag.Label.Text)
+					end
+				end
+				expectEqual(#tags, #p.statuses, `{name}: one tag per status on {p.id}`)
+				for _, status in p.statuses do
+					local def = observer.StatusEffects[status.id]
+					expect(table.find(tags, Strings.format.statusTurns(def.name, status.turnsLeft)) ~= nil, `{name}: {status.id} tagged on {p.id}`)
+				end
+			end
+		end
 		local tokens = 0
 		for _, child in safeArea.TurnBar.Plate.Content.Tokens:GetChildren() do
 			if child:IsA("ImageLabel") then
 				tokens += 1
-				expectEqual(child.Now.Visible, battle.currentActorId == child.Name and battle.phase ~= "reward", `{state.name}: NOW on {child.Name}`)
+				expectEqual(child.Now.Visible, battle.currentActorId == child.Name and battle.phase ~= "reward", `{name}: NOW on {child.Name}`)
 			end
 		end
-		expectEqual(tokens, #battle.turnQueue, `{state.name}: one token per participant`)
-		expect(not safeArea.Stamps.Visible, `{state.name}: no stamps with the Down system off`)
-		checkSafeZones(Layout, gui, state.name)
+		expectEqual(tokens, #battle.turnQueue, `{name}: one token per participant`)
+		expect(not safeArea.Stamps.Visible, `{name}: no stamps with the Down system off`)
+		checkSafeZones(Layout, gui, name)
 		local _, images = inspect(safeArea)
-		expectEqual(images, 0, `{state.name}: no art, every piece on its fallback`)
+		expectEqual(images, 0, `{name}: no art, every piece on its fallback`)
 	end
 
+	-- The list and the target panel at this size: clear of the corners, names with room.
+	handle.setState(mockStateIndex(ui, "One", "MyTurn"))
+	sim:click(client, safeArea.Ring.Spell)
+	local listGui = client.playerGui.HarnessSkillList
+	expect(listGui.Enabled, `{label}: Spell opens the list`)
+	checkSafeZones(Layout, listGui, `{label} list`)
+	local titleWidth = listGui.SafeArea.List.Size.X.Offset - 8 - 170
+	expect(titleWidth >= 120, `{label}: the ability names have room ({titleWidth} px)`)
+	sim:click(client, listGui.SafeArea.Back)
+	sim:click(client, safeArea.Ring.Attack)
+	expect(safeArea.TargetPanel.Visible, `{label}: Attack asks for a target`)
+	checkSafeZones(Layout, gui, `{label} target`)
+	sim:click(client, safeArea.TargetPanel.Back)
+
+	-- Hovering or holding a ribbon shows what the move does, where the status detail was.
+	local config = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.CombatConfig)
+	local guardLine = Strings.format.guard(math.round(config.GuardDamageReduction * 100), math.round((1 - config.GuardAilmentChanceMultiplier) * 100))
+	local detail = safeArea.Status.Detail
+	client.env.instanceSignal(safeArea.Ring.Guard, "MouseEnter"):Fire()
+	expectEqual(detail.Text, guardLine, `{label}: hovering Guard explains it`)
+	client.env.instanceSignal(safeArea.Ring.Guard, "MouseLeave"):Fire()
+	expect(string.find(detail.Text, "s left", 1, true) ~= nil, `{label}: the timer is back once the pointer leaves`)
+	client.env.instanceSignal(safeArea.Ring.Guard, "MouseButton1Down"):Fire()
+	expectEqual(detail.Text, guardLine, `{label}: holding Guard explains it`)
+	client.env.instanceSignal(safeArea.Ring.Guard, "MouseButton1Up"):Fire()
+	expect(string.find(detail.Text, "s left", 1, true) ~= nil, `{label}: and the timer is back on release`)
+	client.env.instanceSignal(safeArea.Ring.Attack, "MouseEnter"):Fire()
+	expectEqual(detail.Text, observer.Abilities.Attack.description, `{label}: hovering Attack explains it too`)
+	client.env.instanceSignal(safeArea.Ring.Attack, "MouseLeave"):Fire()
+
 	handle.showStamp("OneMore")
-	expect(safeArea.Stamps.Visible and safeArea.Stamps.OneMore.Visible, "the harness can force ONE MORE!")
+	expect(safeArea.Stamps.Visible and safeArea.Stamps.OneMore.Visible, `{label}: the harness can force ONE MORE!`)
 	handle.setHudMode(false)
-	expect(client.playerGui:FindFirstChild("HarnessCombatHUD") == nil, "leaving HUD mode removes it")
-	expect(client.playerGui.UIHarness.SafeArea.Gallery.Visible, "and brings the gallery back")
+	expect(client.playerGui:FindFirstChild("HarnessCombatHUD") == nil, `{label}: leaving HUD mode removes it`)
+	expect(client.playerGui.UIHarness.SafeArea.Gallery.Visible, `{label}: and brings the gallery back`)
 	handle.close()
 	sim:run(0.5)
 	assertClean(sim, observer)
+end
+
+test("M2: the combat HUD renders every mock state from the harness at phone, small-phone and small-PC sizes, clear of the safe zones", function()
+	checkHudStatesAt("phone", PHONE)
+	checkHudStatesAt("small phone", SMALL_PHONE)
+	checkHudStatesAt("small PC", SMALL_PC)
 end)
 
 test("M2: the Spell list (S7): the summon's kit with Mana costs, dimmed rows that say why, Back, then a target", function()
@@ -3112,6 +3216,8 @@ test("M2: the Spell list (S7): the summon's kit with Mana costs, dimmed rows tha
 	expect(toast.Visible and toast.Label.Text == Strings.NotEnoughMana, "tapping a dimmed row says why")
 	expect(listGui.Enabled and not safeArea.TargetPanel.Visible, "and nothing else happens")
 	expect(checkSafeZones(Layout, listGui, "list") > 4, "the list, Confirm and Back clear the corners")
+	local titleWidth = listGui.SafeArea.List.Size.X.Offset - 8 - 170 -- the row's title: the list width less the medallion and the capsule
+	expect(titleWidth >= 150, `the ability names have room ({titleWidth} px)`)
 	local virtual = roblox.Vector2.new(listGui.SafeArea.Size.X.Offset, listGui.SafeArea.Size.Y.Offset)
 	local bottomClear = virtual.Y * (1 - Layout.KEEP_OUT.bottomRight.h)
 	local confirm = listGui.SafeArea.Confirm

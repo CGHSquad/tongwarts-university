@@ -125,15 +125,16 @@ function Layout.regions(size: Vector2): { [string]: Rect }
 		return math.max(0, to - from)
 	end
 	local rightStart = bottomRightLeft - math.floor(size.X * 0.06) -- the right column reaches past the keep-out's edge
+	local gap = 8
 	return {
-		-- top center strip: turn order, headlines
-		topCenter = Layout.rect(topLeftRight, safeY, span(topLeftRight, size.X - topLeftRight), math.floor(size.Y * 0.16)),
+		-- top center strip: turn order, headlines; stops short of the right column
+		topCenter = Layout.rect(topLeftRight, safeY, span(topLeftRight, rightStart - gap), math.floor(size.Y * 0.16)),
 		-- top right: BACK button, list headers
 		topRight = Layout.rect(math.ceil(size.X * 0.78), safeY, span(math.ceil(size.X * 0.78), size.X - safeX), math.floor(size.Y * 0.15)),
 		-- left column, between the top-left and bottom-left keep-outs: the command ring
 		left = Layout.rect(safeX, topLeftBottom, span(safeX, math.min(topLeftRight, bottomLeftRight)), span(topLeftBottom, bottomClear)),
-		-- right column, above the bottom-right keep-out: party cards, skill list
-		right = Layout.rect(rightStart, math.ceil(size.Y * 0.16), span(rightStart, size.X - safeX), span(math.ceil(size.Y * 0.16), bottomClear)),
+		-- right column, from the top down to the bottom-right keep-out: party cards, skill list
+		right = Layout.rect(rightStart, safeY, span(rightStart, size.X - safeX), span(safeY, bottomClear)),
 		-- bottom center, between the two bottom keep-outs: the hero Mana plate
 		bottomCenter = Layout.rect(bottomLeftRight, bottomClear, span(bottomLeftRight, bottomRightLeft), span(bottomClear, size.Y - safeY)),
 		-- the middle: stamps, result lettering

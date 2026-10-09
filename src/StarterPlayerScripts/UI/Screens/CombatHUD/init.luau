@@ -3,8 +3,8 @@
 	CombatHUD — S1, the combat screen (docs/ui/UI_HANDOFF.md section 7, reconciled by section 16
 	and docs/ui/M0_REPORT.md). The turn-order bar and status line at the top, the command ring on
 	the left, party cards on the right, the hero Mana plate at the bottom, plates over the enemies,
-	the initiative reveal, the S6 results screen once the fight is over, and the overworld notice
-	while exploring.
+	the initiative reveal, a feed of the last few actions, the S6 results screen once the fight is
+	over, and the overworld notice while exploring.
 
 	It renders server snapshots and nothing else (handoff rule 2). The only thing it remembers is
 	the choice being made right now: which command, which ability, which target. Confirming sends
@@ -94,6 +94,7 @@ type Fields = {
 	party: Widgets.PartyCards,
 	manaPlate: Widgets.ManaPlate,
 	reveal: Widgets.Reveal,
+	log: Widgets.LogFeed,
 	stamps: Stamps.Stamps,
 	toast: Toast.Toast,
 	enemies: EnemyOverlay.EnemyOverlay,
@@ -109,6 +110,7 @@ type Fields = {
 	submittedTurn: number?,
 	turnSeen: number?,
 	resultsFor: string?, -- which fight and outcome the results screen is showing
+	hint: string?, -- a ribbon's description while it's hovered or held
 	overworldBanner: number,
 	detailBase: string,
 	deadline: number?,
@@ -152,6 +154,7 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 	local party: Widgets.PartyCards
 	local manaPlate: Widgets.ManaPlate
 	local reveal: Widgets.Reveal
+	local log: Widgets.LogFeed
 	local stamps: Stamps.Stamps
 	local toast: Toast.Toast
 	local skillList: SkillList.SkillList
@@ -170,6 +173,8 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		status = Widgets.statusLine(area)
 		ring = CommandRing.new(area, function(id)
 			self:_onCommand(id)
+		end, function(id)
+			self:_setHint(id)
 		end)
 		local panel = Gui.frame(area, "TargetPanel")
 		panel.Visible = false
@@ -207,6 +212,7 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		end)
 		manaPlate = Widgets.manaPlate(area)
 		reveal = Widgets.reveal(area)
+		log = Widgets.logFeed(area)
 		stamps = Stamps.new(area)
 		toast = Toast.new(area)
 		return {
@@ -252,6 +258,7 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		party = party,
 		manaPlate = manaPlate,
 		reveal = reveal,
+		log = log,
 		stamps = stamps,
 		toast = toast,
 		enemies = EnemyOverlay.new(playerGui, prefix .. "CombatHUDEnemies"),
@@ -266,6 +273,7 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		submittedTurn = nil,
 		turnSeen = nil,
 		resultsFor = nil,
+		hint = nil,
 		overworldBanner = 0,
 		detailBase = "",
 		deadline = nil,
@@ -319,6 +327,8 @@ function CombatHUD.tick(self: CombatHUD, now: number)
 	end
 	if hud.phase == "Reward" then
 		self.results.tick(now)
+	elseif self.hint and self.mode == "Ring" then
+		self.status.detail.Text = self.hint :: string
 	elseif self.deadline then
 		self.status.detail.Text = Strings.format.pair(self.detailBase, Strings.format.secondsLeft(secondsLeft(self.deadline :: number, now)))
 	end
@@ -343,6 +353,15 @@ function CombatHUD.showNotice(self: CombatHUD, message: string)
 	self.submittedTurn = nil
 	self.toast.show(message)
 	self:_rerender()
+end
+
+-- A ribbon is hovered or held (nil: no longer): its description takes the status detail's place.
+function CombatHUD._setHint(self: CombatHUD, id: CommandId?)
+	self.hint = if id then Bindings.commandHint(id) else nil
+	if self.hud and self.mode == "Ring" then
+		self.status.detail.Text = self.detailBase
+		self:tick(Workspace:GetServerTimeNow())
+	end
 end
 
 -- For the harness only: the stamps have no server source (Flags.DownSystem, R7).
@@ -411,6 +430,10 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 
 	self.reveal.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.reveal.frame.Size = UDim2.fromOffset(center.w, center.h)
+	-- The feed sits at the bottom of the middle, under the enemies' plates and clear of the ring.
+	local feedHeight = 48
+	self.log.frame.Position = UDim2.fromOffset(center.x, center.y + center.h - feedHeight)
+	self.log.frame.Size = UDim2.fromOffset(center.w, feedHeight)
 	self.stamps.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.stamps.frame.Size = UDim2.fromOffset(center.w, center.h)
 
@@ -430,6 +453,8 @@ function CombatHUD._leaveBattle(self: CombatHUD)
 	self.turnBar.frame.Visible = false
 	self.status.frame.Visible = false
 	self.reveal.frame.Visible = false
+	self.log.frame.Visible = false
+	self.hint = nil
 	self.manager:close(self.resultsName)
 	self.targetPanel.frame.Visible = false
 	self.dim.Visible = false
@@ -501,6 +526,8 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	if phase == "Setup" then
 		self.reveal.update(hud)
 	end
+	self.log.frame.Visible = (phase == "Input" or phase == "Resolve") and #hud.recentLog > 0
+	self.log.update(hud.recentLog)
 	-- The results screen (S6) takes over once the fight is decided; the countdown follows the snapshot.
 	if phase == "Reward" then
 		local won = hud.winner == "Party"
@@ -542,7 +569,7 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 			self.deadline = hud.turnDeadline
 		end
 	end
-	self.status.frame.Visible = title ~= ""
+	self.status.frame.Visible = title ~= "" and self.mode ~= "List" -- the list takes its place on a phone
 	self.status.title.Text = title
 	self.status.title.TextColor3 = if myTurn then Theme.Colors.Cyan else Theme.Colors.TextLight
 	self.detailBase = detail

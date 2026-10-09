@@ -1,8 +1,9 @@
 --!strict
 --[[
-	EnemyOverlay — the plate over each enemy (handoff S1): name, HP bar, crimson target brackets
-	while the player is picking a target (gold on the chosen one), and the WEAK marker and DOWN tag
-	that stay hidden until their flags and data exist. One BillboardGui per enemy, a fixed pixel
+	EnemyOverlay — the plate over each enemy (handoff S1): name, HP bar, its status effects as
+	small tags under the bar, crimson target brackets while the player is picking a target (gold on
+	the chosen one), and the WEAK marker and DOWN tag that stay hidden until their flags and data
+	exist. One BillboardGui per enemy, a fixed pixel
 	size (scaled with the HUD's root scale), anchored to the spot BattleView keeps for that
 	participant; BattleView's own enemy plates are switched off for the new HUD (M0 report R19).
 	The plate is a button, so tapping the enemy picks it.
@@ -20,6 +21,7 @@ local Root = script.Parent.Parent.Parent
 local Fallbacks = require(Root:WaitForChild("Core"):WaitForChild("Fallbacks"))
 local Gui = require(Root:WaitForChild("Core"):WaitForChild("Gui"))
 local Components = Root:WaitForChild("Components")
+local Capsule = require(Components:WaitForChild("Capsule"))
 local StatBar = require(Components:WaitForChild("StatBar"))
 local Tag = require(Components:WaitForChild("Tag"))
 
@@ -44,6 +46,8 @@ type Plate = {
 	stroke: UIStroke?,
 	title: TextLabel,
 	hp: StatBar.StatBar,
+	statuses: Frame,
+	statusKey: string, -- what the status tags were built for
 	left: Frame,
 	right: Frame,
 	weak: Tag.Tag,
@@ -150,6 +154,12 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 			title.Position = UDim2.fromOffset(4, 2)
 			local hp = StatBar.new(button, { name = "Hp", color = Theme.Colors.Crimson, trackKey = "Enemy_HpTrack", fillKey = "Enemy_HpFill", height = 14, size = UDim2.new(1, -12, 0, 14), position = UDim2.fromOffset(6, 24), textFormat = Strings.format.hp })
 
+			-- Status effects, as small tags in the strip under the plate.
+			local statuses = Gui.frame(root, "Statuses")
+			statuses.Position = UDim2.fromOffset(0, 44)
+			statuses.Size = UDim2.new(1, 0, 0, 16)
+			Gui.list(statuses, Enum.FillDirection.Horizontal, 4).HorizontalAlignment = Enum.HorizontalAlignment.Center
+
 			-- Target brackets either side of the plate (handoff: "crimson target brackets").
 			local function bracket(bracketName: string, anchorX: number): Frame
 				local b = Instance.new("Frame")
@@ -177,7 +187,7 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 				end
 			end))
 			gui.Parent = folder
-			local plate: Plate = { gui = gui, root = root, scale = uiScale, baseOffset = 0, button = button, stroke = button:FindFirstChildOfClass("UIStroke"), title = title, hp = hp, left = left, right = right, weak = weak, down = down }
+			local plate: Plate = { gui = gui, root = root, scale = uiScale, baseOffset = 0, button = button, stroke = button:FindFirstChildOfClass("UIStroke"), title = title, hp = hp, statuses = statuses, statusKey = "", left = left, right = right, weak = weak, down = down }
 			applyScale(plate)
 			plates[id] = plate
 		end
@@ -251,6 +261,27 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 			end
 			plate.gui.Enabled = spot ~= nil and not p.left -- no spot (the harness): the plate just stays off
 			plate.hp.set(p.hp.current, p.hp.max, true)
+			local statusKey = ""
+			for _, status in p.statuses do
+				statusKey ..= `{status.id}:{status.turnsLeft};`
+			end
+			if statusKey ~= plate.statusKey then
+				plate.statusKey = statusKey
+				for _, child in plate.statuses:GetChildren() do
+					if child:IsA("GuiObject") then
+						child:Destroy()
+					end
+				end
+				for index, status in p.statuses do
+					Capsule.new(plate.statuses, {
+						name = status.id,
+						text = Strings.format.statusTurns(status.name, status.turnsLeft),
+						color = if status.kind == "Ailment" then Theme.Colors.Crimson else Theme.Colors.Cyan,
+						size = UDim2.fromOffset(76, 16),
+						layoutOrder = index,
+					})
+				end
+			end
 			local targeted = targetId == id
 			local canPick = pickable[id] == true
 			plate.button.Interactable = canPick

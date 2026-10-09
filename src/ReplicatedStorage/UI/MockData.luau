@@ -218,6 +218,8 @@ function MockData.snapshot(size: PartySize, scenario: Scenario, now: number?): S
 			if crit then
 				byId.E1.hp = 0
 				byId.E1.status = "KnockedOut"
+			elseif hit then
+				byId.E1.statuses = { { id = "Dazed", turnsLeft = 2 } } -- the daze the log line reports
 			end
 			battle.lastAction = {
 				sequence = 12,

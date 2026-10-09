@@ -76,6 +76,7 @@ export type HudBattle = {
 	overworldReturnAt: number?, -- server clock
 	lastActionSequence: number,
 	lastLogLine: string?, -- the server's latest log line, shown while an action resolves
+	recentLog: { string }, -- the last few log lines, oldest first: the recent-actions feed
 	allEnemiesDown: boolean, -- always false while Flags.DownSystem is off
 }
 

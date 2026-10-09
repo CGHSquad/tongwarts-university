@@ -1,8 +1,8 @@
 --!strict
 --[[
 	Widgets — the combat HUD's own pieces (handoff S1), each built from the base components:
-	the turn-order bar, the status line under it, the party cards, the hero Mana plate and the
-	initiative reveal.
+	the turn-order bar, the status line under it, the party cards, the hero Mana plate, the
+	initiative reveal and the recent-actions feed.
 	Everything is in design pixels inside the screen's SafeArea; CombatHUD places the pieces in
 	Layout's regions.
 ]]
@@ -53,7 +53,7 @@ export type TurnOrderBar = {
 
 type Token = { frame: ImageLabel, stroke: UIStroke?, label: TextLabel, now: TextLabel }
 
-Widgets.TOKEN = 40
+Widgets.TOKEN = 36
 Widgets.TOKEN_GAP = 6
 
 function Widgets.turnOrderBar(parent: Instance): TurnOrderBar
@@ -61,10 +61,10 @@ function Widgets.turnOrderBar(parent: Instance): TurnOrderBar
 	local plate = SlicedPanel.new(frame, { name = "Plate", assetKey = "Turn_BarFrame", padding = 6 })
 	plate.frame.Size = UDim2.fromScale(1, 1)
 	local round = Gui.label(plate.content, "Round", { size = Theme.Sizes.TextLabel + 2, font = Theme.Fonts.Display, color = Theme.Colors.Gold, align = Enum.TextXAlignment.Left, stroke = 1 })
-	round.Size = UDim2.fromOffset(96, Widgets.TOKEN)
+	round.Size = UDim2.fromOffset(80, Widgets.TOKEN)
 	local tokens = Gui.frame(plate.content, "Tokens")
-	tokens.Position = UDim2.fromOffset(100, 0)
-	tokens.Size = UDim2.new(1, -100, 1, 0)
+	tokens.Position = UDim2.fromOffset(84, 0)
+	tokens.Size = UDim2.new(1, -84, 1, 0)
 	Gui.list(tokens, Enum.FillDirection.Horizontal, Widgets.TOKEN_GAP)
 
 	local built: { [string]: Token } = {}
@@ -95,10 +95,10 @@ function Widgets.turnOrderBar(parent: Instance): TurnOrderBar
 			token.Size = UDim2.fromOffset(Widgets.TOKEN, Widgets.TOKEN)
 			token.LayoutOrder = index
 			local label = Gui.label(token, "Label", { text = tokenLabel(p), size = Theme.Sizes.TextLabel + 2, font = Theme.Fonts.Display, stroke = 1 })
-			label.Size = UDim2.new(1, 0, 0, 24)
+			label.Size = UDim2.new(1, 0, 0, 22)
 			local now = Gui.label(token, "Now", { text = Strings.Now, size = Theme.Sizes.TextLabel - 2, font = Theme.Fonts.Display, color = Theme.Colors.Cyan, stroke = 1 })
 			now.Size = UDim2.new(1, 0, 0, 14)
-			now.Position = UDim2.fromOffset(0, 24)
+			now.Position = UDim2.fromOffset(0, 22)
 			now.Visible = false
 			built[id] = { frame = token, stroke = token:FindFirstChildOfClass("UIStroke"), label = label, now = now }
 		end
@@ -240,7 +240,7 @@ function Widgets.partyCards(parent: Instance): PartyCards
 			button.Parent = frame
 			local content = Gui.frame(button, "Content")
 			content.Size = UDim2.fromScale(1, 1)
-			Gui.padding(content, 4)
+			Gui.padding(content, 3)
 			local head = HeadIcon.new(content, { name = "Head", userId = p.ownerUserId, fallbackText = initials(p.ownerName), size = 40 })
 			local title = Gui.label(content, "Title", { text = p.name, size = Theme.Sizes.TextLabel + 1, font = Theme.Fonts.Bold, align = Enum.TextXAlignment.Left })
 			title.Position = UDim2.fromOffset(46, 0)
@@ -249,10 +249,11 @@ function Widgets.partyCards(parent: Instance): PartyCards
 			owner.Position = UDim2.new(1, -4, 0, 0)
 			owner.AnchorPoint = Vector2.new(1, 0)
 			owner.Size = UDim2.fromOffset(80, 16)
-			local hp = StatBar.new(content, { name = "Hp", color = Theme.Colors.HpGreen, trackKey = "Bar_HpTrack", fillKey = "Bar_HpFill", trail = true, height = 10, size = UDim2.new(1, -46, 0, 10), position = UDim2.fromOffset(46, 17), textFormat = Strings.format.hp })
-			local mana = StatBar.new(content, { name = "Mana", color = Theme.Colors.ManaBlue, trackKey = "Bar_ManaTrack", fillKey = "Bar_ManaFill", height = 10, size = UDim2.new(1, -46, 0, 10), position = UDim2.fromOffset(46, 29), textFormat = Strings.format.mana })
+			-- Four lines in a 56 px card: name, HP, Mana, statuses.
+			local hp = StatBar.new(content, { name = "Hp", color = Theme.Colors.HpGreen, trackKey = "Bar_HpTrack", fillKey = "Bar_HpFill", trail = true, height = 9, size = UDim2.new(1, -46, 0, 9), position = UDim2.fromOffset(46, 15), textFormat = Strings.format.hp })
+			local mana = StatBar.new(content, { name = "Mana", color = Theme.Colors.ManaBlue, trackKey = "Bar_ManaTrack", fillKey = "Bar_ManaFill", height = 9, size = UDim2.new(1, -46, 0, 9), position = UDim2.fromOffset(46, 26), textFormat = Strings.format.mana })
 			local statuses = Gui.label(content, "Statuses", { size = Theme.Sizes.TextLabel, font = Theme.Fonts.Bold, color = Theme.Colors.Cyan, align = Enum.TextXAlignment.Left })
-			statuses.Position = UDim2.fromOffset(46, 40)
+			statuses.Position = UDim2.fromOffset(46, 36)
 			statuses.Size = UDim2.new(1, -46, 0, 14)
 			local tag = Tag.new(content, { name = "StatusTag", kind = "KnockedOut", position = UDim2.new(1, -4, 1, -2), anchor = Vector2.new(1, 1), size = UDim2.fromOffset(44, 18) })
 			tag.frame.Visible = false
@@ -397,6 +398,31 @@ function Widgets.reveal(parent: Instance): Reveal
 				end
 			end
 			rolls.Text = table.concat(lines, "\n")
+		end,
+		destroy = function()
+			frame:Destroy()
+		end,
+	}
+end
+
+--[[ Recent actions: the last few lines of the server's log, oldest first ]]
+
+export type LogFeed = {
+	frame: Frame,
+	lines: TextLabel,
+	update: (lines: { string }) -> (),
+	destroy: () -> (),
+}
+
+function Widgets.logFeed(parent: Instance): LogFeed
+	local frame = Gui.frame(parent, "Log")
+	local lines = Gui.label(frame, "Lines", { size = Theme.Sizes.TextLabel, font = Theme.Fonts.Bold, color = Theme.Colors.TextDim, align = Enum.TextXAlignment.Left, stroke = 1 })
+	lines.TextYAlignment = Enum.TextYAlignment.Bottom
+	return {
+		frame = frame,
+		lines = lines,
+		update = function(text: { string })
+			lines.Text = table.concat(text, "\n")
 		end,
 		destroy = function()
 			frame:Destroy()
