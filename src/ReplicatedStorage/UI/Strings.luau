@@ -73,6 +73,8 @@ local Strings = {
 	HarnessPrev = "Prev",
 	HarnessNext = "Next",
 	HarnessSafeZones = "Safe zones",
+	HarnessHud = "HUD",
+	HarnessStamp = "Stamp",
 }
 
 local format = {}
@@ -156,6 +158,16 @@ end
 
 function format.initiative(roll: number, bonus: number, total: number): string
 	return `{roll} + {bonus} = {total}`
+end
+
+-- A status effect and how many turns it has left: "Dazed 2".
+function format.statusTurns(name: string, turnsLeft: number): string
+	return `{name} {turnsLeft}`
+end
+
+-- Two short pieces on one line: "Round 2  ·  YOUR TURN".
+function format.pair(first: string, second: string): string
+	return `{first}  ·  {second}`
 end
 
 Strings.format = format

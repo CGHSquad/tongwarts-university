@@ -52,6 +52,9 @@ local ROW_KEYS: { [string]: string } = {
 
 local ListRow = {}
 
+-- Room for two lines of description under a selected row (the abilities' descriptions run long).
+ListRow.DESCRIPTION_HEIGHT = 36
+
 function ListRow.new(parent: Instance, props: Props): ListRow
 	local rowHeight = Theme.Sizes.RowHeight
 	local button = Instance.new("ImageButton")
@@ -75,7 +78,8 @@ function ListRow.new(parent: Instance, props: Props): ListRow
 	title.Position = UDim2.fromOffset(60, 0)
 
 	local description = Gui.label(button, "Description", { text = props.description or "", size = Theme.Sizes.TextLabel + 1, color = Theme.Colors.TextDim, align = Enum.TextXAlignment.Left, wrap = true })
-	description.Size = UDim2.new(1, -70, 0, 24)
+	description.Size = UDim2.new(1, -70, 0, ListRow.DESCRIPTION_HEIGHT)
+	description.TextYAlignment = Enum.TextYAlignment.Top
 	description.Position = UDim2.fromOffset(60, rowHeight - 4)
 	description.Visible = false
 
@@ -115,7 +119,7 @@ function ListRow.new(parent: Instance, props: Props): ListRow
 		end
 		local expanded = selected and (props.description or "") ~= ""
 		description.Visible = expanded
-		local height = if expanded then rowHeight + 24 else rowHeight
+		local height = if expanded then rowHeight + ListRow.DESCRIPTION_HEIGHT + 4 else rowHeight
 		TweenService:Create(button, TweenInfo.new(Theme.motion(Theme.Motion.Fade)), { Size = UDim2.new(button.Size.X, UDim.new(0, height)) }):Play()
 	end
 	setState(state)

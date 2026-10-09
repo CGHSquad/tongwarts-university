@@ -2814,6 +2814,547 @@ test("BattleView keeps its enemy nameplates by default, and drops them for the n
 	assertClean(sim, observer)
 end)
 
+print("\nUI Milestone 2 (M2): the skill list and the combat HUD")
+
+local function m2Modules(client)
+	local dm = client.env.dm
+	local modules = uiModules(client)
+	modules.Bindings = client.env.require(dm:GetService("ReplicatedStorage").UI.Bindings)
+	modules.Controls = client.env.require(dm:GetService("StarterPlayer").StarterPlayerScripts.UI.Core.Controls)
+	return modules
+end
+
+-- Every visible GuiObject under `root` with where it lands on screen (Layout.resolve, since the
+-- fake Roblox has no layout engine); hidden subtrees are skipped.
+local function visibleRects(Layout, root, rootRect)
+	local list = {}
+	local function walk(object, parentRect)
+		for _, child in object:GetChildren() do
+			if child:IsA("GuiObject") and child.Visible then
+				local rect = Layout.resolve(child.Position, child.Size, child.AnchorPoint, parentRect)
+				table.insert(list, { object = child, rect = rect })
+				walk(child, rect)
+			end
+		end
+	end
+	walk(root, rootRect)
+	return list
+end
+
+-- Nothing visible in a HUD ScreenGui touches a keep-out, and every button is a 48 px tap target.
+local function checkSafeZones(Layout, gui, label)
+	local safeArea = gui.SafeArea
+	local virtual = roblox.Vector2.new(safeArea.Size.X.Offset, safeArea.Size.Y.Offset)
+	local keepOut, screen = Layout.keepOut(virtual), Layout.screen(virtual)
+	local seen = 0
+	for _, entry in visibleRects(Layout, safeArea, screen) do
+		local object, rect = entry.object, entry.rect
+		if object.Name == "Dim" then
+			continue -- the scene tint behind the list covers the whole screen on purpose
+		end
+		seen += 1
+		expect(Layout.hitsKeepOut(rect, keepOut) == nil, `{label}: {object:GetFullName()} clears the corners ({rect.x}, {rect.y}, {rect.w}, {rect.h})`)
+		if object:IsA("GuiButton") then
+			expect(rect.w >= 48 and rect.h >= 48, `{label}: {object:GetFullName()} is at least 48 px ({rect.w}x{rect.h})`)
+		end
+	end
+	return seen
+end
+
+local function mockStateIndex(ui, size, scenario)
+	for index, state in ui.MockData.states() do
+		if state.size == size and state.scenario == scenario then
+			return index
+		end
+	end
+	error(`no mock state {size} / {scenario}`)
+end
+
+test("M2: Bindings turn a snapshot into the HUD's view-model and mirror the server's legality rules (R22)", function()
+	local sim, observer = newWorld(6100)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local ui = m2Modules(client)
+	local B = ui.Bindings
+	local snapshot = ui.MockData.snapshot("Four", "MyTurn", 1000)
+	local hud = B.battle(snapshot.battle, -1)
+	expectEqual(hud.phase, "Input")
+	expectEqual(hud.localActorId, "P1")
+	expectEqual(#hud.participants, 6)
+	expect(hud.byId.P1.isLocal and not hud.byId.P2.isLocal and not hud.byId.E1.isLocal, "only my summon is local")
+	expectEqual(hud.byId.P4.statuses[1].name, "Dazed")
+	expectEqual(hud.byId.P4.statuses[1].kind, "Ailment")
+	expectEqual(hud.byId.P4.statuses[2].kind, "Buff")
+	expect(B.isInBattle(snapshot.battle, -1) and not B.isInBattle(snapshot.battle, -9), "who's in the fight")
+
+	local rows = B.abilityRows(hud.byId.P1, hud.byId.P1.abilityIds)
+	expectEqual(#rows, 2)
+	expectEqual(rows[1].id, "Strike")
+	expect(rows[1].canAfford, "Strike (2 Mana) with 5 Mana")
+	expect(not rows[2].canAfford, "Gale Clap (8 Mana) isn't affordable")
+	expectEqual(rows[2].needsTarget, "Enemy")
+	expectEqual(rows[2].elementId, "Wind")
+	local ids = {}
+	for _, command in B.commands(hud.byId.P1.abilityIds) do
+		table.insert(ids, command.id)
+	end
+	expectEqual(table.concat(ids, ","), "Attack,Spell,Guard", "Item and Pass stay behind their flags")
+
+	local legal, best = B.targetsFor("Attack", hud.byId.P1, hud)
+	expectEqual(#legal, 2)
+	expectEqual(best.id, "E1", "the first enemy is preselected")
+	legal, best = B.targetsFor("SapMend", hud.byId.P4, hud)
+	expectEqual(#legal, 4, "a heal offers every standing party member")
+	expectEqual(best.id, "P4", "the most hurt one first")
+	legal = B.targetsFor("Guard", hud.byId.P1, hud)
+	expectEqual(#legal, 0, "Guard needs no pick")
+	expectEqual(B.abilityRow("Tailwind", 20).needsTarget, "AllAllies")
+	expectEqual(B.abilityRow("KnockOnWood", 20).needsTarget, "None")
+
+	local ko = B.battle(ui.MockData.snapshot("Two", "Crit", 1000).battle, -1)
+	legal = B.targetsFor("Attack", ko.byId.P1, ko)
+	expectEqual(#legal, 1, "a knocked-out enemy can't be targeted")
+	expectEqual(legal[1].id, "E2")
+	expect(ko.byId.E1.knockedOut and not ko.byId.E1.isDown, "KnockedOut is never Down (R7)")
+	local enemyTurn = B.battle(ui.MockData.snapshot("Two", "EnemyTurn", 1000).battle, -1)
+	expect(enemyTurn.localActorId == nil, "no local actor on the enemy's turn")
+	assertClean(sim, observer)
+end)
+
+test("M2: the combat HUD renders every mock state from the harness at phone size, clear of the safe zones", function()
+	local sim, observer = newWorld(6101)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local ui = m2Modules(client)
+	local Layout, Strings = ui.Layout, ui.Strings
+	local handle = ui.Harness.open(localPlayer(client):WaitForChild("PlayerGui"))
+	handle.setHudMode(true)
+	local gui = client.playerGui:FindFirstChild("HarnessCombatHUD")
+	expect(gui ~= nil and gui.Enabled, "the harness opened the HUD on mock data")
+	local safeArea = gui.SafeArea
+	expectEqual(safeArea.Size.X.Offset, 844)
+	local expectedCards = { One = 1, TwoSolo = 2, Two = 2, Four = 4 }
+
+	for index, state in ui.MockData.states() do
+		handle.setState(index)
+		sim:run(0.05)
+		local battle = ui.MockData.snapshot(state.size, state.scenario).battle
+		local actor = if battle.currentActorId then participantById(battle, battle.currentActorId) else nil
+		local myTurn = battle.phase == "input" and actor ~= nil and actor.ownerUserId == -1
+		expectEqual(safeArea.Ring.Visible, myTurn, `{state.name}: the ring shows only on my turn`)
+		expectEqual(safeArea.Reveal.Visible, battle.phase == "setup", `{state.name}: the initiative reveal`)
+		expectEqual(safeArea.TurnBar.Visible, battle.phase ~= "setup", `{state.name}: the turn bar`)
+		expectEqual(safeArea.Result.Visible, battle.phase == "reward", `{state.name}: the result panel`)
+		if battle.phase == "reward" then
+			expectEqual(safeArea.Result.Panel.Content.Title.Text, if battle.winner == "Party" then Strings.Victory else Strings.Defeat, state.name)
+			expect(safeArea.Result.Panel.Content.Detail.Text ~= "", `{state.name}: the return countdown`)
+		end
+		if battle.phase == "setup" then
+			expect(string.find(safeArea.Reveal.Panel.Content.Rolls.Text, "+ 5 =", 1, true) ~= nil, `{state.name}: the rolls are listed`)
+		end
+		if myTurn then
+			for _, name in { "Attack", "Spell", "Guard" } do
+				expect(Sim.isClickable(safeArea.Ring[name]), `{state.name}: the {name} ribbon`)
+			end
+			expect(safeArea.Ring:FindFirstChild("Item") == nil and safeArea.Ring:FindFirstChild("Pass") == nil, `{state.name}: Item and Pass stay behind their flags`)
+			expect(string.find(safeArea.Status.Title.Text, Strings.YourTurn, 1, true) ~= nil, `{state.name}: says it's my turn`)
+			expect(string.find(safeArea.Status.Detail.Text, "s left", 1, true) ~= nil, `{state.name}: with the time left`)
+			expect(safeArea.ManaPlate.Visible and safeArea.ManaPlate.Plate.Content.Mana.Value.Text ~= "", `{state.name}: the hero Mana plate`)
+		else
+			expect(not safeArea.ManaPlate.Visible, `{state.name}: no Mana plate off my turn`)
+			expect(not safeArea.TargetPanel.Visible, `{state.name}: no target panel off my turn`)
+		end
+		local cards = 0
+		for _, child in safeArea.Party:GetChildren() do
+			if string.sub(child.Name, 1, 5) == "Card_" then
+				cards += 1
+				local id = string.sub(child.Name, 6)
+				local p = participantById(battle, id)
+				expectEqual(child.Content.Hp.Value.Text, Strings.format.hp(p.hp, p.maxHp), `{state.name}: {child.Name} HP`)
+				expectEqual(child.Content.StatusTag.Visible, p.status ~= "Active", `{state.name}: {child.Name} KO tag`)
+			end
+		end
+		expectEqual(cards, expectedCards[state.size], `{state.name}: one card per member`)
+		local tokens = 0
+		for _, child in safeArea.TurnBar.Plate.Content.Tokens:GetChildren() do
+			if child:IsA("ImageLabel") then
+				tokens += 1
+				expectEqual(child.Now.Visible, battle.currentActorId == child.Name and battle.phase ~= "reward", `{state.name}: NOW on {child.Name}`)
+			end
+		end
+		expectEqual(tokens, #battle.turnQueue, `{state.name}: one token per participant`)
+		expect(not safeArea.Stamps.Visible, `{state.name}: no stamps with the Down system off`)
+		checkSafeZones(Layout, gui, state.name)
+		local _, images = inspect(safeArea)
+		expectEqual(images, 0, `{state.name}: no art, every piece on its fallback`)
+	end
+
+	handle.showStamp("OneMore")
+	expect(safeArea.Stamps.Visible and safeArea.Stamps.OneMore.Visible, "the harness can force ONE MORE!")
+	handle.setHudMode(false)
+	expect(client.playerGui:FindFirstChild("HarnessCombatHUD") == nil, "leaving HUD mode removes it")
+	expect(client.playerGui.UIHarness.SafeArea.Gallery.Visible, "and brings the gallery back")
+	handle.close()
+	sim:run(0.5)
+	assertClean(sim, observer)
+end)
+
+test("M2: the Spell list (S7): the summon's kit with Mana costs, dimmed rows that say why, Back, then a target", function()
+	local sim, observer = newWorld(6102)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local ui = m2Modules(client)
+	local Layout, Strings, Theme = ui.Layout, ui.Strings, ui.Theme
+	local handle = ui.Harness.open(localPlayer(client):WaitForChild("PlayerGui"))
+	handle.setHudMode(true)
+	handle.setState(mockStateIndex(ui, "One", "MyTurn")) -- 5 Mana: Strike (2) yes, Gale Clap (8) no
+	local safeArea = client.playerGui.HarnessCombatHUD.SafeArea
+	local listGui = client.playerGui.HarnessSkillList
+	expect(not listGui.Enabled, "the list is closed to start")
+
+	sim:click(client, safeArea.Ring.Spell)
+	expect(listGui.Enabled and not safeArea.Ring.Visible and safeArea.Dim.Visible, "Spell opens the list over a dimmed scene")
+	expect(safeArea.TurnBar.Visible and safeArea.ManaPlate.Visible, "the turn bar and Mana plate persist")
+	expectEqual(listGui.SafeArea.Header.Plate.Content.Title.Text, Strings.Spell)
+	local rows = listGui.SafeArea.List.Rows
+	local strike, gale = rows:FindFirstChild("Strike"), rows:FindFirstChild("GaleClap")
+	expect(strike ~= nil and gale ~= nil and rows:FindFirstChild("Attack") == nil, "one row per ability in the summon's kit")
+	expect(strike.Cost ~= nil and gale.Cost ~= nil, "each with its Mana cost")
+	expect(strike.Title.TextColor3 == Theme.Colors.TextLight and gale.Title.TextColor3 == Theme.Colors.TextDim, "Gale Clap is dimmed")
+	expect(strike.Description.Visible and not gale.Description.Visible, "the selected row shows its description")
+	expect(Sim.isClickable(listGui.SafeArea.Confirm), "Confirm is on for the preselected Strike")
+	sim:click(client, gale)
+	local toast = listGui.SafeArea.Toast
+	expect(toast.Visible and toast.Label.Text == Strings.NotEnoughMana, "tapping a dimmed row says why")
+	expect(listGui.Enabled and not safeArea.TargetPanel.Visible, "and nothing else happens")
+	expect(checkSafeZones(Layout, listGui, "list") > 4, "the list, Confirm and Back clear the corners")
+	local virtual = roblox.Vector2.new(listGui.SafeArea.Size.X.Offset, listGui.SafeArea.Size.Y.Offset)
+	local bottomClear = virtual.Y * (1 - Layout.KEEP_OUT.bottomRight.h)
+	local confirm = listGui.SafeArea.Confirm
+	expect(confirm.Position.Y.Offset + confirm.Size.Y.Offset <= bottomClear, "the list ends above the bottom corners")
+
+	sim:click(client, listGui.SafeArea.Back)
+	expect(not listGui.Enabled and safeArea.Ring.Visible and not safeArea.Dim.Visible, "Back returns to the ring")
+
+	sim:click(client, safeArea.Ring.Spell)
+	sim:click(client, rows.Strike) -- preselected, so the tap confirms it
+	expect(not listGui.Enabled and safeArea.TargetPanel.Visible and not safeArea.Ring.Visible, "choosing Strike moves on to the target")
+	expectEqual(safeArea.TargetPanel.Caption.Text, Strings.PickEnemy)
+	expect(string.find(safeArea.Status.Detail.Text, Strings.PickEnemy, 1, true) == 1, "the status says to pick an enemy")
+	sim:click(client, safeArea.TargetPanel.Back)
+	expect(safeArea.Ring.Visible and not safeArea.TargetPanel.Visible, "Back from the target returns to the ring")
+	sim:click(client, safeArea.Ring.Spell)
+	sim:click(client, rows.Strike)
+	sim:click(client, safeArea.TargetPanel.Confirm)
+	local ability, target = handle.lastAction()
+	expectEqual(ability, "Strike")
+	expectEqual(target, "E1", "the first enemy is preselected")
+	expectEqual(safeArea.Status.Detail.Text, Strings.Sending)
+	expect(not safeArea.Ring.Visible and not safeArea.TargetPanel.Visible, "locked until the server moves on")
+	handle.close()
+	assertClean(sim, observer)
+end)
+
+test("M2: keyboard: 1 is Attack, 2 is Spell, Enter confirms, Backspace goes back, and hints show for keyboard players", function()
+	local sim, observer = newWorld(6103)
+	local client = joinAt(sim, observer, -1, "Ann", DESKTOP)
+	local ui = m2Modules(client)
+	local handle = ui.Harness.open(localPlayer(client):WaitForChild("PlayerGui"))
+	handle.setHudMode(true)
+	handle.setState(mockStateIndex(ui, "One", "MyTurn"))
+	local safeArea = client.playerGui.HarnessCombatHUD.SafeArea
+	local listGui = client.playerGui.HarnessSkillList
+	local input = client.env.getService("UserInputService")
+	local function press(key)
+		input.InputBegan:Fire({ KeyCode = roblox.Enum.KeyCode[key], UserInputType = roblox.Enum.UserInputType.Keyboard }, false)
+	end
+	expect(not safeArea.Ring.Attack.KeyHint.Visible, "no hints for a mouse player")
+	ui.Input.override("Keyboard")
+	expectEqual(safeArea.Ring.Attack.KeyHint.Text, "[1]")
+	expectEqual(safeArea.Ring.Spell.KeyHint.Text, "[2]")
+	expectEqual(safeArea.Ring.Guard.KeyHint.Text, "[4]")
+	expect(safeArea.Ring.Attack.KeyHint.Visible, "hints show for keyboard players")
+
+	press("One")
+	expect(safeArea.TargetPanel.Visible, "1 is Attack")
+	press("Backspace")
+	expect(safeArea.Ring.Visible and not safeArea.TargetPanel.Visible, "Backspace goes back")
+	press("Two")
+	expect(listGui.Enabled, "2 is Spell")
+	press("Return")
+	expect(not listGui.Enabled and safeArea.TargetPanel.Visible, "Enter confirms the selected row")
+	press("Return")
+	local ability, target = handle.lastAction()
+	expectEqual(ability, "Strike")
+	expectEqual(target, "E1")
+	ui.Input.override("Mouse")
+	handle.close()
+	assertClean(sim, observer)
+end)
+
+-- Holds the new HUD to every snapshot a client receives, the way attachClientChecker does for the
+-- old one: whose turn it is, what's offered, the plates, and the touch controls (R21).
+local function attachHudChecker(sim, observer, client)
+	local ui = m2Modules(client)
+	local Controls, Strings = ui.Controls, ui.Strings
+	sim:clientSignal(STATE_UPDATE, client.userId):Connect(function(snapshot)
+		client.lastSnapshot = snapshot
+		local gui = client.playerGui:FindFirstChild("CombatHUD")
+		if gui == nil then
+			observer:fail(client.name .. ": no CombatHUD")
+			return
+		end
+		if client.playerGui:FindFirstChild("BattleUI") ~= nil then
+			observer:fail(client.name .. ": the old BattleUI is up beside the new HUD")
+		end
+		local safeArea = gui.SafeArea
+		local battle = snapshot.battle
+		local inBattle = battle ~= nil and isInBattle(battle, client.userId)
+		if Controls.isEnabled() == inBattle then
+			observer:fail(`{client.name}: touch controls enabled={Controls.isEnabled()} but inBattle={inBattle}`)
+		end
+		if not inBattle then
+			if safeArea.Ring.Visible or safeArea.Party.Visible or safeArea.TurnBar.Visible or safeArea.Result.Visible then
+				observer:fail(client.name .. ": battle widgets up outside a fight")
+			end
+			if battle ~= nil and not (safeArea.Overworld.Visible and safeArea.Overworld.Panel.Content.Status.Visible) then
+				observer:fail(client.name .. ": a fight is on, but the overworld notice isn't up to say so")
+			end
+			return
+		end
+		local actor = if battle.currentActorId then participantById(battle, battle.currentActorId) else nil
+		local myTurn = battle.phase == "input" and actor ~= nil and actor.ownerUserId == client.userId
+		local title = safeArea.Status.Title.Text
+		if myTurn ~= (string.find(title, Strings.YourTurn, 1, true) ~= nil) then
+			observer:fail(`{client.name}: status "{title}" but myTurn={myTurn}`)
+		end
+		local list = client.playerGui:FindFirstChild("SkillList")
+		local open = (if safeArea.Ring.Visible then 1 else 0) + (if safeArea.TargetPanel.Visible then 1 else 0) + (if list and list.Enabled then 1 else 0)
+		if not myTurn and open > 0 then
+			observer:fail(client.name .. ": choices offered off their turn")
+		elseif myTurn and open == 0 and safeArea.Status.Detail.Text ~= Strings.Sending then
+			observer:fail(client.name .. ": nothing to choose on their turn")
+		elseif open > 1 then
+			observer:fail(client.name .. ": two choosers at once")
+		end
+		if (battle.phase == "setup") ~= safeArea.Reveal.Visible then
+			observer:fail(client.name .. ": the initiative reveal is wrong")
+		end
+		if (battle.phase == "reward") ~= safeArea.Result.Visible then
+			observer:fail(client.name .. ": the result panel is wrong")
+		end
+		local stage = client.env.dm:GetService("Workspace"):FindFirstChild("BattleStage")
+		local plates = client.playerGui:FindFirstChild("CombatHUDEnemies")
+		for _, p in battle.participants do
+			if p.side == "Party" then
+				local card = safeArea.Party:FindFirstChild("Card_" .. p.id)
+				if card == nil then
+					observer:fail(`{client.name}: no card for {p.id}`)
+				elseif card.Content.Hp.Value.Text ~= Strings.format.hp(p.hp, p.maxHp) then
+					observer:fail(`{client.name}: {p.id}'s card HP is stale`)
+				elseif card.Content.StatusTag.Visible ~= (p.status ~= "Active") then
+					observer:fail(`{client.name}: {p.id}'s KO tag is wrong`)
+				end
+			else
+				local plate = if plates then plates:FindFirstChild("Enemy_" .. p.id) else nil
+				local spot = if stage and stage:FindFirstChild(p.id) then stage[p.id]:FindFirstChild("Spot") else nil
+				if plate == nil then
+					observer:fail(`{client.name}: no plate for {p.id}`)
+				elseif plate.Root.Plate.Hp.Value.Text ~= Strings.format.hp(p.hp, p.maxHp) then
+					observer:fail(`{client.name}: {p.id}'s plate HP is stale`)
+				elseif spot == nil or plate.Adornee ~= spot or not plate.Enabled then
+					observer:fail(`{client.name}: {p.id}'s plate isn't over its enemy (spot={tostring(spot)}, adornee={tostring(plate.Adornee)}, nameplateAdornee={tostring(spot.Nameplate.Adornee)}, enabled={tostring(plate.Enabled)}, studs={tostring(plate.StudsOffset)})`)
+				elseif spot.Nameplate.Enabled then
+					observer:fail(`{client.name}: BattleView's plate for {p.id} is still on (R19)`)
+				end
+			end
+		end
+	end)
+end
+
+-- A client on the new HUD (Flags.NewHud), joined and on the grass.
+local function joinHud(sim, observer, userId, name, viewportSize)
+	local client = sim:connectClient(userId, name, { viewportSize = viewportSize, flags = { NewHud = true } })
+	assert(sim:runUntil(function()
+		return client.started == true
+	end, 5), name .. " never started")
+	localPlayer(client):SetAttribute("Zone", "Overworld")
+	sim:run(0.5)
+	attachHudChecker(sim, observer, client)
+	return client
+end
+
+local function lastSequence(client)
+	local battle = client.lastSnapshot and client.lastSnapshot.battle
+	return if battle and battle.lastAction then battle.lastAction.sequence else 0
+end
+
+-- Waits for the ring on this client's turn.
+local function hudTurn(sim, client)
+	local safeArea = client.playerGui.CombatHUD.SafeArea
+	expect(sim:runUntil(function()
+		return safeArea.Ring.Visible
+	end, 90), "the ring never showed")
+	return currentActor(client.lastSnapshot.battle), lastSequence(client)
+end
+
+local function waitPlayed(sim, client, sequenceBefore, move)
+	expect(sim:runUntil(function()
+		return lastSequence(client) > sequenceBefore
+	end, 3), move .. " never played")
+	return client.lastSnapshot.battle.lastAction
+end
+
+test("M2: a real fight on the new HUD: Attack, Spell and Guard through the ring, the enemy plates, and the controls off until it's over (R21)", function()
+	local sim, observer = newWorld(6104)
+	local client = joinHud(sim, observer, -1, "Ann", PHONE)
+	local ui = m2Modules(client)
+	local Controls, Strings, Theme = ui.Controls, ui.Strings, ui.Theme
+	expect(Controls.isEnabled(), "controls on while exploring")
+	sim:run(1)
+	local battle = touch(sim, observer, -1, "NorthLookout", "front")
+	expectEqual(battle.opening, "Party")
+	expect(sim:runUntil(function()
+		return client.lastSnapshot ~= nil and client.lastSnapshot.battle ~= nil
+	end, 2), "the client never heard about the fight")
+	local safeArea = client.playerGui.CombatHUD.SafeArea
+	local enemies = client.playerGui.CombatHUDEnemies
+	expect(not Controls.isEnabled(), "controls off in the fight")
+	expectEqual(Controls.changes(), 1)
+	expect(safeArea.Reveal.Visible and string.find(safeArea.Reveal.Panel.Content.Title.Text, "struck first", 1, true) ~= nil, "the reveal says who struck first")
+	expect(enemies:FindFirstChild("Enemy_E1") ~= nil and enemies.Enemy_E1.Enabled, "a plate over the enemy")
+
+	-- 1. Attack: the ring, then the preselected enemy, confirmed.
+	local actor, before = hudTurn(sim, client)
+	expect(string.find(safeArea.Status.Detail.Text, "s left", 1, true) ~= nil, "the turn timer")
+	sim:click(client, safeArea.Ring.Attack)
+	expect(safeArea.TargetPanel.Visible and not safeArea.Ring.Visible, "Attack asks for a target")
+	expectEqual(safeArea.TargetPanel.Caption.Text, Strings.PickEnemy)
+	local plate = enemies.Enemy_E1.Root
+	expect(plate.BracketLeft.Visible and plate.BracketLeft.BackgroundColor3 == Theme.Colors.Gold and Sim.isClickable(plate.Plate), "gold brackets on the chosen enemy, which can be tapped")
+	sim:click(client, safeArea.TargetPanel.Confirm)
+	expectEqual(safeArea.Status.Detail.Text, Strings.Sending)
+	local played = waitPlayed(sim, client, before, "Attack")
+	expectEqual(played.abilityId, "Attack")
+	expectEqual(played.actorId, actor.id)
+	expectEqual(played.results[1].targetId, "E1")
+
+	-- 2. Spell: the list, Strike (preselected, so the tap confirms), then the enemy tapped twice.
+	actor, before = hudTurn(sim, client)
+	sim:click(client, safeArea.Ring.Spell)
+	local list = client.playerGui.SkillList
+	expect(list.Enabled, "Spell opens the list")
+	sim:click(client, list.SafeArea.List.Rows.Strike)
+	expect(not list.Enabled and safeArea.TargetPanel.Visible, "Strike wants a target")
+	local chosen, other = nil, nil
+	for _, gui in enemies:GetChildren() do
+		if Sim.isClickable(gui.Root.Plate) then
+			if gui.Root.BracketLeft.BackgroundColor3 == Theme.Colors.Gold then
+				chosen = gui
+			else
+				other = gui
+			end
+		end
+	end
+	expect(chosen ~= nil, "one enemy is preselected")
+	local pick = other or chosen
+	if other then
+		sim:click(client, other.Root.Plate) -- a tap picks it
+		expect(safeArea.TargetPanel.Visible and other.Root.BracketLeft.BackgroundColor3 == Theme.Colors.Gold, "the pick moved to the tapped enemy")
+	end
+	sim:click(client, pick.Root.Plate) -- a second tap confirms it
+	played = waitPlayed(sim, client, before, "Strike")
+	expectEqual(played.abilityId, "Strike")
+	expectEqual(played.results[1].targetId, string.sub(pick.Name, 7))
+
+	-- 3. Guard: straight away, no target.
+	actor, before = hudTurn(sim, client)
+	sim:click(client, safeArea.Ring.Guard)
+	expect(not safeArea.TargetPanel.Visible and not safeArea.Ring.Visible, "Guard needs no target")
+	played = waitPlayed(sim, client, before, "Guard")
+	expectEqual(played.abilityId, "Guard")
+	expectEqual(played.actorId, actor.id)
+	expect(string.find(safeArea.Party["Card_" .. actor.id].Content.Statuses.Text, "Bracing", 1, true) ~= nil, "its card shows it's bracing")
+
+	-- A reset mid-fight: the fresh character stays without controls, and the plates (which the
+	-- respawn clears out of PlayerGui with everything but the HUD's ScreenGuis) come back.
+	sim:spawnCharacter(-1)
+	sim:run(0.5)
+	expect(not Controls.isEnabled(), "still off after a respawn mid-fight")
+	expect(client.playerGui:FindFirstChild("CombatHUD") ~= nil and client.playerGui:FindFirstChild("SkillList") ~= nil, "the HUD's ScreenGuis survive a respawn")
+	expect(sim:runUntil(function()
+		local folder = client.playerGui:FindFirstChild("CombatHUDEnemies")
+		return folder ~= nil and folder:FindFirstChild("Enemy_E1") ~= nil and folder.Enemy_E1.Enabled
+	end, 5), "the enemy plates are rebuilt after a respawn")
+
+	-- Fight on with Attack until it's over.
+	local rounds = 0
+	while client.lastSnapshot.battle ~= nil and client.lastSnapshot.battle.phase ~= "reward" do
+		rounds += 1
+		expect(rounds < 600, "the fight never ended")
+		if safeArea.Ring.Visible then
+			sim:click(client, safeArea.Ring.Attack)
+			sim:click(client, safeArea.TargetPanel.Confirm)
+		end
+		sim:run(0.5)
+	end
+	expect(safeArea.Result.Visible, "the result panel at the end")
+	local won = client.lastSnapshot.battle.winner == "Party"
+	expectEqual(safeArea.Result.Panel.Content.Title.Text, if won then Strings.Victory else Strings.Defeat)
+	expect(string.find(safeArea.Result.Panel.Content.Detail.Text, "Returning", 1, true) ~= nil, "with the return countdown")
+	expect(not Controls.isEnabled(), "controls stay off on the result screen")
+	expect(sim:runUntil(function()
+		return client.lastSnapshot.battle == nil
+	end, 30), "never came back to the overworld")
+	expect(Controls.isEnabled(), "controls back on in the overworld")
+	expectEqual(Controls.changes(), 2, "off once, on once")
+	enemies = client.playerGui.CombatHUDEnemies -- a fresh folder since the respawn mid-fight
+	expect(not safeArea.Party.Visible and not safeArea.Result.Visible and not enemies.Enemy_E1.Enabled, "the HUD cleared")
+	sim:run(1)
+	assertClean(sim, observer)
+end)
+
+
+test("M2: a reset during my own turn brings the enemy plates and my pick straight back, before any new snapshot", function()
+	local sim, observer = newWorld(6106)
+	local client = joinHud(sim, observer, -1, "Ann", PHONE)
+	local Theme = m2Modules(client).Theme
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "front")
+	local safeArea = client.playerGui.CombatHUD.SafeArea
+	hudTurn(sim, client)
+	sim:click(client, safeArea.Ring.Attack)
+	expect(safeArea.TargetPanel.Visible, "picking a target")
+	local enemies = client.playerGui.CombatHUDEnemies
+	-- Move the pick off the default enemy when there is another one, so the pick itself is tested.
+	local other = nil
+	for _, gui in enemies:GetChildren() do
+		if Sim.isClickable(gui.Root.Plate) and gui.Root.BracketLeft.BackgroundColor3 ~= Theme.Colors.Gold then
+			other = gui
+		end
+	end
+	if other then
+		sim:click(client, other.Root.Plate)
+	end
+	local chosen = if other then other.Name else "Enemy_E1"
+	local snapshotBefore = client.lastSnapshot
+	local sequenceBefore = lastSequence(client)
+
+	sim:spawnCharacter(-1) -- a reset: PlayerGui cleared, CharacterAdded fired, nothing from the server
+	expect(client.lastSnapshot == snapshotBefore, "no new snapshot arrived")
+	local folder = client.playerGui:FindFirstChild("CombatHUDEnemies")
+	expect(folder ~= nil and folder ~= enemies, "a fresh plate folder, at once")
+	for _, gui in folder:GetChildren() do
+		expect(gui.Enabled and gui.Root.BracketLeft.Visible and Sim.isClickable(gui.Root.Plate), gui.Name .. " is back and pickable")
+	end
+	expect(folder[chosen].Root.BracketLeft.BackgroundColor3 == Theme.Colors.Gold, "the chosen enemy still has the gold brackets")
+	expect(safeArea.TargetPanel.Visible and Sim.isClickable(safeArea.TargetPanel.Confirm), "the target panel is still up")
+
+	sim:click(client, folder[chosen].Root.Plate) -- tapping the fresh plate of the pick confirms it
+	local played = waitPlayed(sim, client, sequenceBefore, "Attack")
+	expectEqual(played.abilityId, "Attack")
+	expectEqual(played.results[1].targetId, string.sub(chosen, 7))
+	sim:run(1)
+	assertClean(sim, observer)
+end)
+
 print("\nEvery summon variant, through the UI")
 
 local function setLineup(sim, lineup)
