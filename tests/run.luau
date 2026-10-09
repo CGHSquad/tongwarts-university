@@ -3961,9 +3961,11 @@ test("C1: the ring waits for the stage to finish its beat, but never longer than
 	assertClean(sim, observer)
 end)
 
-test("C1: under the battle camera the enemy plates keep inside the HUD's box and clear of each other, and clips are compressed to the beat (phone size)", function()
-	local sim, observer = newWorld(904)
-	local client = joinHud(sim, observer, -1, "Ann", PHONE)
+-- Plays a fight at `size` and checks the enemy plates against the HUD's box under the battle
+-- camera, and that a long attack clip is compressed to its beat.
+local function checkPlatesAt(seed, size, label)
+	local sim, observer = newWorld(seed)
+	local client = joinHud(sim, observer, -1, "Ann", size)
 	local ui = m2Modules(client)
 	local Layout = ui.Layout
 	local Summons = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.Summons)
@@ -3975,46 +3977,49 @@ test("C1: under the battle camera the enemy plates keep inside the HUD's box and
 	local camera = cameraOf(client)
 	local plates = client.playerGui.CombatHUDEnemies
 
-	-- The HUD's box for the plates, as CombatHUD lays it out (viewport pixels: the GUI inset, then
-	-- the regions in design pixels at scale 1 on the design phone).
-	local regions = Layout.regions(PHONE)
+	-- The HUD's box for the plates, as CombatHUD lays it out: the GUI inset, then the regions in
+	-- design pixels scaled up to the screen.
+	local scale = Layout.scaleFor(size)
+	local virtual = roblox.Vector2.new(math.round(size.X / scale), math.round(size.Y / scale))
+	local regions = Layout.regions(virtual)
 	local inset = client.env.getService("GuiService"):GetGuiInset()
 	local gap = 8
 	local statusBottom = regions.topCenter.y + (36 + 10) + 4 + 74
 	local box = {
-		left = inset.X + regions.left.x + regions.left.w + gap,
-		top = inset.Y + statusBottom + gap,
-		right = inset.X + regions.right.x - gap,
-		bottom = inset.Y + regions.center.y + regions.center.h - 48 - gap,
+		left = inset.X + (regions.left.x + regions.left.w + gap) * scale,
+		top = inset.Y + (statusBottom + gap) * scale,
+		right = inset.X + (regions.right.x - gap) * scale,
+		bottom = inset.Y + (regions.center.y + regions.center.h - 48 - gap) * scale,
 	}
-	local function checkPlates(label)
+	local plateW, plateH = 190 * scale, 60 * scale
+	local function checkPlates(shot)
 		local rects = {}
 		for _, gui in plates:GetChildren() do
 			if gui:IsA("BillboardGui") and gui.Enabled and gui.Root.Visible then
 				local spot = gui.Adornee
 				local center = spot.CFrame.Position + gui.StudsOffsetWorldSpace
-				local screen = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, PHONE, center)
-				local rect = Layout.rect(screen.X - 95, screen.Y - 30, 190, 60)
-				-- (12 px of slack: plates are placed again only once the camera has moved 0.3 studs or
-				-- turned a degree, which is about that much on screen.)
-				local slack = 12
+				local screen = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, size, center)
+				local rect = Layout.rect(screen.X - plateW / 2, screen.Y - plateH / 2, plateW, plateH)
+				-- (12 design px of slack: plates are placed again only once the camera has moved 0.3
+				-- studs or turned a degree, which is about that much on screen.)
+				local slack = 12 * scale
 				expect(
 					rect.x >= box.left - slack and rect.x + rect.w <= box.right + slack and rect.y >= box.top - slack and rect.y + rect.h <= box.bottom + slack,
-					`{label}: {gui.Name} inside the HUD's box ({math.round(rect.x)}, {math.round(rect.y)}; box {math.round(box.left)}-{math.round(box.right)} x {math.round(box.top)}-{math.round(box.bottom)})`
+					`{label}, {shot}: {gui.Name} inside the HUD's box ({math.round(rect.x)}, {math.round(rect.y)}; box {math.round(box.left)}-{math.round(box.right)} x {math.round(box.top)}-{math.round(box.bottom)})`
 				)
 				table.insert(rects, rect)
 			end
 		end
-		expect(#rects >= 1, `{label}: at least one plate in frame`)
+		expect(#rects >= 1, `{label}, {shot}: at least one plate in frame`)
 		if #rects == 2 then
-			expect(not Layout.intersects(rects[1], rects[2]), `{label}: the two plates don't overlap ({math.round(rects[1].x)},{math.round(rects[1].y)} and {math.round(rects[2].x)},{math.round(rects[2].y)})`)
+			expect(not Layout.intersects(rects[1], rects[2]), `{label}, {shot}: the two plates don't overlap ({math.round(rects[1].x)},{math.round(rects[1].y)} and {math.round(rects[2].x)},{math.round(rects[2].y)})`)
 		end
 		return #rects
 	end
 
 	runToPhase(sim, observer, myInputTurn(-1), "Ann's turn")
 	sim:run(0.8)
-	expectEqual(checkPlates("over the shoulder"), 2, "both enemies in frame from behind the party")
+	expectEqual(checkPlates("over the shoulder"), 2, `{label}: both enemies in frame from behind the party`)
 	runToPhase(sim, observer, enemyInputTurn, "an enemy's turn")
 	sim:run(0.8)
 	checkPlates("enemy frontal")
@@ -4027,9 +4032,14 @@ test("C1: under the battle camera the enemy plates keep inside the HUD's box and
 			end
 		end
 		return false
-	end, 240), "a compressed attack clip never played")
-	expect(bot.turnsTaken > 0, "the bot played")
+	end, 240), `{label}: a compressed attack clip never played`)
+	expect(bot.turnsTaken > 0, `{label}: the bot played`)
 	assertClean(sim, observer)
+end
+
+test("C1: under the battle camera the enemy plates keep inside the HUD's box and clear of each other, and clips are compressed to the beat (phone and desktop)", function()
+	checkPlatesAt(904, PHONE, "phone")
+	checkPlatesAt(905, roblox.Vector2.new(1920, 1080), "desktop")
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

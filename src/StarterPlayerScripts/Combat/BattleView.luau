@@ -716,6 +716,15 @@ local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: s
 	sequencer:own(popup, POPUP_SECONDS)
 end
 
+-- Tells the world's other client scripts (ZoneClient's day cycle) that a fight is on, so they
+-- hold still for it. Set once the wipe has covered the screen, cleared on leaving.
+local function setInBattle(on: boolean)
+	local player = Players.LocalPlayer
+	if player then
+		player:SetAttribute("InBattle", on)
+	end
+end
+
 --[[ BattleView ]]
 
 function BattleView.new(options: Options?): BattleView
@@ -912,11 +921,13 @@ function BattleView._build(self: BattleView, battle: BattleState)
 	else
 		-- Joining a fight already under way: straight to its current shot.
 		self.camera:cut(self:_shotFor(battle.currentActorId))
+		setInBattle(true)
 	end
 end
 
 -- Back to the overworld: nothing of the fight stays behind.
 function BattleView._leave(self: BattleView)
+	setInBattle(false)
 	self.sequencer:cancel()
 	local transition = self.transition
 	if transition then
@@ -1086,6 +1097,7 @@ function BattleView._playStart(self: BattleView)
 		{
 			at = COVER_SECONDS,
 			run = function()
+				setInBattle(true) -- under the cover: the world's light changes unseen
 				self.camera:follow(sweep, SWEEP_SECONDS)
 				if transition then
 					transition:uncoverScreen(COVER_SECONDS, Motion.scale())
@@ -1118,6 +1130,14 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			summoned = true
 		end
 	end
+	-- The previous beat's sequence is about to be replaced: a fall it still had cued lands now, so
+	-- a knocked-out figure never stays standing because the next snapshot came in early.
+	for _, figure in self.figures do
+		if figure.fall == "Cued" then
+			self:_fall(figure)
+		end
+	end
+
 	-- The beat's budget: what the server waits before the next turn, less slack for latency. Clips
 	-- are compressed to fit inside it.
 	local seconds = Pacing.resolveSeconds(ability, action.results, summoned)

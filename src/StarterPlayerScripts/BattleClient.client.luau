@@ -84,10 +84,9 @@ local function render(snapshot: BattleTypes.Snapshot)
 	local mine = myBattle(snapshot)
 	view:render(mine)
 	ui:render(snapshot)
-	-- Touch controls off while in a fight, keyed off every snapshot (M0 report R21).
+	-- Touch controls off while in a fight, keyed off every snapshot (M0 report R21). (BattleView
+	-- marks the player InBattle for the world's other client scripts, once the wipe covers the screen.)
 	Controls.setEnabled(mine == nil)
-	-- The world's other client scripts (ZoneClient's day cycle) hold still for the fight.
-	localPlayer:SetAttribute("InBattle", mine ~= nil)
 end
 
 stateUpdateRemote.OnClientEvent:Connect(render)
