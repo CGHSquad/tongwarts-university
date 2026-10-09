@@ -29,7 +29,6 @@
 	the character and sound tables).
 ]]
 
-local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -73,9 +72,11 @@ local SUMMON_FADE_SECONDS = 0.2
 -- Where it materializes, relative to its spot (which faces the enemies): behind the character, up
 -- over its shoulder, and a step further from the camera, so the character stays in view in front.
 local SUMMON_SOCKET = CFrame.new(-1.5, 4, 4)
--- A summon's attack clip plays sped up when it's longer than this, so even a slow swing is over
--- before the next turn opens (Pacing's summon budget).
+-- A clip plays sped up when it's longer than its beat allows, so even a slow swing or fall is over
+-- before the next turn opens: the allowance comes from Pacing (what the server waits), minus the
+-- fade-ins and the slack; this is the most any clip gets.
 local ATTACK_MAX_SECONDS = 1.6
+local DEATH_MAX_SECONDS = 1.6
 -- The battle start: the swirl covers the screen, the stage is set, the swirl clears onto the sweep.
 local COVER_SECONDS = 0.3
 local SWEEP_SECONDS = 1.9
@@ -135,6 +136,7 @@ type ViewFields = {
 	enemyNameplates: boolean, -- off when the new HUD draws its own enemy plates (M0 report R19)
 	partyNameplates: boolean, -- off for the new HUD too: its party cards carry the same
 	localUserId: number?,
+	playerGui: PlayerGui?,
 	camera: BattleCamera.BattleCamera,
 	sequencer: Sequencer.Sequencer,
 	transition: Transition.Transition?,
@@ -144,6 +146,7 @@ export type Options = {
 	enemyNameplates: boolean?, -- default true
 	partyNameplates: boolean?, -- default true
 	onBusyChanged: ((busy: boolean) -> ())?, -- the stage started or finished playing a beat
+	playerGui: PlayerGui?, -- where the battle-start transition draws; found from the LocalPlayer otherwise
 }
 
 export type BattleView = typeof(setmetatable({} :: ViewFields, BattleView))
@@ -204,9 +207,10 @@ local function copyAvatar(userId: number?): Model?
 	end
 
 	for _, descendant in copy:GetDescendants() do
-		if descendant:IsA("BaseScript") or descendant:IsA("ForceField") then
-			-- No Animate or Health scripts (this copy only poses and lunges), and no spawn shield,
-			-- which would never wear off the copy.
+		if descendant:IsA("BaseScript") or descendant:IsA("ForceField") or descendant:IsA("LayerCollector") then
+			-- No Animate or Health scripts (this copy only poses and lunges), no spawn shield, which
+			-- would never wear off the copy, and no GUIs riding on the avatar (the overworld's
+			-- "AFK" tag), which would float over the stage.
 			descendant:Destroy()
 		elseif descendant:IsA("BasePart") then
 			descendant.Anchored = false -- held by its joints to the root, which is anchored below
@@ -412,10 +416,10 @@ local function stopClips(figure: Figure)
 	end
 end
 
--- Plays the summon's attack clip, if it has one. Returns how long it takes and how far in the blow
--- lands, in seconds; nil while its length isn't known (the clip is still downloading, the first
--- time), and then it plays at its own pace.
-local function playAttackClip(figure: Figure): (number?, number?)
+-- Plays the summon's attack clip, if it has one, within `maxSeconds` (sped up if it's longer).
+-- Returns how long it takes and how far in the blow lands, in seconds; nil while its length isn't
+-- known (the clip is still downloading, the first time), and then it plays at its own pace.
+local function playAttackClip(figure: Figure, maxSeconds: number): (number?, number?)
 	local track = if figure.clips then figure.clips.attack else nil
 	if track == nil then
 		return nil, nil
@@ -424,16 +428,17 @@ local function playAttackClip(figure: Figure): (number?, number?)
 		track:Play(0.1)
 		return nil, nil
 	end
-	local speed = math.max(1, track.Length / ATTACK_MAX_SECONDS)
+	local speed = math.max(1, track.Length / math.clamp(maxSeconds, 0.3, ATTACK_MAX_SECONDS))
 	track:Play(0.1, 1, speed)
 	local seconds = track.Length / speed
 	local art = figure.art
 	return seconds, seconds * (if art and art.attackImpact then art.attackImpact else 0.5)
 end
 
--- Plays the summon's death clip, if it has one, and holds its last frame. Returns how long it takes
--- (nil when that isn't known).
-local function playDeathClip(figure: Figure): number?
+-- Plays the summon's death clip, if it has one, within DEATH_MAX_SECONDS, and holds its last
+-- frame. The connection that freezes it is owned by `sequencer`, so leaving a fight drops it.
+-- Returns how long it takes (nil when that isn't known).
+local function playDeathClip(figure: Figure, sequencer: Sequencer.Sequencer): number?
 	local clips = figure.clips
 	local death = if clips then clips.death else nil
 	if clips == nil or death == nil then
@@ -442,16 +447,19 @@ local function playDeathClip(figure: Figure): number?
 	if clips.idle then
 		clips.idle:Stop(0.2)
 	end
-	death:Play(0.1)
+	local speed = if death.Length > 0 then math.max(1, death.Length / DEATH_MAX_SECONDS) else 1
+	death:Play(0.1, 1, speed)
 	local connection: RBXScriptConnection
 	connection = death.Stopped:Connect(function()
 		connection:Disconnect()
+		sequencer:releaseConnection(connection)
 		if figure.knockedOut then
 			death:Play(0, 1, 0) -- frozen where it fell
 			death.TimePosition = math.max(0, death.Length - 0.05)
 		end
 	end)
-	return if death.Length > 0 then death.Length else nil
+	sequencer:ownConnection(connection)
+	return if death.Length > 0 then death.Length / speed else nil
 end
 
 --[[ Figures ]]
@@ -630,10 +638,11 @@ end
 --   "cast"    one of its own abilities that isn't an attack (a heal, a buff)
 --   "attack"  one of its own attacks: its attack clip plays as it materializes
 --   "death"   it's been knocked out: its death clip plays
--- then dismisses once that has played out. The character stays on the field throughout. Returns
--- how long after it starts coming out the beat lands (for an attack, the blow).
+-- then dismisses once that has played out. The character stays on the field throughout. `clipSeconds`
+-- is the most its clip may take (from the beat's Pacing budget). Returns how long after it starts
+-- coming out the beat lands (for an attack, the blow).
 type Beat = "cast" | "attack" | "death"
-local function bringOutSummon(figure: Figure, beat: Beat): number
+local function bringOutSummon(figure: Figure, beat: Beat, clipSeconds: number, sequencer: Sequencer.Sequencer): number
 	figure.appearances += 1
 	local appearance = figure.appearances
 	local summon = figure.summon
@@ -648,13 +657,13 @@ local function bringOutSummon(figure: Figure, beat: Beat): number
 	local lands = SUMMON_FADE_SECONDS
 	local outFor = SUMMON_SECONDS -- a clip whose length is known keeps it out until that's over
 	if beat == "attack" then
-		local seconds, impact = playAttackClip(figure)
+		local seconds, impact = playAttackClip(figure, clipSeconds)
 		if seconds and impact then
 			lands = math.max(SUMMON_FADE_SECONDS, impact)
 			outFor = math.max(SUMMON_SECONDS, seconds + SUMMON_FADE_SECONDS)
 		end
 	elseif beat == "death" then
-		local seconds = playDeathClip(figure)
+		local seconds = playDeathClip(figure, sequencer)
 		if seconds then
 			outFor = math.max(SUMMON_SECONDS, seconds + SUMMON_FADE_SECONDS)
 		end
@@ -675,8 +684,10 @@ local function bringOutSummon(figure: Figure, beat: Beat): number
 end
 
 -- A word or number that floats up off whoever stands in a spot and fades: damage, MISS, healing,
--- a status. It follows the body (which lunges and recoils), not the spot.
-local function showPopup(figure: Figure, text: string, color: Color3, startHeight: number)
+-- a status. It follows the body (which lunges and recoils), not the spot, and the sequencer owns
+-- it: gone after a second, or at once if the fight is left.
+local POPUP_SECONDS = 1
+local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: string, color: Color3, startHeight: number)
 	local part = body(figure)
 	local popup = Instance.new("BillboardGui")
 	popup.Name = "Popup"
@@ -693,7 +704,7 @@ local function showPopup(figure: Figure, text: string, color: Color3, startHeigh
 	local rise = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + 3.5, 0) }):Play()
 	TweenService:Create(label, rise, { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
-	Debris:AddItem(popup, 1)
+	sequencer:own(popup, POPUP_SECONDS)
 end
 
 --[[ BattleView ]]
@@ -713,6 +724,7 @@ function BattleView.new(options: Options?): BattleView
 		enemyNameplates = if options and options.enemyNameplates ~= nil then options.enemyNameplates :: boolean else true,
 		partyNameplates = if options and options.partyNameplates ~= nil then options.partyNameplates :: boolean else true,
 		localUserId = if localPlayer then localPlayer.UserId else nil,
+		playerGui = if options then options.playerGui else nil,
 		camera = BattleCamera.new(),
 		sequencer = sequencer,
 		transition = nil,
@@ -742,13 +754,22 @@ function BattleView.render(self: BattleView, battle: BattleState?)
 		self:_openTurn(battle)
 	end
 	local action = battle.lastAction
+	local actionSeconds = 0
 	if action ~= nil and action.sequence > self.lastActionSeen then
 		self.lastActionSeen = action.sequence
-		self:_playAction(battle, action)
+		actionSeconds = self:_playAction(battle, action)
 	end
 	if battle.phase == "reward" and not self.resultShown then
 		self.resultShown = true
-		self:_playResult(battle)
+		-- The final blow and the result arrive in one snapshot: the result camera waits for the
+		-- blow (and the fall) to play out, as a cue at the end of the action's sequence.
+		if actionSeconds > 0 then
+			self.sequencer:addCue(actionSeconds, function()
+				self:_playResult(battle)
+			end)
+		else
+			self:_playResult(battle)
+		end
 	end
 end
 
@@ -759,10 +780,25 @@ function BattleView.update(self: BattleView, dt: number)
 	self.camera:update(dt)
 end
 
--- The player confirmed a move: the field of view punches at once, before the server answers.
-function BattleView.confirm(self: BattleView)
-	if self.battle then
-		self.camera:punch(CONFIRM_PUNCH)
+-- The player confirmed a move: the field of view punches at once, before the server answers, and
+-- if the move brings their summon out the camera already backs off to the summon shot, so the
+-- summon never materializes between the lens and the character.
+function BattleView.confirm(self: BattleView, abilityId: string?)
+	local battle = self.battle
+	if battle == nil then
+		return
+	end
+	self.camera:punch(CONFIRM_PUNCH)
+	local actorId = battle.currentActorId
+	local figure = if actorId then self.figures[actorId] else nil
+	if figure == nil or abilityId == nil then
+		return
+	end
+	for _, participant in battle.participants do
+		if participant.id == actorId and Pacing.isSummoned(participant.side, participant.abilities, abilityId) then
+			local _, rest = body(figure)
+			self.camera:moveTo(Shots.summon(rest, self:_focus("Enemy")), 0.3)
+		end
 	end
 end
 
@@ -814,7 +850,7 @@ function BattleView._build(self: BattleView, battle: BattleState)
 			if away then
 				figure.summon.Parent = nil
 			elseif figure.knockedOut then
-				playDeathClip(figure)
+				playDeathClip(figure, self.sequencer)
 			else
 				startIdle(figure)
 			end
@@ -883,9 +919,9 @@ function BattleView._refreshFigures(self: BattleView)
 			if not figure.knockedOut then
 				figure.knockedOut = true
 				if figure.character == nil then
-					playDeathClip(figure)
+					playDeathClip(figure, self.sequencer)
 				elseif figure.clips and figure.clips.death then
-					bringOutSummon(figure, "death") -- it comes out to fall
+					bringOutSummon(figure, "death", DEATH_MAX_SECONDS, self.sequencer) -- it comes out to fall
 				end
 			end
 		elseif participant.status == "Left" then
@@ -945,6 +981,13 @@ function BattleView._focus(self: BattleView, side: BattleTypes.Side): Vector3
 	return Shots.focusOf(points, STAGE_CENTER + Vector3.new(direction * SLOT_DEPTH, 3, 0))
 end
 
+-- Where a figure's body stands, facing the way its spot faces (an imported rig's root may be
+-- turned any way; the spot is what the stage laid out).
+local function standing(figure: Figure): CFrame
+	local _, rest = body(figure)
+	return figure.home.Rotation + rest.Position
+end
+
 -- The shot for whoever's turn it is: over a party member's shoulder (a teammate's from a little
 -- further back), an offset frontal on an enemy; the wide shot when there is no one.
 function BattleView._shotFor(self: BattleView, actorId: string?): Shots.Pose
@@ -952,7 +995,7 @@ function BattleView._shotFor(self: BattleView, actorId: string?): Shots.Pose
 	if figure == nil then
 		return Shots.wide(STAGE_CENTER)
 	end
-	local _, rest = body(figure)
+	local rest = standing(figure)
 	if figure.side == "Party" then
 		local mine = figure.ownerUserId ~= nil and figure.ownerUserId == self.localUserId
 		return Shots.overShoulder(rest, self:_focus("Enemy"), if mine then 1 else 1.3)
@@ -972,9 +1015,13 @@ end
 function BattleView._playStart(self: BattleView)
 	local transition = self.transition
 	if transition == nil then
-		local localPlayer = Players.LocalPlayer
-		local playerGui = if localPlayer then localPlayer:WaitForChild("PlayerGui") else nil
-		if playerGui and playerGui:IsA("PlayerGui") then
+		local playerGui = self.playerGui
+		if playerGui == nil then
+			local localPlayer = Players.LocalPlayer
+			local found = if localPlayer then localPlayer:FindFirstChild("PlayerGui") else nil
+			playerGui = if found and found:IsA("PlayerGui") then found else nil
+		end
+		if playerGui then
 			transition = Transition.new(playerGui)
 			self.transition = transition
 		end
@@ -983,18 +1030,19 @@ function BattleView._playStart(self: BattleView)
 	local sweep = function(t: number): Shots.Pose
 		return Shots.sweep(STAGE_CENTER, Vector3.xAxis, t / SWEEP_SECONDS)
 	end
+	-- The camera keeps the player's view (activate) until the wipe has covered the screen; the
+	-- stage is only seen once the wipe clears onto the sweep.
 	if transition then
 		transition:coverScreen(COVER_SECONDS, scale)
 	end
-	self.camera:cut(sweep(0))
 	self.sequencer:play(COVER_SECONDS + SWEEP_SECONDS, {
 		{
 			at = COVER_SECONDS,
 			run = function()
+				self.camera:follow(sweep, SWEEP_SECONDS)
 				if transition then
 					transition:uncoverScreen(COVER_SECONDS, Motion.scale())
 				end
-				self.camera:follow(sweep, SWEEP_SECONDS)
 			end,
 		},
 	})
@@ -1006,34 +1054,43 @@ end
 -- every target gets a popup (damage, CRIT, MISS, an ailment, healing, GUARD, or the status gained).
 -- The camera: it holds over a party member's shoulder (pulling back for its summon) and shakes as
 -- a blow lands; for an enemy's attack it cuts over the enemy's shoulder, then to whoever it hit.
-function BattleView._playAction(self: BattleView, battle: BattleState, action: ActionRecord)
+-- Returns how long the beat plays (the sequence's length), so what follows can wait for it.
+function BattleView._playAction(self: BattleView, battle: BattleState, action: ActionRecord): number
 	local actor = self.figures[action.actorId]
 	local ability = Abilities[action.abilityId]
 	if actor == nil or ability == nil then
-		return
+		return 0
 	end
 
 	-- Attack and Guard are the character's own moves. Anything in the summon's list brings the
 	-- summon out to perform it, while the character holds its ground.
 	local attacking = ability.kind == "Attack"
-	local performer, performerHome = body(actor)
-	local lead = 0 -- how long the move waits: for its performer to materialize, then its swing
 	local summoned = false
 	for _, participant in battle.participants do
 		if participant.id == action.actorId and Pacing.isSummoned(participant.side, participant.abilities, ability.id) then
 			summoned = true
-			lead = bringOutSummon(actor, if attacking then "attack" else "cast")
-			performer, performerHome = actor.summonRoot, actor.summonHome
 		end
 	end
-	if attacking and not summoned and actor.character == nil then
+	-- The beat's budget: what the server waits before the next turn, less slack for latency. Clips
+	-- are compressed to fit inside it.
+	local seconds = Pacing.resolveSeconds(ability, action.results, summoned)
+	local duration = math.max(0, seconds - RESOLVE_SLACK)
+	local clipSeconds = duration - HIT_DELAY - 0.2 - (if summoned then SUMMON_FADE_SECONDS * 2 else 0)
+
+	local performer, performerHome = body(actor)
+	local lead = 0 -- how long the move waits: for its performer to materialize, then its swing
+	if summoned then
+		lead = bringOutSummon(actor, if attacking then "attack" else "cast", clipSeconds, self.sequencer)
+		performer, performerHome = actor.summonRoot, actor.summonHome
+	elseif attacking and actor.character == nil then
 		-- An enemy's creature swings its attack clip, if it has one.
-		local _, impact = playAttackClip(actor)
+		local _, impact = playAttackClip(actor, clipSeconds)
 		lead = impact or 0
 	end
 
 	local cues: { Sequencer.Cue } = {}
 	local camera = self.camera
+	local sequencer = self.sequencer
 	local firstHit: Figure? = nil
 	local anyCritical = false
 	for index, result in action.results do
@@ -1063,10 +1120,11 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 
 		if ability.kind == "Attack" then
 			if not result.hit then
-				showPopup(target, "MISS", BattleTheme.SubtleText, 0)
+				showPopup(sequencer, target, "MISS", BattleTheme.SubtleText, 0)
 			else
 				local strong = result.critical or result.knockedOut
 				showPopup(
+					sequencer,
 					target,
 					if result.critical then `CRIT -{result.damage}` else `-{result.damage}`,
 					if strong then BattleTheme.Danger else BattleTheme.Text,
@@ -1075,31 +1133,30 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 				local inflicted = result.inflicted
 				if inflicted then
 					local def = StatusEffects[inflicted]
-					showPopup(target, `{if def then def.name else inflicted}!`, BattleTheme.Danger, 1.5)
+					showPopup(sequencer, target, `{if def then def.name else inflicted}!`, BattleTheme.Danger, 1.5)
 				end
 			end
 		elseif ability.kind == "Heal" then
-			showPopup(target, `+{result.healed}`, BattleTheme.HealthBar, 0)
+			showPopup(sequencer, target, `+{result.healed}`, BattleTheme.HealthBar, 0)
 		elseif ability.kind == "Guard" then
-			showPopup(target, "GUARD", BattleTheme.ManaBar, 0)
+			showPopup(sequencer, target, "GUARD", BattleTheme.ManaBar, 0)
 		else
 			local applied = result.applied
 			local def = if applied then StatusEffects[applied] else nil
-			showPopup(target, if def then def.name else ability.name, BattleTheme.Accent, 0)
+			showPopup(sequencer, target, if def then def.name else ability.name, BattleTheme.Accent, 0)
 		end
 	end
 
 	-- The camera for the beat.
 	if actor.side == "Party" then
 		if summoned then
-			local _, rest = body(actor)
-			camera:moveTo(Shots.summon(rest, self:_focus("Enemy")), 0.25)
+			-- (Already on its way there if this player confirmed the move: see confirm.)
+			camera:moveTo(Shots.summon(standing(actor), self:_focus("Enemy")), 0.25)
 		end
 	elseif attacking and firstHit then
 		local struck = firstHit
-		local _, actorRest = body(actor)
-		local _, struckRest = body(struck)
-		local over = Shots.overShoulder(actorRest, struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), 1.2)
+		local struckRest = standing(struck)
+		local over = Shots.overShoulder(standing(actor), struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), 1.2)
 		camera:moveTo(over, 0.2)
 		table.insert(cues, {
 			at = math.max(0, lead + HIT_DELAY - 0.1),
@@ -1120,12 +1177,12 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 		})
 	end
 
-	local seconds = Pacing.resolveSeconds(ability, action.results, summoned)
-	self.sequencer:play(math.max(0, seconds - RESOLVE_SLACK), cues)
+	sequencer:play(duration, cues)
+	return duration
 end
 
 -- The fight is decided: a slow orbit of the party for a win, a tilt down to the floor for a loss.
--- The results screen opens over it.
+-- The results screen opens over it. (Runs after the final blow's beat: see render.)
 function BattleView._playResult(self: BattleView, battle: BattleState)
 	local center = self:_focus("Party")
 	local facing = Vector3.xAxis

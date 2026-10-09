@@ -21,6 +21,7 @@
 	Off the player's turn everything but the status line is hidden (Idle).
 ]]
 
+local GuiService = game:GetService("GuiService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
@@ -335,9 +336,8 @@ function CombatHUD.setStageBusy(self: CombatHUD, busy: boolean)
 		return
 	end
 	self.stageBusy = busy
-	if not busy and self.ringHeld then
-		self:_rerender()
-	end
+	-- (A held ring is released on the next tick, not here: this can be called from inside a
+	-- render, through BattleView.)
 end
 
 -- Whether the ring has to wait for the stage right now.
@@ -462,17 +462,35 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 
 	self.reveal.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.reveal.frame.Size = UDim2.fromOffset(center.w, center.h)
-	-- The feed sits at the bottom of the middle, under the enemies' plates and clear of the ring.
+	-- The feed sits at the bottom of the middle's right half: under the enemies' plates, clear of
+	-- the ring and of the acting character, which the battle camera frames left of centre.
 	local feedHeight = 48
-	self.log.frame.Position = UDim2.fromOffset(center.x, center.y + center.h - feedHeight)
-	self.log.frame.Size = UDim2.fromOffset(center.w, feedHeight)
+	local feedLeft = center.x + math.floor(center.w / 2)
+	self.log.frame.Position = UDim2.fromOffset(feedLeft, center.y + center.h - feedHeight)
+	self.log.frame.Size = UDim2.fromOffset(center.x + center.w - feedLeft, feedHeight)
 	self.stamps.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.stamps.frame.Size = UDim2.fromOffset(center.w, center.h)
 
 	self.overworld.frame.Position = UDim2.fromOffset(top.x, top.y)
 	self.overworld.frame.Size = UDim2.fromOffset(math.min(top.w, 520), 130)
 
-	self.enemies.setScale(Layout.scaleFor(ScreenManager.measure(self.gui)))
+	-- The enemy plates (BillboardGuis, in viewport pixels) keep to the box between the status line
+	-- and the feed, the ring's column and the party's column.
+	local measured = ScreenManager.measure(self.gui)
+	local scale = Layout.scaleFor(measured)
+	self.enemies.setScale(scale)
+	local safe = Layout.safeArea(virtual)
+	local inset = Vector2.zero
+	pcall(function()
+		inset = GuiService:GetGuiInset()
+	end)
+	local function toViewport(x: number, y: number): (number, number)
+		return inset.X + (safe.x + x) * scale, inset.Y + (safe.y + y) * scale
+	end
+	local statusBottom = top.y + barHeight + 4 + 74
+	local boxLeft, boxTop = toViewport(left.x + left.w + gap, statusBottom + gap)
+	local boxRight, boxBottom = toViewport(right.x - gap, center.y + center.h - feedHeight - gap)
+	self.enemies.setBounds({ left = boxLeft, top = boxTop, right = boxRight, bottom = boxBottom })
 end
 
 --[[ Battle ]]

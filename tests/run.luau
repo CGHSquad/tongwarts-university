@@ -809,6 +809,11 @@ local function attachClientChecker(sim, observer, client)
 		if camera.CameraType.Name ~= "Scriptable" then
 			observer:fail(client.name .. ": battle camera not set")
 		end
+		-- The server waits Pacing seconds; the stage's beat is shorter than that by design, so no
+		-- turn ever opens while the stage is still busy.
+		if battle.phase == "input" and client.playerGui:GetAttribute("StageBusy") == true then
+			observer:fail(`{client.name}: turn {battle.turnNumber} opened while the stage was still busy`)
+		end
 		local actor = if battle.currentActorId then participantById(battle, battle.currentActorId) else nil
 		local myTurn = battle.phase == "input" and actor ~= nil and actor.ownerUserId == client.userId
 		local title = safeArea.Status.Title.Text
@@ -3796,7 +3801,7 @@ test("C1: the camera sweeps the stage under the start swirl, sits over the actin
 	sim:run(0.25)
 	expectEqual(camera.CameraType.Name, "Scriptable")
 	local transition = client.playerGui:FindFirstChild("BattleTransition")
-	expect(transition ~= nil and transition:FindFirstChild("Wedges") ~= nil, "the swirl covers the start")
+	expect(transition ~= nil and transition:FindFirstChild("Stripes") ~= nil, "the wipe covers the start")
 	expect(client.playerGui:GetAttribute("StageBusy") == true, "the stage is busy for the start")
 	local a = camera.CFrame.Position
 	sim:run(1)
@@ -3837,12 +3842,20 @@ test("C1: the camera sweeps the stage under the start swirl, sits over the actin
 	expect((cam.Position - enemy.Position):Dot(enemy.LookVector) > 3, "in front of the acting enemy, on the party's side")
 	expect(cam.LookVector:Dot((enemy.Position - cam.Position).Unit) > 0.85, "looking at it")
 
+	-- While a blow plays, the presentation holds its popups; afterwards it holds nothing.
+	local before = lastSequence(client)
+	expect(sim:runUntil(function()
+		return lastSequence(client) > before
+	end, 60), "no action played")
+	sim:run(0.2)
+	expect((client.playerGui:GetAttribute("StageOwned") or 0) > 0, "the presentation owns the beat's popups")
+
 	-- Afterwards: the camera is the player's again and nothing of the fight is left.
 	expect(sim:runUntil(function()
 		return observer.battlesFinished >= 1 and backInOverworld(observer)
 	end, 900), "the fight never ended")
 	sim:run(0.5)
-	expectEqual(camera.CameraType.Name, "Custom", "the camera is given back")
+	expect(camera.CameraType.Name ~= "Scriptable", "the camera is given back")
 	expect(stageOf(client) == nil, "no stage")
 	expect(client.playerGui:FindFirstChild("BattleTransition") == nil, "no transition left")
 	expectEqual(client.playerGui:GetAttribute("StageOwned"), 0, "the presentation holds nothing")
@@ -3861,7 +3874,7 @@ test("C1: reduced motion: a plain fade instead of the swirl, no sway while holdi
 	touch(sim, observer, -1, "SouthLookout", "side")
 	sim:run(0.1)
 	local transition = client.playerGui:FindFirstChild("BattleTransition")
-	expect(transition ~= nil and transition:FindFirstChild("Cover") ~= nil and transition:FindFirstChild("Wedges") == nil, "a fade, no swirl")
+	expect(transition ~= nil and transition:FindFirstChild("Cover") ~= nil and transition:FindFirstChild("Stripes") == nil, "a fade, no wipe")
 	runToPhase(sim, observer, myInputTurn(-1), "Ann's turn")
 	sim:run(0.8)
 	local camera = cameraOf(client)
@@ -3931,7 +3944,8 @@ test("C1: the ring waits for the stage to finish its beat, but never longer than
 	hud:render(snapshot)
 	expect(not ring.Visible, "held on the new turn")
 	hud:setStageBusy(false)
-	expect(ring.Visible, "released as soon as the stage is done")
+	hud:tick(sim.now)
+	expect(ring.Visible, "released on the next tick once the stage is done")
 
 	snapshot.battle.turnNumber += 1 -- a stage that isn't busy never holds the ring
 	hud:render(snapshot)

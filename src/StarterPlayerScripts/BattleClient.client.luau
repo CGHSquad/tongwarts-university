@@ -44,6 +44,7 @@ local ui: CombatHUD.CombatHUD
 local view = BattleView.new({
 	enemyNameplates = false,
 	partyNameplates = false,
+	playerGui = playerGui,
 	onBusyChanged = function(busy: boolean)
 		playerGui:SetAttribute("StageBusy", busy)
 		if ui then
@@ -53,7 +54,7 @@ local view = BattleView.new({
 })
 local callbacks = {
 	onAction = function(abilityId: string, targetId: string) -- any move from the HUD; the server decides what happens
-		view:confirm() -- the camera reacts at once; the server's answer is what plays out
+		view:confirm(abilityId) -- the camera reacts at once; the server's answer is what plays out
 		submitActionRemote:FireServer(abilityId, targetId)
 	end,
 	onTargetChanged = function(targetId: string?, friendly: boolean)

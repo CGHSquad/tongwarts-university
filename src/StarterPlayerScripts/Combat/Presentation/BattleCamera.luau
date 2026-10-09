@@ -28,7 +28,9 @@ BattleCamera.__index = BattleCamera
 BattleCamera.WHIP_SECONDS = 0.22
 BattleCamera.MOVE_SECONDS = 0.35
 BattleCamera.SWAY = { amount = 0.12, rate = 0.9 } -- studs, cycles per second (roughly)
-BattleCamera.WHIP_ROLL = math.rad(2)
+BattleCamera.WHIP_ROLL = math.rad(2) -- how far a whip-pan rolls the frame at its peak
+BattleCamera.ROLL_OMEGA = 4 / 0.3
+BattleCamera.SWAY_BLEND_SECONDS = 0.3 -- the sway eases back in after a track
 
 type Fields = {
 	active: boolean,
@@ -51,11 +53,13 @@ type Fields = {
 	shakeLeft: number,
 	shakeLength: number,
 	shakeSeed: number,
+	swayWeight: number, -- eases back in after a track, so the sway never jumps
 	motionScale: number,
 	time: number,
 	dof: DepthOfFieldEffect?,
 	dofWasEnabled: boolean,
-	cameraType: Enum.CameraType?,
+	cameraType: Enum.CameraType?, -- the player's, restored afterwards
+	fovBefore: number,
 }
 
 export type BattleCamera = typeof(setmetatable({} :: Fields, BattleCamera))
@@ -111,16 +115,18 @@ function BattleCamera.new(): BattleCamera
 		shakeLeft = 0,
 		shakeLength = 1,
 		shakeSeed = 0,
+		swayWeight = 1,
 		motionScale = 1,
 		time = 0,
 		dof = nil,
 		dofWasEnabled = false,
 		cameraType = nil,
+		fovBefore = 70,
 	}
 	return setmetatable(fields, BattleCamera)
 end
 
--- Takes the camera over. Nothing moves until a shot is set.
+-- Takes the camera over, holding the view the player had (so nothing jumps until a shot is set).
 function BattleCamera.activate(self: BattleCamera)
 	if self.active then
 		return
@@ -129,6 +135,13 @@ function BattleCamera.activate(self: BattleCamera)
 	local camera = Workspace.CurrentCamera
 	if camera then
 		self.cameraType = camera.CameraType
+		self.fovBefore = camera.FieldOfView
+		local held = camera.CFrame
+		local pose: Pose = { position = held.Position, lookAt = held.Position + held.LookVector * 10, fov = camera.FieldOfView }
+		self.target = pose
+		self.position, self.velocity = pose.position, Vector3.zero
+		self.lookAt, self.lookVelocity = pose.lookAt, Vector3.zero
+		self.fov, self.fovVelocity = pose.fov, 0
 		camera.CameraType = Enum.CameraType.Scriptable
 	end
 	local dof = Lighting:FindFirstChildOfClass("DepthOfFieldEffect")
@@ -152,8 +165,9 @@ function BattleCamera.deactivate(self: BattleCamera)
 	self.roll, self.rollVelocity = 0, 0
 	local camera = Workspace.CurrentCamera
 	if camera then
-		camera.CameraType = Enum.CameraType.Custom
-		camera.FieldOfView = 70
+		local before = self.cameraType
+		camera.CameraType = if before and before ~= Enum.CameraType.Scriptable then before else Enum.CameraType.Custom
+		camera.FieldOfView = self.fovBefore
 	end
 	local dof = self.dof
 	if dof then
@@ -184,9 +198,11 @@ function BattleCamera.moveTo(self: BattleCamera, target: Pose, seconds: number?)
 	local settle = clampSeconds(seconds or BattleCamera.MOVE_SECONDS)
 	self.omega = 4 / settle
 	if settle < 0.3 and (target.position - self.position).Magnitude > 2 then
+		-- A kick whose critically damped response peaks at WHIP_ROLL (peak = v / (omega * e)).
 		local toward = (target.position - self.position)
 		local side = toward:Dot(self:_right())
-		self.rollVelocity += (if side >= 0 then -1 else 1) * BattleCamera.WHIP_ROLL * 8 * self.motionScale
+		local kick = BattleCamera.WHIP_ROLL * BattleCamera.ROLL_OMEGA * math.exp(1)
+		self.rollVelocity += (if side >= 0 then -1 else 1) * kick * self.motionScale
 	end
 	self.target = target
 end
@@ -247,14 +263,16 @@ function BattleCamera.update(self: BattleCamera, dt: number)
 		if self.trackTime >= self.trackLength then
 			self.track = nil
 		end
+		self.swayWeight = 0
 	else
 		local target = self.target
 		self.position, self.velocity = springVector(self.position, self.velocity, target.position, self.omega, dt)
 		self.lookAt, self.lookVelocity = springVector(self.lookAt, self.lookVelocity, target.lookAt, self.omega, dt)
 		self.fov, self.fovVelocity = springNumber(self.fov, self.fovVelocity, target.fov, self.omega, dt)
+		self.swayWeight = math.min(1, self.swayWeight + dt / BattleCamera.SWAY_BLEND_SECONDS)
 	end
 	self.fovKick, self.fovKickVelocity = springNumber(self.fovKick, self.fovKickVelocity, 0, 4 / 0.25, dt)
-	self.roll, self.rollVelocity = springNumber(self.roll, self.rollVelocity, 0, 4 / 0.3, dt)
+	self.roll, self.rollVelocity = springNumber(self.roll, self.rollVelocity, 0, BattleCamera.ROLL_OMEGA, dt)
 	if self.shakeLeft > 0 then
 		self.shakeLeft = math.max(0, self.shakeLeft - dt)
 	end
@@ -279,10 +297,10 @@ function BattleCamera._apply(self: BattleCamera)
 	local scale = self.motionScale
 	local right = self:_right()
 	local offset = Vector3.zero
-	if scale > 0 and self.track == nil then
+	if scale > 0 and self.track == nil and self.swayWeight > 0 then
 		local sway = BattleCamera.SWAY
 		local t = self.time * sway.rate
-		offset += (right * math.sin(t) + Vector3.yAxis * (0.6 * math.sin(t * 1.37 + 1))) * (sway.amount * scale)
+		offset += (right * math.sin(t) + Vector3.yAxis * (0.6 * math.sin(t * 1.37 + 1))) * (sway.amount * scale * self.swayWeight)
 	end
 	if self.shakeLeft > 0 and scale > 0 then
 		local progress = 1 - self.shakeLeft / self.shakeLength

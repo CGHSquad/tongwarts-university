@@ -66,13 +66,15 @@ function Shots.overShoulder(root: CFrame, focus: Vector3, pullBack: number?): Po
 	return pose(position, head:Lerp(focus, ots.focusBlend), Shots.FOV)
 end
 
--- The summon beat: further back and up, looking a little higher, so the summon at the character's
--- shoulder is in frame with it.
+-- The summon beat: well back, up and out to the character's right, clear of the socket where the
+-- summon materializes (behind the character, up over its left shoulder), so character and summon
+-- are both in frame with the enemies beyond.
+Shots.SUMMON = { back = 11, up = 6, side = 6.5, focusUp = 4, focusBlend = 0.35 }
 function Shots.summon(root: CFrame, focus: Vector3): Pose
-	local shot = Shots.overShoulder(root, focus, 1.7)
-	shot.position += Vector3.new(0, 1.5, 0)
-	shot.lookAt += Vector3.new(0, 1.5, 0)
-	return shot
+	local s = Shots.SUMMON
+	local position = root.Position - root.LookVector * s.back + Vector3.new(0, s.up, 0) + root.RightVector * s.side
+	local pair = root.Position + Vector3.new(0, s.focusUp, 0) - root.LookVector * 1
+	return pose(position, pair:Lerp(focus, s.focusBlend), Shots.FOV)
 end
 
 -- An offset frontal shot of an enemy: in front of it (on the party's side), off to one side, a
