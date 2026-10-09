@@ -205,9 +205,7 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 		if camera == nil then
 			return
 		end
-		pcall(function()
-			lastCameraCFrame = camera.CFrame
-		end)
+		lastCameraCFrame = camera.CFrame
 		local entries: { { plate: Plate, x: number, pixelsPerStud: number } } = {}
 		for _, plate in plates do
 			local spot: Instance? = plate.gui.Adornee
@@ -313,11 +311,7 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 		if camera == nil or next(plates) == nil then
 			return
 		end
-		local moved = false
-		pcall(function()
-			moved = camera.CFrame ~= lastCameraCFrame
-		end)
-		if moved then
+		if camera.CFrame ~= lastCameraCFrame then
 			stagger()
 		end
 	end

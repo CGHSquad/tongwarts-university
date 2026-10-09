@@ -19,6 +19,7 @@ Motion.ATTRIBUTE = "ReducedMotion"
 
 local bySetting = false
 local started = false
+local cached: boolean? = nil -- once started, the answer is kept and refreshed on change (it's read every frame)
 local listeners: { (reduced: boolean) -> () } = {}
 
 local function override(): boolean?
@@ -27,9 +28,14 @@ local function override(): boolean?
 	return if type(value) == "boolean" then value else nil
 end
 
-function Motion.isReduced(): boolean
+local function compute(): boolean
 	local forced = override()
 	return if forced ~= nil then forced else bySetting
+end
+
+function Motion.isReduced(): boolean
+	local known = cached
+	return if known ~= nil then known else compute()
 end
 
 -- 1 normally, 0 with reduced motion: multiply every amplitude by it.
@@ -42,7 +48,8 @@ function Motion.onChanged(callback: (reduced: boolean) -> ())
 end
 
 local function refresh()
-	local reduced = Motion.isReduced()
+	local reduced = compute()
+	cached = reduced
 	Theme.Motion.reduced = reduced
 	for _, callback in listeners do
 		callback(reduced)

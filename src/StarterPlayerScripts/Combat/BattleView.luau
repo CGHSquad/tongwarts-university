@@ -61,9 +61,9 @@ local STAGE_CENTER = Vector3.new(0, 0, -700)
 local STAGE_FLOOR_SIZE = Vector3.new(100, 1, 80)
 local BLOCK_SIZE = Vector3.new(5, 5, 5)
 -- Slot 1 stands nearer the middle, slot 2 further out and to the side; the two on a side are
--- SLOT_GAP studs apart across, far enough for both enemies' plates to clear each other from the
--- party's shoulder on a phone.
-local SLOT_GAP = 14
+-- SLOT_GAP studs apart across: from the party's shoulder, both enemies' plates (190 design pixels
+-- wide) then clear each other even on a phone, where a plate is a fifth of the screen.
+local SLOT_GAP = 18
 local SLOT_DEPTH = 9
 local SLOT_DEPTH_STEP = 5
 -- A party member's summon is only out while it uses one of its own abilities: it materializes, does

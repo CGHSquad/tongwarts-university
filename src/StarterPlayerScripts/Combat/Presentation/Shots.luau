@@ -27,8 +27,11 @@ export type Pose = {
 }
 
 Shots.FOV = 60
-Shots.OTS = { back = 6.5, up = 2.2, side = 2.4, focusUp = 2, focusBlend = 0.35 }
-Shots.ENEMY = { front = 5, side = 3, up = 0.5, focusUp = 0.55, offset = 1.5, fov = 58 }
+-- Over the shoulder: measured against the HUD's columns on a phone (844x390) and a 16:9 desktop,
+-- the acting character's head lands around a quarter of the way across, the enemies between 0.4
+-- and 0.6, their plates clear of each other and (just) of the party cards' column.
+Shots.OTS = { back = 6.5, up = 2.6, side = 2.4, focusUp = 2, focusBlend = 0.7 }
+Shots.ENEMY = { front = 5, side = 3, up = 0.15, focusUp = 0.1, offset = 1.5, fov = 58 }
 Shots.WIDE = { back = 40, up = 20, focusUp = 3 }
 
 local function pose(position: Vector3, lookAt: Vector3, fov: number): Pose
@@ -72,20 +75,22 @@ function Shots.summon(root: CFrame, focus: Vector3): Pose
 	return shot
 end
 
--- An offset frontal shot of an enemy: in front of it (on the party's side), off to one side and
--- low, aimed a little past it so it sits in the right third. `height` is how tall it stands.
+-- An offset frontal shot of an enemy: in front of it (on the party's side), off to one side, a
+-- little above its middle and aimed a little past it so it sits right of centre. `root` is its
+-- body's centre (where an enemy's creature stands), `height` how tall it is: the shot backs off
+-- with its size, so a 13-stud Elder fits the frame like a 5-stud Sapling.
 function Shots.enemyFrontal(root: CFrame, height: number): Pose
 	local e = Shots.ENEMY
-	local position = root.Position + root.LookVector * (e.front + height * 0.7) + root.RightVector * (e.side + height * 0.3) + Vector3.new(0, e.up + height * 0.45, 0)
+	local position = root.Position + root.LookVector * (e.front + height * 0.7) + root.RightVector * (e.side + height * 0.3) + Vector3.new(0, height * e.up, 0)
 	local lookAt = root.Position + Vector3.new(0, height * e.focusUp, 0) + root.RightVector * e.offset
 	return pose(position, lookAt, e.fov)
 end
 
--- Front-low on whoever a blow lands on: `root` is where it stands, `height` how tall.
+-- Front-low on whoever a blow lands on: `root` is its body (a character's hip root, a creature's
+-- centre), `height` how tall it is.
 function Shots.reaction(root: CFrame, height: number): Pose
-	local up = Vector3.new(0, height * 0.5, 0)
-	local position = root.Position + root.LookVector * (5 + height * 0.6) + root.RightVector * 2 + up
-	return pose(position, root.Position + up, 56)
+	local position = root.Position + root.LookVector * (5 + height * 0.6) + root.RightVector * 2 + Vector3.new(0, height * 0.25, 0)
+	return pose(position, root.Position + Vector3.new(0, height * 0.15, 0), 56)
 end
 
 -- The old fixed shot across the stage: party on the left, enemies on the right.
