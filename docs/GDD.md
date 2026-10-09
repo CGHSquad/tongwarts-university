@@ -618,6 +618,17 @@ Wanted eventually, not for MVP — a Persona-style equipment layer sitting on to
 
 No code changes land from this yet: there's no weapon data on a `Participant` at all, so this is a rules lock to build against once the gear system actually gets picked up, not a handoff for this round.
 
+**Weapon formulas, confirmed (numbers are starting values, tuned with `simulate-battles` when gear is built).** This fills in the W.I.P. formulas above.
+
+- **Every weapon has two numbers: ATK and HIT.** Better weapons over time mean higher ATK (starter club ATK 4, roughly 20–24 by late game) and their own HIT.
+- **The player's universal Attack:** damage = (Weapon ATK + Strength) × the usual variance, crit and Endurance cut. The starter club (ATK 4) reproduces today's Attack exactly, so nothing changes on day one.
+- **Basic Attack hit chance:** Weapon HIT + (attacker Agility − target Agility) × 2%, kept between 50% and 98%. HIT replaces today's flat 90% base; Agility still nudges it, so fast summons can still dodge basic attacks. Summon skills keep the existing Agility-only hit formula, untouched.
+- **Summon abilities (damage and heals):** output = (power + stat × ratio) × (1 + Weapon ATK × k), with k = 0.01 for Strength-scaled abilities and k = 0.006 for Magic-scaled abilities and heals. Hard caps: at most +25% for physical, +15% for magic and healing, however strong weapons get. Enemies have no weapon (multiplier 1).
+- **Why builds can't break:** the same weapon gives everyone the same multiplier, so a weapon can never flip which build is stronger. Worst case, a tank with a late weapon (ATK 24) casting Gale Clap: (10 + 8 × 1.5) × 1.144 ≈ 25, against a mage with the starter club: (10 + 16 × 1.5) × 1.024 ≈ 35. The mage still wins by about 40%.
+- **Guardrail:** the best weapon available at any stage keeps the free Attack at about 80–90% of that stage's cheapest Strike skill, so players don't just spam Attack. The simulator checks this.
+- **Weapon types:** Club (Strike) medium ATK, HIT 90%; Sword (Slash) \~15% lower ATK, HIT 95%; Spear (Pierce) \~15% higher ATK, HIT 85%.
+- **Affixes are for rarer weapons only.** Base weapons carry just ATK and HIT. Rarer weapons can add affixes such as flat stat boosts ("+2 Strength"), percent boosts ("+10% Mana"), element boosts ("Wind boost") and on-hit procs ("Burn Chance"). Procs trigger on the player's own basic Attack only, never on summon skills. Affix magnitudes, rarity tiers and proc chances are designed in the affix pass.
+
 ## Step 8 — Retention
 
 ### Short-term (10–30 minutes, one session)
