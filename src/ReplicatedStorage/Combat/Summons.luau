@@ -140,6 +140,79 @@ local Summons: { [string]: SummonDef } = {
 
 	-- Placeholder enemy: a feral Sapling. Hits hard and is a little quicker than a Tung Tung, but
 	-- goes down sooner. No art yet, so it's a colored block on the battle stage.
+	-- Wild versions of the Tung Tungs: they spar in the university gym. Same models and clips as the
+	-- tamed ones, a little weaker, fighting on the enemy side.
+	WildTungTungSahur = {
+		id = "WildTungTungSahur",
+		name = "Wild Tung Tung Sahur",
+		role = "Enemy",
+		stats = { Strength = 11, Magic = 9, Endurance = 11, Agility = 10, Luck = 9 },
+		abilities = { "Strike", "GaleClap" },
+		brain = {
+			abilityWeights = { Strike = 65, GaleClap = 35 },
+			targetWeights = { LowestHP = 55, Random = 45 },
+		},
+		art = {
+			model = "TungTungSahur",
+			height = 7.5,
+			animations = {
+				idle = "rbxassetid://92471837974906",
+				attack = "rbxassetid://107148770446911",
+				death = "rbxassetid://134488455223099",
+				walk = "rbxassetid://113311650213737",
+			},
+			groundOffset = 0.41,
+		},
+	},
+
+	WildGroveKeeper = {
+		id = "WildGroveKeeper",
+		name = "Wild Grove-Keeper",
+		role = "Enemy",
+		stats = { Strength = 7, Magic = 14, Endurance = 10, Agility = 10, Luck = 11 },
+		abilities = { "Strike", "Tailwind", "SapMend" },
+		brain = {
+			abilityWeights = { Strike = 50, Tailwind = 20, SapMend = 30 },
+			targetWeights = { LowestHP = 60, Random = 40 },
+		},
+		-- Its own clips aren't uploaded yet, so it borrows the Tung Tung Sahur's (same mixamo skeleton,
+		-- so they fit). Swap in its own ids once they're published.
+		art = {
+			model = "TungTungGroveKeeper",
+			height = 10,
+			animations = {
+				idle = "rbxassetid://92471837974906", -- Sahur idle
+				walk = "rbxassetid://113311650213737", -- Sahur walk
+				death = "rbxassetid://134488455223099", -- Sahur death
+			},
+			groundOffset = 0.1, -- measured in Studio with the borrowed Sahur idle
+		},
+	},
+
+	WildElder = {
+		id = "WildElder",
+		name = "Wild Elder",
+		role = "Enemy",
+		stats = { Strength = 11, Magic = 7, Endurance = 16, Agility = 5, Luck = 7 },
+		abilities = { "Strike", "KnockOnWood", "Windbreak" },
+		brain = {
+			abilityWeights = { Strike = 45, KnockOnWood = 35, Windbreak = 20 },
+			targetWeights = { LowestHP = 50, Random = 50 },
+		},
+		-- Borrows the Sahur's idle/walk/death until the Elder's own are uploaded (same skeleton).
+		art = {
+			model = "TungTungElder",
+			height = 13,
+			animations = {
+				idle = "rbxassetid://92471837974906", -- Sahur idle
+				walk = "rbxassetid://113311650213737", -- Sahur walk
+				death = "rbxassetid://134488455223099", -- Sahur death
+				attack = "rbxassetid://82527202850156",
+			},
+			groundOffset = 0.135, -- measured in Studio with the borrowed Sahur idle
+		},
+	},
+
 	WildSapling = {
 		id = "WildSapling",
 		name = "Wild Sapling",
@@ -149,6 +222,18 @@ local Summons: { [string]: SummonDef } = {
 		brain = {
 			abilityWeights = { Strike = 70, GaleClap = 30 },
 			targetWeights = { LowestHP = 60, Random = 40 },
+		},
+		-- A young Tung Tung Sapling: same model and clips, a size smaller.
+		art = {
+			model = "TungTungSapling",
+			height = 5,
+			animations = {
+				idle = "rbxassetid://80139522491826",
+				attack = "rbxassetid://90374935899361",
+				death = "rbxassetid://127292475281760",
+				walk = "rbxassetid://80507091562272",
+			},
+			groundOffset = 0.42,
 		},
 	},
 }

@@ -36,12 +36,31 @@ local noticeRemote = remotes.Notice :: RemoteEvent
 
 local director: BattleDirector.BattleDirector
 
+-- A beaten party respawns in the lobby (the only enabled SpawnLocation), then ZoneTravel carries
+-- each of them back to the arrival circle of the zone they fought in. ZoneTravel lives with the map,
+-- which is in the Team Create place, not in Rojo; the headless tests run without it, so there a
+-- beaten party just respawns.
+local returnBeaten: Overworld.ReturnBeaten? = nil
+if Workspace:FindFirstChild("CaveLobby") and Workspace:FindFirstChild("OverworldArrival") then
+	local ZoneTravel = require(script.Parent.ZoneTravel) :: any
+	local arrivals: { [string]: (Player) -> () } = {
+		Overworld = ZoneTravel.toOverworld,
+		SahurCollege = ZoneTravel.toCampus,
+		Tralala = ZoneTravel.toTralala,
+		Cappuccino = ZoneTravel.toCappuccino,
+		Ballerina = ZoneTravel.toBallerina,
+	}
+	returnBeaten = function(player, zone)
+		arrivals[zone](player)
+	end
+end
+
 local overworld = Overworld.new(function(userId, spawn, contact)
 	return director:startEncounter(userId, {
 		enemies = spawn.enemies or CombatConfig.EnemySummons,
 		opening = Encounter.openingFor(contact),
 	})
-end)
+end, returnBeaten)
 
 director = BattleDirector.new({
 	now = function()

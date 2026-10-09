@@ -10,7 +10,8 @@
 	other fight can start. When it's over (endBattle):
 
 		the party won   the enemy vanishes and comes back EnemyRespawnSeconds later
-		the party lost  everyone in it respawns at the spawn point
+		the party lost  everyone in it respawns, and `returnBeaten` (from BattleServer) brings them back
+		                to the arrival circle of the zone they fought in (EnemySpawn.zone)
 		either way      the party gets EncounterCooldownSeconds to walk away before another fight
 
 	An enemy is one anchored block with a face on its front, so players can see which way it's
@@ -26,16 +27,31 @@ local BattleTypes = require(ReplicatedStorage.Combat.BattleTypes)
 local CombatConfig = require(ReplicatedStorage.Combat.CombatConfig)
 local Encounter = require(script.Parent.Encounter)
 local EnemySpawns = require(script.Parent.EnemySpawns)
+local Summons = require(ReplicatedStorage.Combat.Summons)
 
 type EnemySpawn = EnemySpawns.EnemySpawn
 
 -- Starts a fight because `userId` touched `spawn`'s enemy. Returns the user ids of everyone
 -- pulled into it, or nil if no fight started.
 export type StartBattle = (userId: number, spawn: EnemySpawn, contact: Encounter.Contact) -> { number }?
+-- Brings a beaten player, just respawned, back to where the fight was.
+export type ReturnBeaten = (player: Player, zone: EnemySpawns.Zone) -> ()
 
 local BODY_SIZE = Vector3.new(4, 6, 4)
 local BODY_COLOR = Color3.fromRGB(196, 78, 64)
 local RETRY_SECONDS = 1 -- after a touch that couldn't start a fight, before that player can try again
+-- Enemies turn smoothly instead of snapping: this fast (radians per second). A patroller that has to
+-- turn more than TURN_BEFORE_WALK toward its next point turns in place first, then walks.
+local TURN_SPEED = math.rad(160)
+local TURN_BEFORE_WALK = math.rad(20)
+
+-- What a wild enemy looks like out in the overworld: the Tung Tung Sapling's model and clips (from its
+-- Summons art), shrunk to kid size. The block above stays as the invisible body that moves and gets
+-- touched; the model is welded to it and just rides along. Each client animates the models itself
+-- (StarterPlayerScripts.OverworldEnemyAnimation), so they idle and walk smoothly for everyone.
+local VISUAL_ART = Summons.TungTungSapling.art -- default look (an EnemySpawn's `look` picks another summon's)
+local VISUAL_HEIGHT = 4.2 -- studs; a player is about 5 (an EnemySpawn's `height` overrides it)
+local SummonModels = ReplicatedStorage:WaitForChild("SummonModels")
 
 type Enemy = {
 	spawn: EnemySpawn,
@@ -43,6 +59,8 @@ type Enemy = {
 	nextPoint: number, -- Patrol: the point of its path it's walking to
 	waitLeft: number, -- Patrol: pause left at a point; Idle: time until it turns again
 	respawnAt: number?, -- set while it's beaten and gone
+	yaw: number, -- the way it's facing now (radians about Y; 0 = facing -Z)
+	targetYaw: number, -- the way it's turning toward
 }
 
 type Fight = {
@@ -61,6 +79,7 @@ Overworld.__index = Overworld
 
 type OverworldFields = {
 	startBattle: StartBattle,
+	returnBeaten: ReturnBeaten?,
 	folder: Folder,
 	enemies: { Enemy },
 	clock: number, -- seconds of Heartbeat time since start()
@@ -73,9 +92,9 @@ export type Overworld = typeof(setmetatable({} :: OverworldFields, Overworld))
 
 --[[ Enemy bodies ]]
 
--- Standing on the baseplate at `point` (only its X and Z count).
+-- Standing on the ground at `point`: its Y is the ground's height (0 on the baseplate).
 local function standingAt(point: Vector3): Vector3
-	return Vector3.new(point.X, BODY_SIZE.Y / 2, point.Z)
+	return Vector3.new(point.X, point.Y + BODY_SIZE.Y / 2, point.Z)
 end
 
 local function createBody(spawn: EnemySpawn): Part
@@ -87,9 +106,62 @@ local function createBody(spawn: EnemySpawn): Part
 	body.CanTouch = false
 	body.Material = Enum.Material.SmoothPlastic
 	body.Color = BODY_COLOR
+	body.CanQuery = false
+	body.CastShadow = false
 
-	-- Two eyes on the front, the way it's looking.
+	local lookDef = spawn.look and Summons[spawn.look]
+	local art = (lookDef and lookDef.art) or VISUAL_ART
+	local height = spawn.height or VISUAL_HEIGHT
+	body:SetAttribute("Look", if lookDef and lookDef.art then spawn.look else "TungTungSapling")
+	body:SetAttribute("Height", height)
+	local template = art and SummonModels:FindFirstChild(art.model)
+	if art and template then
+		body.Transparency = 1
+		local visual = template:Clone() :: Model
+		visual.Name = "Visual"
+		local _, size = visual:GetBoundingBox()
+		visual:ScaleTo(visual:GetScale() * height / size.Y)
+		local center, scaled = visual:GetBoundingBox()
+		-- pivot at the feet, facing -Z like the body; the idle clip lifts the hips, so sink by that much
+		visual.WorldPivot = CFrame.new(center.X, center.Y - scaled.Y / 2, center.Z)
+		local sink = (art.groundOffset or 0) * height
+		visual:PivotTo(CFrame.new(0, -BODY_SIZE.Y / 2 - sink, 0))
+		-- parts already held on by the rig (like the twig in its hand) ride along with it
+		local heldByRig = {}
+		for _, c in visual:GetDescendants() do
+			if c:IsA("RigidConstraint") and c.Attachment0 then
+				heldByRig[c.Attachment0.Parent] = true
+			end
+		end
+		for _, d in visual:GetDescendants() do
+			if d:IsA("BasePart") then
+				d.Anchored = false
+				d.CanCollide = false
+				d.CanTouch = false
+				d.CanQuery = false
+				d.Massless = true
+				if not heldByRig[d] then
+					-- a Weld (not a WeldConstraint) so the offset is fixed now, wherever the body ends up
+					local weld = Instance.new("Weld")
+					weld.Part0 = body
+					weld.Part1 = d
+					weld.C0 = body.CFrame:ToObjectSpace(d.CFrame)
+					weld.Parent = d
+				end
+			end
+		end
+		local outline = Instance.new("Highlight") -- same toon outline as everything else (ZoneClient manages them)
+		outline.Name = "CelOutline"
+		outline.FillTransparency = 1
+		outline.OutlineColor = Color3.fromRGB(22, 16, 40)
+		outline.DepthMode = Enum.HighlightDepthMode.Occluded
+		outline.Parent = visual
+		visual.Parent = body
+	end
+
+	-- Two eyes on the front, the way it's looking (only on the plain block, when there's no model).
 	local face = Instance.new("SurfaceGui")
+	face.Enabled = template == nil
 	face.Name = "Face"
 	face.Face = Enum.NormalId.Front
 	face.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
@@ -115,7 +187,7 @@ local function createBody(spawn: EnemySpawn): Part
 	local nameplate = Instance.new("BillboardGui")
 	nameplate.Name = "Nameplate"
 	nameplate.Size = UDim2.fromOffset(160, 30)
-	nameplate.StudsOffset = Vector3.new(0, BODY_SIZE.Y / 2 + 1.5, 0)
+	nameplate.StudsOffset = Vector3.new(0, (if template then height - BODY_SIZE.Y / 2 else BODY_SIZE.Y / 2) + 1.5, 0)
 	nameplate.MaxDistance = 150
 	nameplate.LightInfluence = 0
 	nameplate.Parent = body
@@ -132,19 +204,47 @@ local function createBody(spawn: EnemySpawn): Part
 	return body
 end
 
--- Back to the start of its path, facing along it (an idle enemy faces -Z).
+-- The yaw that faces `direction` (only its X/Z count).
+local function yawOf(direction: Vector3): number
+	return math.atan2(-direction.X, -direction.Z)
+end
+
+-- The shortest signed turn from yaw `a` to yaw `b`, in (-pi, pi].
+local function angleBetween(a: number, b: number): number
+	return (b - a + math.pi) % (2 * math.pi) - math.pi
+end
+
+local function pose(enemy: Enemy, position: Vector3)
+	enemy.body.CFrame = CFrame.new(position) * CFrame.Angles(0, enemy.yaw, 0)
+end
+
+-- Turns it a little toward targetYaw. Returns how far it still has to go (radians, unsigned).
+local function turn(enemy: Enemy, dt: number): number
+	local left = angleBetween(enemy.yaw, enemy.targetYaw)
+	local step = TURN_SPEED * dt
+	if math.abs(left) <= step then
+		enemy.yaw = enemy.targetYaw
+		return 0
+	end
+	enemy.yaw += math.sign(left) * step
+	return math.abs(left) - step
+end
+
+-- Back to the start of its path, facing along it (an idle enemy faces its `facing`, or -Z).
 local function placeAtStart(enemy: Enemy)
 	local path = enemy.spawn.path
 	local start = standingAt(path[1])
 	if enemy.spawn.behavior == "Patrol" then
-		enemy.body.CFrame = CFrame.lookAt(start, standingAt(path[2]))
+		enemy.yaw = yawOf(standingAt(path[2]) - start)
 		enemy.nextPoint = 2
 		enemy.waitLeft = 0
 	else
-		enemy.body.CFrame = CFrame.new(start)
+		enemy.yaw = if enemy.spawn.facing then yawOf(enemy.spawn.facing) else 0
 		enemy.nextPoint = 1
 		enemy.waitLeft = CombatConfig.EnemyIdleTurnSeconds
 	end
+	enemy.targetYaw = enemy.yaw
+	pose(enemy, start)
 end
 
 --[[ Players' characters ]]
@@ -160,21 +260,22 @@ end
 
 -- Close enough to count as touching: within EncounterContactDistance across the ground, and not
 -- way above or below it.
-local function touching(playerPosition: Vector3, enemyPosition: Vector3): boolean
+local function touching(playerPosition: Vector3, enemyPosition: Vector3, reach: number?): boolean
 	local offset = playerPosition - enemyPosition
-	return Vector3.new(offset.X, 0, offset.Z).Magnitude <= CombatConfig.EncounterContactDistance
+	return Vector3.new(offset.X, 0, offset.Z).Magnitude <= (reach or CombatConfig.EncounterContactDistance)
 		and math.abs(offset.Y) <= BODY_SIZE.Y
 end
 
 --[[ Overworld ]]
 
-function Overworld.new(startBattle: StartBattle): Overworld
+function Overworld.new(startBattle: StartBattle, returnBeaten: ReturnBeaten?): Overworld
 	local folder = Instance.new("Folder")
 	folder.Name = "OverworldEnemies"
 	folder.Parent = Workspace
 
 	local fields: OverworldFields = {
 		startBattle = startBattle,
+		returnBeaten = returnBeaten,
 		folder = folder,
 		enemies = {},
 		clock = 0,
@@ -186,7 +287,7 @@ function Overworld.new(startBattle: StartBattle): Overworld
 
 	for _, spawn in EnemySpawns do
 		assert(spawn.behavior == "Idle" or #spawn.path >= 2, `{spawn.id}: a patrol needs at least two points`)
-		local enemy: Enemy = { spawn = spawn, body = createBody(spawn), nextPoint = 1, waitLeft = 0, respawnAt = nil }
+		local enemy: Enemy = { spawn = spawn, body = createBody(spawn), nextPoint = 1, waitLeft = 0, respawnAt = nil, yaw = 0, targetYaw = 0 }
 		placeAtStart(enemy)
 		enemy.body.Parent = folder
 		table.insert(self.enemies, enemy)
@@ -233,8 +334,12 @@ function Overworld.endBattle(self: Overworld, winner: BattleTypes.Side?)
 			self:_unfreeze(player)
 			self.cooldownUntil[userId] = self.clock + CombatConfig.EncounterCooldownSeconds
 			if winner == "Enemy" then
+				local zone: EnemySpawns.Zone = fight.enemy.spawn.zone or "Overworld"
 				task.spawn(function()
-					player:LoadCharacterAsync() -- beaten: back to the spawn point
+					player:LoadCharacterAsync() -- beaten: a fresh character, at the spawn point (the lobby)
+					if self.returnBeaten then
+						self.returnBeaten(player, zone) -- then back where the fight was
+					end
 				end)
 			end
 		end
@@ -267,36 +372,47 @@ function Overworld._step(self: Overworld, dt: number)
 end
 
 function Overworld._move(self: Overworld, enemy: Enemy, dt: number)
-	enemy.waitLeft -= dt
+	local position = enemy.body.CFrame.Position
 	if enemy.spawn.behavior == "Idle" then
+		if enemy.spawn.facing then
+			return -- stands still, facing one way
+		end
+		enemy.waitLeft -= dt
 		if enemy.waitLeft <= 0 then
 			enemy.waitLeft += CombatConfig.EnemyIdleTurnSeconds
-			enemy.body.CFrame *= CFrame.Angles(0, math.rad(90), 0) -- look another way
+			enemy.targetYaw = enemy.targetYaw + math.rad(90) -- look another way
+		end
+		if enemy.yaw ~= enemy.targetYaw then
+			turn(enemy, dt)
+			pose(enemy, position)
 		end
 		return
 	end
-	if enemy.waitLeft > 0 then
-		return -- pausing at a point
-	end
 
 	local path = enemy.spawn.path
-	local position = enemy.body.CFrame.Position
 	local target = standingAt(path[enemy.nextPoint])
 	local offset = target - position
-	local step = CombatConfig.EnemyPatrolSpeed * dt
-	if offset.Magnitude > step then
-		local nextPosition = position + offset.Unit * step
-		enemy.body.CFrame = CFrame.lookAt(nextPosition, target)
+	if offset.Magnitude > 1e-3 then
+		enemy.targetYaw = yawOf(offset)
+	end
+	local turningLeft = turn(enemy, dt)
+
+	enemy.waitLeft -= dt
+	if enemy.waitLeft > 0 or turningLeft > TURN_BEFORE_WALK then
+		pose(enemy, position) -- pausing at a point, or still turning to face the next one
 		return
 	end
 
-	-- Arrived: pause here, turned toward the next point.
+	local step = CombatConfig.EnemyPatrolSpeed * dt
+	if offset.Magnitude > step then
+		pose(enemy, position + offset.Unit * step)
+		return
+	end
+
+	-- Arrived: pause here; it turns toward the next point while it waits.
+	pose(enemy, target)
 	enemy.nextPoint = enemy.nextPoint % #path + 1
 	enemy.waitLeft = CombatConfig.EnemyPatrolPauseSeconds
-	local following = standingAt(path[enemy.nextPoint])
-	enemy.body.CFrame = if (following - target).Magnitude > 1e-3
-		then CFrame.lookAt(target, following)
-		else CFrame.new(target) * enemy.body.CFrame.Rotation
 end
 
 function Overworld._checkTouches(self: Overworld)
@@ -308,7 +424,7 @@ function Overworld._checkTouches(self: Overworld)
 		local position = root.CFrame.Position
 		for _, enemy in self.enemies do
 			local enemyPosition = enemy.body.CFrame.Position
-			if enemy.respawnAt == nil and touching(position, enemyPosition) then
+			if enemy.respawnAt == nil and touching(position, enemyPosition, enemy.spawn.reach) then
 				local contact: Encounter.Contact = Encounter.classify(root.CFrame, enemyPosition)
 				local party = self.startBattle(player.UserId, enemy.spawn, contact)
 				if party then

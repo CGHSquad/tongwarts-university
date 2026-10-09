@@ -1,0 +1,13 @@
+{
+  "className": "ColorCorrectionEffect",
+  "properties": {
+    "Brightness": 0.019999999552965164,
+    "TintColor": [
+      0.8039215803146362,
+      0.9098039269447327,
+      1.0
+    ],
+    "Contrast": 0.07999999821186066,
+    "Saturation": 0.18000000715255737
+  }
+}

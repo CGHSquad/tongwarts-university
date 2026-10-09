@@ -13,22 +13,38 @@ Code lives in `src/` and syncs into Roblox Studio with [Rojo](https://rojo.space
    The first time, answer yes when it asks you to trust each tool.
 2. Install the matching Studio plugin: `rojo plugin install`.
 3. Then either:
-   - **Day to day:** run `rojo serve`, open a place in Studio (the Baseplate template is fine),
-     and click **Connect** in the Rojo plugin. Edits to `src/` show up in Studio live.
-   - **One-off:** run `rojo build -o TungWarts.rbxlx` and open that file in Studio.
+   - **Day to day:** run `rojo serve`, open the team's place in Studio (Team Create, "Midnight
+     Mushroom!"), and click **Connect** in the Rojo plugin. Edits to `src/` show up in Studio live.
+   - **One-off:** run `rojo build -o TungWarts.rbxlx` for a place with all the code but no map
+     (the headless tests use one of these).
+
+**The map lives in the Team Create place, not in this repo.** The lobby, the overworld and the four
+campuses are about 85k parts, which git can't usefully diff or merge, so build and edit them in
+Studio and use its version history. Rojo doesn't manage Workspace at all. Everything else (scripts,
+content data, remotes, zone lighting) lives in `src/` and syncs through Rojo. Don't edit those in
+Studio: Rojo overwrites them. If someone does, capture it with `rojo syncback` (download a copy of
+the place, then `rojo syncback default.project.json --input <place>.rbxl`) and review the diff.
 
 `default.project.json` maps the repo onto the game:
 
 | Folder | Becomes | What goes here |
 | --- | --- | --- |
+| `src/ReplicatedFirst` | ReplicatedFirst | The loading screen. |
 | `src/ServerScriptService` | ServerScriptService | Server-only code. Game state and every rule live here. |
 | `src/ReplicatedStorage` | ReplicatedStorage | Data and types both sides read (abilities, summons, tuning). |
 | `src/StarterPlayerScripts` | StarterPlayer > StarterPlayerScripts | Client code: UI and visuals only. |
 
-The battle RemoteEvents (`ReplicatedStorage.Remotes.Battle`) and a baseplate with a spawn point
-are declared in `default.project.json` as well. The enemies out on the baseplate are created by
-the server from `ServerScriptService/Overworld/EnemySpawns.luau`. File suffixes pick the script
-type: `.server.luau` is a Script, `.client.luau` a LocalScript, plain `.luau` a ModuleScript.
+The battle RemoteEvents (`ReplicatedStorage.Remotes.Battle`) are declared in `default.project.json`
+as well. The enemies (on the overworld grass and on each campus's gym stage) are created by the
+server from `ServerScriptService/Overworld/EnemySpawns.luau`. File suffixes pick the script type:
+`.server.luau` is a Script, `.client.luau` a LocalScript, plain `.luau` a ModuleScript.
+
+Besides combat, `src/` holds the world's systems that go with the map: zone travel between the lobby,
+the overworld and the campuses (`ZoneTravel`, `PortalTeleporter`, `ReturnPortal`, `ZoneClient`),
+the campuses (`CampusServer`, `CampusDoors`, `CampusFallCatch`, `TralalaServer`), the lobby
+(`AbyssRespawn`, `AFKClient`) and effects (`SummonFX`, `SeaLifeClient`, `SnowfallClient`,
+`CloudSeaClient`, `MainHallTVs`, `Sprint`). Players spawn in the cave lobby (`LobbySpawn`, the only
+enabled SpawnLocation) and travel through portals.
 
 ## Combat prototype (Phase 1)
 
@@ -50,7 +66,9 @@ are still colored blocks.
    move (your character's **Attack** or **Guard**, or one of your summon's abilities), pick a
    target if it needs one, and press the big button. The enemies act on their own.
 4. When one side is knocked out you get a Victory or Defeat screen, then you're back exploring.
-   A beaten enemy disappears for 20 seconds; if your party lost, you respawn at the spawn point.
+   A beaten enemy disappears for 20 seconds. If your party lost, you respawn and are brought back
+   to the arrival circle of the area you fought in (the overworld or that campus: `zone` in
+   `EnemySpawns`).
 
 Playing alone? Press **Play** and walk into an enemy. You control both party summons.
 

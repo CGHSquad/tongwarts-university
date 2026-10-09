@@ -1,0 +1,24 @@
+{
+  "attributes": {
+    "Ambient": {
+      "Color3": [
+        0.5882353,
+        0.3764706,
+        0.32941177
+      ]
+    },
+    "Brightness": 2.3,
+    "ClockTime": 17.9,
+    "EnvironmentDiffuseScale": 0.6,
+    "EnvironmentSpecularScale": 0.8,
+    "ExposureCompensation": 0.30000001192092896,
+    "OutdoorAmbient": {
+      "Color3": [
+        0.76862746,
+        0.4862745,
+        0.40784314
+      ]
+    },
+    "ShadowSoftness": 0.3
+  }
+}

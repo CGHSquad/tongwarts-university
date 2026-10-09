@@ -1,0 +1,13 @@
+{
+  "className": "Sky",
+  "properties": {
+    "SkyboxUpContent": "http://www.roblox.com/asset/?id=152036784",
+    "CelestialBodiesShown": false,
+    "StarCount": 0.0,
+    "SkyboxDownContent": "http://www.roblox.com/asset/?id=152036714",
+    "SkyboxFrontContent": "http://www.roblox.com/asset/?id=152036768",
+    "SkyboxRightContent": "http://www.roblox.com/asset/?id=152036733",
+    "SkyboxBackContent": "http://www.roblox.com/asset/?id=152036750",
+    "SkyboxLeftContent": "http://www.roblox.com/asset/?id=152036683"
+  }
+}

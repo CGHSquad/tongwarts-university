@@ -354,7 +354,26 @@ function Sim:createEnv(name, side, client)
 		signals = {}, -- [instance][eventName] = Signal
 		characters = {}, -- clients: [userId] = this client's copy of that player's character
 		modelScales = setmetatable({}, { __mode = "k" }), -- Model -> its ScaleTo scale
+		modelPivots = setmetatable({}, { __mode = "k" }), -- Model -> its WorldPivot, once set or moved
 	}
+
+	-- A model's pivot, as the engine keeps it: set explicitly (WorldPivot or PivotTo), or else its
+	-- PrimaryPart's CFrame, or else the middle of its parts.
+	local function modelPivot(model)
+		local pivot = env.modelPivots[model]
+		if pivot then
+			return pivot
+		end
+		if model.PrimaryPart then
+			return model.PrimaryPart.CFrame
+		end
+		for _, part in model:GetDescendants() do
+			if part:IsA("BasePart") then
+				return roblox.CFrame.new(part.CFrame.Position)
+			end
+		end
+		return roblox.CFrame.new()
+	end
 
 	-- A stand-in for an AnimationTrack: it keeps the state the game sets and reads (Looped, Priority,
 	-- IsPlaying, ...) and logs every Play and Stop to sim.animationLog. Nothing moves, and Length
@@ -400,7 +419,19 @@ function Sim:createEnv(name, side, client)
 	end
 
 	-- Engine-only members of some classes, which Lune's instances don't have.
+	local ENGINE_MEMBERS = {
+		ScaleTo = true,
+		GetScale = true,
+		GetBoundingBox = true,
+		GetPivot = true,
+		WorldPivot = true,
+		PivotTo = true,
+		LoadAnimation = true,
+	}
 	local function engineMember(instance, key)
+		if not ENGINE_MEMBERS[key] then
+			return nil -- every other member is a real one (checked on every property read, so keep it cheap)
+		end
 		if instance:IsA("Model") then
 			if key == "ScaleTo" then
 				return function(_, scale)
@@ -424,6 +455,42 @@ function Sim:createEnv(name, side, client)
 			elseif key == "GetScale" then
 				return function()
 					return env.modelScales[instance] or 1
+				end
+			elseif key == "GetBoundingBox" then
+				-- Axis-aligned around every part's corners (the engine's box follows the model's
+				-- orientation, which is the same thing for the unrotated models the game builds).
+				return function()
+					local lo, hi = nil, nil
+					for _, part in instance:GetDescendants() do
+						if part:IsA("BasePart") then
+							local half = part.Size / 2
+							for _, corner in { roblox.Vector3.new(-1, -1, -1), roblox.Vector3.new(1, 1, 1), roblox.Vector3.new(-1, 1, -1), roblox.Vector3.new(1, -1, 1), roblox.Vector3.new(-1, -1, 1), roblox.Vector3.new(1, 1, -1), roblox.Vector3.new(-1, 1, 1), roblox.Vector3.new(1, -1, -1) } do
+								local point = part.CFrame * (half * corner)
+								lo = if lo then lo:Min(point) else point
+								hi = if hi then hi:Max(point) else point
+							end
+						end
+					end
+					if lo == nil or hi == nil then
+						return roblox.CFrame.new(), roblox.Vector3.zero
+					end
+					return roblox.CFrame.new((lo + hi) / 2), hi - lo
+				end
+			elseif key == "GetPivot" or key == "WorldPivot" then
+				local pivot = modelPivot(instance)
+				return if key == "WorldPivot" then pivot else function()
+					return pivot
+				end
+			elseif key == "PivotTo" then
+				-- Moves every part by the same offset, as the engine does.
+				return function(_, target)
+					local shift = target * modelPivot(instance):Inverse()
+					for _, part in instance:GetDescendants() do
+						if part:IsA("BasePart") then
+							part.CFrame = shift * part.CFrame
+						end
+					end
+					env.modelPivots[instance] = target
 				end
 			end
 		elseif instance.ClassName == "Animator" and key == "LoadAnimation" then
@@ -589,6 +656,11 @@ function Sim:createEnv(name, side, client)
 				return value
 			end,
 			__newindex = function(_, key, value)
+				if key == "WorldPivot" and instance:IsA("Model") then
+					assert(typeof(value) == "CFrame", "WorldPivot must be a CFrame")
+					env.modelPivots[instance] = value -- the engine keeps it; Lune can't
+					return
+				end
 				instance[key] = unwrap(value) -- Lune validates the member and the value type
 			end,
 			__tostring = function()
@@ -682,6 +754,13 @@ function Sim:createEnv(name, side, client)
 	else
 		local playerGui = roblox.Instance.new("PlayerGui")
 		env.playerGui = playerGui
+		client.attributes = {}
+		local attributeSignals = {}
+		local function attributeSignal(attribute)
+			attributeSignals[attribute] = attributeSignals[attribute]
+				or Signal.new(sim, `{name} LocalPlayer:GetAttributeChangedSignal("{attribute}")`)
+			return attributeSignals[attribute]
+		end
 		services.Players = {
 			LocalPlayer = {
 				UserId = client.userId,
@@ -690,6 +769,17 @@ function Sim:createEnv(name, side, client)
 				WaitForChild = function(_, childName)
 					assert(childName == "PlayerGui", "the sim's LocalPlayer only has a PlayerGui")
 					return wrap(playerGui)
+				end,
+				-- Attributes the client sets on itself (ZoneClient's "Zone"); tests set them too.
+				GetAttribute = function(_, attribute)
+					return client.attributes[attribute]
+				end,
+				SetAttribute = function(_, attribute, value)
+					client.attributes[attribute] = value
+					attributeSignal(attribute):Fire()
+				end,
+				GetAttributeChangedSignal = function(_, attribute)
+					return attributeSignal(attribute)
 				end,
 			},
 			-- Anyone in the server, with this client's copy of their character (nil if it hasn't
@@ -808,7 +898,10 @@ end
 function Sim:startServer()
 	local script = self.server.dm:GetService("ServerScriptService"):FindFirstChild("BattleServer")
 	assert(script and script.ClassName == "Script", "BattleServer Script missing from the place")
-	assert(self.server.runScript(script), "BattleServer failed to start")
+	if not self.server.runScript(script) then
+		local last = self.errors[#self.errors]
+		error("BattleServer failed to start: " .. (if last then last.message else "unknown error"), 2)
+	end
 	local function beat()
 		self.server.heartbeat:Fire(self.heartbeatInterval)
 		self:delay(self.heartbeatInterval, beat, "server heartbeat")

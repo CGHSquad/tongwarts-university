@@ -710,8 +710,13 @@ local function attachClientChecker(sim, observer, client)
 		end
 		local battle = snapshot.battle
 		local inBattle = battle ~= nil and isInBattle(battle, client.userId)
-		if gui.Overworld.Visible == inBattle or gui.Battle.Visible ~= inBattle then
+		-- In a fight: the battle screen. Out of one: the overworld panel shows for a moment on arriving
+		-- on the grass, and whenever someone else's fight is on (BattleUI.render).
+		if gui.Battle.Visible ~= inBattle or (inBattle and gui.Overworld.Visible) then
 			observer:fail(client.name .. ": overworld/battle visibility wrong")
+		end
+		if not inBattle and battle ~= nil and not gui.Overworld.Visible then
+			observer:fail(client.name .. ": a fight is on, but the overworld panel isn't up to say so")
 		end
 		local workspace = client.env.dm:GetService("Workspace")
 		local stage = workspace:FindFirstChild("BattleStage")
@@ -843,15 +848,16 @@ function Bot:step()
 		return
 	end
 	local sim, client, options = self.sim, self.client, self.options
-	local overworld = sim:gui(client, "Overworld")
-	if overworld == nil then
+	local battleFrame = sim:gui(client, "Battle")
+	if battleFrame == nil then
 		return
 	end
-	if overworld.Visible then
+	-- (The overworld panel only shows for a moment on arriving, so "exploring" is "not in a fight".)
+	if not battleFrame.Visible then
 		-- Exploring: walk into the nearest enemy, from the front, back or side ("random" mixes them).
 		if options.engage then
 			self:later(options.engageDelay or 0.8, function()
-				if not overworld.Visible then
+				if battleFrame.Visible then
 					return
 				end
 				local root = sim:rootPart(client.userId)
@@ -963,12 +969,19 @@ local function newWorld(seed, options)
 	return sim, observer
 end
 
+-- The client's LocalPlayer, as its scripts see it.
+local function localPlayer(client)
+	return client.env.getService("Players").LocalPlayer
+end
+
 local function join(sim, observer, userId, name, botOptions)
 	local client = sim:connectClient(userId, name)
 	assert(sim:runUntil(function()
-		if not client.started then
-			return false
-		end
+		return client.started == true
+	end, 5), name .. " never started")
+	-- Out onto the grass, as ZoneClient marks it in the game.
+	localPlayer(client):SetAttribute("Zone", "Overworld")
+	assert(sim:runUntil(function()
 		local overworld, battle = sim:gui(client, "Overworld"), sim:gui(client, "Battle")
 		return (overworld ~= nil and overworld.Visible) or (battle ~= nil and battle.Visible)
 	end, 5), name .. " never showed its first state")
@@ -1565,6 +1578,22 @@ test("a player who can't afford any ability still gets the turn (Guard is free);
 	expect(enemyPasses >= 2, "enemies with no Mana passed")
 end)
 
+test("arriving on the grass shows the overworld panel for a few seconds", function()
+	local sim, observer = newWorld(4400)
+	local client = join(sim, observer, -1, "Ann", nil) -- join arrives her on the grass
+	local panel = sim:gui(client, "Overworld")
+	expect(panel.Visible, "it pops up on arriving")
+	sim:run(7)
+	expect(not panel.Visible, "and goes away after a few seconds, with no fight on")
+	localPlayer(client):SetAttribute("Zone", "Lobby")
+	sim:run(0.5)
+	expect(not panel.Visible, "not in the lobby")
+	localPlayer(client):SetAttribute("Zone", "Overworld")
+	sim:run(0.5)
+	expect(panel.Visible, "back out on the grass, it shows again")
+	assertClean(sim, observer)
+end)
+
 test("Guard through the UI: its own button, no target, and it braces", function()
 	local sim, observer = newWorld(4200) -- two Tung Tung Sahurs, the default lineup
 	join(sim, observer, -1, "Guardian", { engage = "random", thinkMin = 0.3, thinkMax = 1.5, engageDelay = 0.5, policy = "guard" })
@@ -1617,7 +1646,7 @@ test("two players fight a full battle start to finish, then a rematch", function
 	-- Both back in the overworld, free to walk, and then they run into another enemy.
 	sim:run(0.2)
 	for _, client in { a, b } do
-		expect(sim:gui(client, "Overworld").Visible, client.name .. " sees the overworld")
+		expect(not sim:gui(client, "Battle").Visible, client.name .. " is back exploring")
 		expect(not sim:rootPart(client.userId).Anchored, client.name .. " can walk again")
 	end
 	expect(sim:runUntil(function()
@@ -2317,8 +2346,10 @@ test("summons with art are their real model and animations; the rest are blocks"
 	local sim, observer = newWorld(853)
 	local config = sim.server.require(sim.server.dm:GetService("ReplicatedStorage").Combat.CombatConfig)
 	config.PartySummons = { "TungTungSahur", "TungTungSahur" }
-	config.EnemySummons = { "TungTungSapling", "WildSapling" } -- a creature with art, and one without
+	config.EnemySummons = { "TungTungSapling", "WildSapling" } -- a creature with art, and one without:
 	local client = join(sim, observer, -1, "Ann", { thinkMin = 0.3, thinkMax = 1, policy = "greedy" })
+	-- every summon has art now, so take the Wild Sapling's away on Ann's screen to see the fallback
+	client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.Summons).WildSapling.art = nil
 	sim:run(1)
 	touch(sim, observer, -1, "SouthLookout", "side")
 	sim:run(0.5)
