@@ -521,88 +521,100 @@ end
 -- On a player's turn, the action panel must offer exactly what's legal: every ability button is
 -- clickable only if affordable, one affordable ability is selected, and the target buttons are
 -- exactly the legal targets for that ability (none at all for Self / AllAllies abilities).
-local function checkActionPanel(observer, client, battle, actor)
-	local actions = client.playerGui.BattleUI.Battle.Actions
-	local theme = client.env.require(client.env.dm.StarterPlayer.StarterPlayerScripts.Combat.BattleTheme)
-	local selected = nil
-	-- Two rows: the character's own moves ("You": Attack, Guard) and the summon's abilities.
-	local rows = { Moves = {}, Abilities = {} }
-	for rowName, names in rows do
-		for _, button in actions[rowName]:GetChildren() do
-			if button:IsA("GuiButton") then
-				table.insert(names, button.Name)
-				local ability = observer.Abilities[button.Name]
+-- The HUD's offer on the player's turn, against the rules: exactly one chooser (the ring, the
+-- skill list or the target panel) unless the request is on its way; the character's own moves
+-- always on; the summon's kit as rows, dimmed when it can't afford one; and a pick offered for
+-- exactly the summons the server would accept.
+local function checkChooser(observer, client, battle, actor)
+	local safeArea = client.playerGui.CombatHUD.SafeArea
+	local theme = client.env.require(client.env.dm:GetService("ReplicatedStorage").UI.Theme)
+	local strings = client.env.require(client.env.dm:GetService("ReplicatedStorage").UI.Strings)
+	local ring, target, list = safeArea.Ring, safeArea.TargetPanel, client.playerGui.SkillList
+	local open = (if ring.Visible then 1 else 0) + (if target.Visible then 1 else 0) + (if list.Enabled then 1 else 0)
+	if open == 0 then
+		if safeArea.Status.Detail.Text ~= strings.Sending then
+			observer:fail(`{client.name}: nothing to choose on their turn`)
+		end
+		return
+	elseif open > 1 then
+		observer:fail(`{client.name}: two choosers at once`)
+		return
+	end
+	if ring.Visible then
+		for _, name in { "Attack", "Guard" } do
+			if not Sim.isClickable(ring:FindFirstChild(name)) then
+				observer:fail(`{client.name}: no {name} ribbon on their turn`)
+			end
+		end
+		if Sim.isClickable(ring.Spell) ~= (#actor.abilities > 0) then
+			observer:fail(`{client.name}: Spell offered={Sim.isClickable(ring.Spell)} with {#actor.abilities} abilities`)
+		end
+		if ring:FindFirstChild("Item") ~= nil or ring:FindFirstChild("Pass") ~= nil then
+			observer:fail(`{client.name}: Item and Pass are behind their flags`)
+		end
+	elseif list.Enabled then
+		local names = {}
+		for _, row in list.SafeArea.List.Rows:GetChildren() do
+			if row:IsA("GuiButton") then
+				table.insert(names, row.Name)
+				local ability = observer.Abilities[row.Name]
 				local affordable = ability ~= nil and actor.mana >= ability.manaCost
-				if Sim.isClickable(button) ~= affordable then
-					observer:fail(`{client.name}: ability {button.Name} clickable={Sim.isClickable(button)} affordable={affordable}`)
-				end
-				if button.BackgroundColor3 == theme.ButtonSelected then
-					if selected ~= nil then
-						observer:fail(`{client.name}: two abilities selected`)
-					end
-					selected = ability
+				local dimmed = row.Title.TextColor3 == theme.Colors.TextDim
+				if dimmed == affordable then
+					observer:fail(`{client.name}: row {row.Name} dimmed={dimmed} affordable={affordable}`)
 				end
 			end
 		end
 		table.sort(names)
-	end
-	if table.concat(rows.Moves, ",") ~= "Attack,Guard" then
-		observer:fail(`{client.name}: the "You" row has {table.concat(rows.Moves, ",")}, not Attack and Guard`)
-	end
-	local kit = table.clone(actor.abilities)
-	table.sort(kit)
-	if table.concat(rows.Abilities, ",") ~= table.concat(kit, ",") then
-		observer:fail(`{client.name}: the summon row has {table.concat(rows.Abilities, ",")}, not its abilities`)
-	end
-	for _, name in { "Attack", "Guard" } do
-		local button = actions.Moves:FindFirstChild(name)
-		if button == nil or not Sim.isClickable(button) or not string.find(button.Text, "Free", 1, true) then
-			observer:fail(`{client.name}: no free, clickable {name} button on their turn`)
+		local kit = table.clone(actor.abilities)
+		table.sort(kit)
+		if table.concat(names, ",") ~= table.concat(kit, ",") then
+			observer:fail(`{client.name}: the list has {table.concat(names, ",")}, not the summon's abilities`)
 		end
-	end
-	if selected == nil then
-		observer:fail(`{client.name}: no ability selected on their turn`)
-		return
-	end
-	if selected.kind == "Guard" then
-		local button = actions.AttackButton.Text
-		if button ~= "GUARD!" and button ~= "Sending..." then
-			observer:fail(`{client.name}: Guard selected but the button says {button}`)
-		end
-		if actions.Targets.Visible then
-			observer:fail(`{client.name}: Guard needs no target, but the picker is showing`)
-		end
-		local explained, captioned = false, false
-		for _, child in actions:GetChildren() do
-			if child:IsA("TextLabel") then
-				explained = explained
-					or (string.find(child.Text, "% less damage", 1, true) ~= nil and string.find(child.Text, "Mana", 1, true) == nil)
-				captioned = captioned or child.Text == "2. Target: itself"
+	else
+		local plates = client.playerGui:FindFirstChild("CombatHUDEnemies")
+		local offered, anyEnemy, anyAlly = {}, false, false
+		for _, p in battle.participants do
+			if p.side == "Enemy" then
+				local plate = plates and plates:FindFirstChild("Enemy_" .. p.id)
+				offered[p.id] = plate ~= nil and Sim.isClickable(plate.Root.Plate)
+				anyEnemy = anyEnemy or offered[p.id]
+			else
+				local card = safeArea.Party:FindFirstChild("Card_" .. p.id)
+				offered[p.id] = card ~= nil and Sim.isClickable(card)
+				anyAlly = anyAlly or offered[p.id]
 			end
 		end
-		if not explained or not captioned then
-			observer:fail(`{client.name}: Guard's explanation or target caption is missing`)
+		if anyEnemy == anyAlly then
+			observer:fail(`{client.name}: a pick is among the enemies or among the party, never both or neither`)
 		end
-	end
-	local offered = {}
-	for _, button in actions.Targets:GetChildren() do
-		if button:IsA("GuiButton") and Sim.isClickable(button) then
-			offered[button.Name] = true
+		for _, p in battle.participants do
+			local legal = p.status == "Active" and ((anyEnemy and p.side ~= actor.side) or (anyAlly and p.side == actor.side))
+			if offered[p.id] ~= legal then
+				observer:fail(`{client.name}: target {p.id} offered={offered[p.id]} legal={legal}`)
+			end
 		end
-	end
-	for _, p in battle.participants do
-		local legal = false
-		if p.status == "Active" and selected.targets == "Enemy" then
-			legal = p.side ~= actor.side
-		elseif p.status == "Active" and selected.targets == "Ally" then
-			legal = p.side == actor.side
+		local picks = 0
+		for _, p in battle.participants do
+			if p.side == "Enemy" then
+				local plate = plates and plates:FindFirstChild("Enemy_" .. p.id)
+				if plate and plate.Root.BracketLeft.Visible and plate.Root.BracketLeft.BackgroundColor3 == theme.Colors.Gold then
+					picks += 1
+				end
+			else
+				local card = safeArea.Party:FindFirstChild("Card_" .. p.id)
+				local stroke = card and card:FindFirstChildOfClass("UIStroke")
+				if stroke and stroke.Color == theme.Colors.HpGreen then
+					picks += 1
+				end
+			end
 		end
-		if (offered[p.id] == true) ~= legal then
-			observer:fail(`{client.name}: {selected.id} target button for {p.id} offered={offered[p.id] == true} legal={legal}`)
+		if picks ~= 1 then
+			observer:fail(`{client.name}: {picks} summons marked as the pick`)
 		end
-	end
-	if not Sim.isClickable(actions.AttackButton) and actions.AttackButton.Text ~= "Sending..." then
-		observer:fail(`{client.name}: action button not clickable on their turn`)
+		if not Sim.isClickable(target.Confirm) then
+			observer:fail(`{client.name}: Confirm not clickable with a pick made`)
+		end
 	end
 end
 
@@ -699,37 +711,56 @@ local function checkStage(observer, client, battle, stage)
 	end
 end
 
+-- Whether this client's HUD is showing a fight.
+local function hudInBattle(client)
+	local gui = client.playerGui:FindFirstChild("CombatHUD")
+	if gui == nil then
+		return false
+	end
+	local safeArea = gui.SafeArea
+	local results, list = client.playerGui:FindFirstChild("Results"), client.playerGui:FindFirstChild("SkillList")
+	return safeArea.Party.Visible or safeArea.TurnBar.Visible or safeArea.Reveal.Visible or (results ~= nil and results.Enabled) or (list ~= nil and list.Enabled)
+end
+
 local function attachClientChecker(sim, observer, client)
+	local dm = client.env.dm
+	local Strings = client.env.require(dm:GetService("ReplicatedStorage").UI.Strings)
+	local Controls = client.env.require(dm:GetService("StarterPlayer").StarterPlayerScripts.UI.Core.Controls)
 	local signal = sim:clientSignal(STATE_UPDATE, client.userId)
 	signal:Connect(function(snapshot)
 		client.lastSnapshot = snapshot
-		local gui = client.playerGui:FindFirstChild("BattleUI")
+		local gui = client.playerGui:FindFirstChild("CombatHUD")
 		if gui == nil then
-			observer:fail(client.name .. ": no BattleUI")
+			observer:fail(client.name .. ": no CombatHUD")
 			return
 		end
+		local safeArea = gui.SafeArea
+		local results = client.playerGui.Results
 		local battle = snapshot.battle
 		local inBattle = battle ~= nil and isInBattle(battle, client.userId)
-		-- In a fight: the battle screen. Out of one: the overworld panel shows for a moment on arriving
-		-- on the grass, and whenever someone else's fight is on (BattleUI.render).
-		if gui.Battle.Visible ~= inBattle or (inBattle and gui.Overworld.Visible) then
-			observer:fail(client.name .. ": overworld/battle visibility wrong")
-		end
-		if not inBattle and battle ~= nil and not gui.Overworld.Visible then
-			observer:fail(client.name .. ": a fight is on, but the overworld panel isn't up to say so")
+		-- Touch controls are off exactly while in a fight (R21).
+		if Controls.isEnabled() == inBattle then
+			observer:fail(`{client.name}: touch controls enabled={Controls.isEnabled()} but inBattle={inBattle}`)
 		end
 		local workspace = client.env.dm:GetService("Workspace")
 		local stage = workspace:FindFirstChild("BattleStage")
 		local camera = workspace.CurrentCamera
 		if not inBattle then
+			-- Out of a fight: no battle widgets, and the overworld notice says whether a fight is on.
+			if hudInBattle(client) then
+				observer:fail(client.name .. ": battle widgets up outside a fight they're in")
+			end
 			if stage ~= nil then
 				observer:fail(client.name .. ": battle stage shown outside a battle they're in")
 			end
 			if camera.CameraType.Name == "Scriptable" then
 				observer:fail(client.name .. ": battle camera left on in the overworld")
 			end
-			local status = gui.Overworld:FindFirstChild("Status")
-			if status == nil or status.Visible ~= (battle ~= nil) then
+			local status = safeArea.Overworld.Panel.Content.Status
+			if battle ~= nil and not safeArea.Overworld.Visible then
+				observer:fail(client.name .. ": a fight is on, but the overworld notice isn't up to say so")
+			end
+			if status.Visible ~= (battle ~= nil) then
 				observer:fail(client.name .. ": overworld doesn't say whether a fight is on")
 			end
 			return
@@ -745,59 +776,66 @@ local function attachClientChecker(sim, observer, client)
 		end
 		local actor = if battle.currentActorId then participantById(battle, battle.currentActorId) else nil
 		local myTurn = battle.phase == "input" and actor ~= nil and actor.ownerUserId == client.userId
-		local actions = gui.Battle.Actions
-		if actions.Visible ~= myTurn then
-			observer:fail(`{client.name}: action panel visible={actions.Visible} but myTurn={myTurn}`)
+		local title = safeArea.Status.Title.Text
+		if myTurn ~= (string.find(title, Strings.YourTurn, 1, true) ~= nil) then
+			observer:fail(`{client.name}: status "{title}" but myTurn={myTurn}`)
 		end
-		local title = gui.Battle.Header.Turn:GetChildren()
-		local titleText = ""
-		for _, child in title do
-			if child:IsA("TextLabel") and child.LayoutOrder == 1 then
-				titleText = child.Text
-			end
-		end
-		if myTurn ~= (string.find(titleText, "YOUR TURN", 1, true) ~= nil) then
-			observer:fail(`{client.name}: header "{titleText}" but myTurn={myTurn}`)
-		end
-		-- While initiative is revealed the header says how the fight opened; a bonus turn says so too.
+		-- While initiative is revealed the headline says how the fight opened; a bonus turn says so too.
 		if battle.phase == "setup" then
 			local expected = if battle.opening == "Party"
 				then "struck first"
 				elseif battle.opening == "Enemy" then "Ambushed"
 				else "Encounter"
-			if not string.find(titleText, expected, 1, true) then
-				observer:fail(`{client.name}: setup header "{titleText}" for opening {tostring(battle.opening)}`)
+			local headline = safeArea.Reveal.Panel.Content.Title.Text
+			if not safeArea.Reveal.Visible or not string.find(headline, expected, 1, true) then
+				observer:fail(`{client.name}: setup reveal "{headline}" (visible={safeArea.Reveal.Visible}) for opening {tostring(battle.opening)}`)
 			end
-		elseif battle.phase ~= "reward" and battle.round == 0 and not string.find(titleText, "Bonus turn", 1, true) then
-			observer:fail(`{client.name}: bonus turn header says "{titleText}"`)
+		elseif battle.phase ~= "reward" and battle.round == 0 and not string.find(title, Strings.BonusTurn, 1, true) then
+			observer:fail(`{client.name}: bonus turn status says "{title}"`)
 		end
 		if myTurn then
-			checkActionPanel(observer, client, battle, actor)
+			checkChooser(observer, client, battle, actor)
+		elseif safeArea.Ring.Visible or safeArea.TargetPanel.Visible or client.playerGui.SkillList.Enabled then
+			observer:fail(client.name .. ": choices offered off their turn")
 		end
-		-- Every status effect shows in its summon's row.
+		-- Party cards track HP, knockouts and status effects; enemy plates track HP and sit over
+		-- their enemy, with BattleView's own plate off (R19).
+		local plates = client.playerGui:FindFirstChild("CombatHUDEnemies")
 		for _, p in battle.participants do
-			local row = (if p.side == "Party" then gui.Battle.Party else gui.Battle.Enemies):FindFirstChild(p.id)
-			local effects = nil
-			for _, child in (if row then row:GetChildren() else {}) do
-				if child:IsA("TextLabel") and child.LayoutOrder == 5 then
-					effects = child
-				end
-			end
-			if effects == nil then
-				observer:fail(`{client.name}: no effects line for {p.id}`)
-			else
-				if effects.Visible ~= (#p.statuses > 0) then
-					observer:fail(`{client.name}: effects line visibility wrong for {p.id}`)
-				end
-				for _, status in p.statuses do
-					if not string.find(effects.Text, status.id, 1, true) then
-						observer:fail(`{client.name}: {status.id} missing from {p.id}'s row`)
+			if p.side == "Party" then
+				local card = safeArea.Party:FindFirstChild("Card_" .. p.id)
+				if card == nil then
+					observer:fail(`{client.name}: no card for {p.id}`)
+				else
+					if card.Content.Hp.Value.Text ~= Strings.format.hp(p.hp, p.maxHp) then
+						observer:fail(`{client.name}: {p.id}'s card HP is stale`)
+					end
+					if card.Content.StatusTag.Visible ~= (p.status ~= "Active") then
+						observer:fail(`{client.name}: {p.id}'s KO tag is wrong`)
+					end
+					for _, status in p.statuses do
+						local def = observer.StatusEffects[status.id]
+						if not string.find(card.Content.Statuses.Text, if def then def.name else status.id, 1, true) then
+							observer:fail(`{client.name}: {status.id} missing from {p.id}'s card`)
+						end
 					end
 				end
+			else
+				local plate = if plates then plates:FindFirstChild("Enemy_" .. p.id) else nil
+				local spot = if stage and stage:FindFirstChild(p.id) then stage[p.id]:FindFirstChild("Spot") else nil
+				if plate == nil then
+					observer:fail(`{client.name}: no plate for {p.id}`)
+				elseif plate.Root.Plate.Hp.Value.Text ~= Strings.format.hp(p.hp, p.maxHp) then
+					observer:fail(`{client.name}: {p.id}'s plate HP is stale`)
+				elseif spot == nil or plate.Adornee ~= spot or not plate.Enabled then
+					observer:fail(`{client.name}: {p.id}'s plate isn't over its enemy`)
+				elseif spot.Nameplate.Enabled then
+					observer:fail(`{client.name}: BattleView's plate for {p.id} is still on (R19)`)
+				end
 			end
 		end
-		if battle.phase == "reward" and not gui.Battle.Result.Visible then
-			observer:fail(client.name .. ": result screen hidden at the end")
+		if (battle.phase == "reward") ~= results.Enabled then
+			observer:fail(client.name .. ": the results screen is wrong")
 		end
 	end)
 end
@@ -848,16 +886,15 @@ function Bot:step()
 		return
 	end
 	local sim, client, options = self.sim, self.client, self.options
-	local battleFrame = sim:gui(client, "Battle")
-	if battleFrame == nil then
+	if client.playerGui:FindFirstChild("CombatHUD") == nil then
 		return
 	end
-	-- (The overworld panel only shows for a moment on arriving, so "exploring" is "not in a fight".)
-	if not battleFrame.Visible then
+	-- (The overworld notice only shows for a moment on arriving, so "exploring" is "not in a fight".)
+	if not hudInBattle(client) then
 		-- Exploring: walk into the nearest enemy, from the front, back or side ("random" mixes them).
 		if options.engage then
 			self:later(options.engageDelay or 0.8, function()
-				if battleFrame.Visible then
+				if hudInBattle(client) then
 					return
 				end
 				local root = sim:rootPart(client.userId)
@@ -882,9 +919,8 @@ function Bot:step()
 	if options.afkInBattle then
 		return
 	end
-	local actions = sim:gui(client, "Battle", "Actions")
-	local attack = actions and actions:FindFirstChild("AttackButton")
-	if actions and actions.Visible and attack and Sim.isClickable(attack) then
+	local ring = sim:gui(client, "Ring")
+	if ring and ring.Visible and Sim.isClickable(ring.Attack) then
 		local think = options.thinkMin + math.random() * (options.thinkMax - options.thinkMin)
 		self:later(think, function()
 			self:takeTurn()
@@ -892,72 +928,111 @@ function Bot:step()
 	end
 end
 
+-- The HP a plate or card shows, for picking the most hurt target.
+local function shownHp(valueLabel)
+	return tonumber(string.match(valueLabel.Text, "(%d+) / %d+")) or math.huge
+end
+
 function Bot:takeTurn()
 	local sim, client = self.sim, self.client
-	local actions = sim:gui(client, "Battle", "Actions")
-	if actions == nil or not actions.Visible then
+	local safeArea = client.playerGui.CombatHUD.SafeArea
+	local ring, target, list = safeArea.Ring, safeArea.TargetPanel, client.playerGui.SkillList
+	if not ring.Visible then
+		return
+	end
+	local battle = client.lastSnapshot and client.lastSnapshot.battle
+	local actor = battle and battle.currentActorId and participantById(battle, battle.currentActorId)
+	if actor == nil then
 		return
 	end
 
-	-- 1. Pick an ability: "greedy" takes the priciest one it can afford, "guard" alternates Guard
-	-- with that, otherwise any.
-	local abilities = clickableChildren(actions.Abilities)
-	for _, button in clickableChildren(actions.Moves) do
-		table.insert(abilities, button)
+	-- 1. Pick a move: "greedy" takes the priciest ability it can afford, "guard" alternates Guard
+	-- with that, "attack" sticks to the character's swing, otherwise any move.
+	local affordable = {}
+	for _, abilityId in actor.abilities do
+		local ability = self.observer.Abilities[abilityId]
+		if ability and actor.mana >= ability.manaCost then
+			table.insert(affordable, abilityId)
+		end
 	end
-	local choice = abilities[math.random(math.max(1, #abilities))]
+	local policy = self.options.policy
+	local choice = "Attack"
 	local guardNow = false
-	if self.options.policy == "guard" then
+	if policy == "guard" then
 		self.guardedLast = not self.guardedLast
 		guardNow = self.guardedLast
 	end
 	if guardNow then
-		choice = actions.Moves:FindFirstChild("Guard")
-	elseif self.options.policy == "attack" then
-		choice = actions.Moves:FindFirstChild("Attack")
-	elseif self.options.policy == "greedy" or self.options.policy == "guard" then
-		for _, button in abilities do
-			local ability = self.observer.Abilities[button.Name]
-			local current = if choice then self.observer.Abilities[choice.Name] else nil
-			if current == nil or ability.manaCost > current.manaCost then
-				choice = button
+		choice = "Guard"
+	elseif policy == "attack" then
+		choice = "Attack"
+	elseif policy == "greedy" or policy == "guard" then
+		local best = nil
+		for _, abilityId in affordable do
+			if best == nil or self.observer.Abilities[abilityId].manaCost > self.observer.Abilities[best].manaCost then
+				best = abilityId
 			end
 		end
-	end
-	if choice then
-		sim:click(client, choice)
-		-- The panel re-rendered: its target buttons must now match the chosen ability.
-		local battle = client.lastSnapshot and client.lastSnapshot.battle
-		local actor = battle and battle.currentActorId and participantById(battle, battle.currentActorId)
-		if battle and actor then
-			checkActionPanel(self.observer, client, battle, actor)
+		choice = best or "Attack"
+	else
+		local moves = { "Attack", "Guard" }
+		for _, abilityId in affordable do
+			table.insert(moves, abilityId)
 		end
+		choice = moves[math.random(#moves)]
 	end
 
-	-- 2. Pick a target if this ability needs one: "greedy" goes for the lowest Health.
-	if actions.Targets.Visible then
-		local targets = clickableChildren(actions.Targets)
-		local target = targets[math.random(math.max(1, #targets))]
-		if self.options.policy == "greedy" or self.options.policy == "guard" then
-			local bestHp = math.huge
-			for _, button in targets do
-				local hp = tonumber(string.match(button.Text, "\n(%d+)/%d+ HP"))
-				if hp and hp < bestHp then
-					target, bestHp = button, hp
+	-- 2. Make it through the HUD.
+	if choice == "Guard" then
+		sim:click(client, ring.Guard) -- no target: straight to the server
+		self.turnsTaken += 1
+		return
+	elseif choice == "Attack" then
+		sim:click(client, ring.Attack)
+	else
+		sim:click(client, ring.Spell)
+		local row = list.SafeArea.List.Rows:FindFirstChild(choice)
+		assert(row, "no row for " .. choice)
+		sim:click(client, row) -- selects it, or confirms it when it was already the selection
+		if list.Enabled then
+			sim:click(client, row)
+		end
+	end
+	checkChooser(self.observer, client, battle, actor)
+
+	-- 3. Pick a target if the move needs one: "greedy" goes for the lowest Health.
+	if target.Visible then
+		local candidates = {}
+		local plates = client.playerGui:FindFirstChild("CombatHUDEnemies")
+		for _, p in battle.participants do
+			if p.side == "Enemy" then
+				local plate = plates and plates:FindFirstChild("Enemy_" .. p.id)
+				if plate and Sim.isClickable(plate.Root.Plate) then
+					table.insert(candidates, { button = plate.Root.Plate, hp = shownHp(plate.Root.Plate.Hp.Value) })
+				end
+			else
+				local card = safeArea.Party:FindFirstChild("Card_" .. p.id)
+				if card and Sim.isClickable(card) then
+					table.insert(candidates, { button = card, hp = shownHp(card.Content.Hp.Value) })
 				end
 			end
 		end
-		if target then
-			sim:click(client, target)
+		local pick = candidates[math.random(math.max(1, #candidates))]
+		if policy == "greedy" or policy == "guard" then
+			for _, candidate in candidates do
+				if candidate.hp < pick.hp then
+					pick = candidate
+				end
+			end
+		end
+		if pick then
+			sim:click(client, pick.button) -- a tap picks it (or confirms it, when it already was the pick)
+		end
+		if target.Visible and Sim.isClickable(target.Confirm) then
+			sim:click(client, target.Confirm)
 		end
 	end
-
-	-- 3. Go.
-	local go = actions.AttackButton
-	if Sim.isClickable(go) then
-		sim:click(client, go)
-		self.turnsTaken += 1
-	end
+	self.turnsTaken += 1
 end
 
 --[[ Scenario helpers ]]
@@ -982,8 +1057,8 @@ local function join(sim, observer, userId, name, botOptions)
 	-- Out onto the grass, as ZoneClient marks it in the game.
 	localPlayer(client):SetAttribute("Zone", "Overworld")
 	assert(sim:runUntil(function()
-		local overworld, battle = sim:gui(client, "Overworld"), sim:gui(client, "Battle")
-		return (overworld ~= nil and overworld.Visible) or (battle ~= nil and battle.Visible)
+		local overworld = sim:gui(client, "Overworld")
+		return (overworld ~= nil and overworld.Visible) or hudInBattle(client)
 	end, 5), name .. " never showed its first state")
 	attachClientChecker(sim, observer, client)
 	local bot = if botOptions then Bot.new(sim, client, botOptions, observer) else nil
@@ -1607,7 +1682,7 @@ test("Guard through the UI: its own button, no target, and it braces", function(
 	expect((observer.guards or 0) >= 2, "the Guardian guarded through the UI")
 end)
 
-test("with no Mana at all, the character's Attack and Guard still work: the UI starts on Attack", function()
+test("with no Mana at all, the character's Attack and Guard still work", function()
 	local sim, observer = newWorld(4300)
 	local config = sim.server.require(sim.server.dm:GetService("ReplicatedStorage").Combat.CombatConfig)
 	config.BaseMana, config.ManaPerMagic, config.ManaRegenPerTurn = 0, 0, 0 -- nobody can afford anything
@@ -1646,7 +1721,7 @@ test("two players fight a full battle start to finish, then a rematch", function
 	-- Both back in the overworld, free to walk, and then they run into another enemy.
 	sim:run(0.2)
 	for _, client in { a, b } do
-		expect(not sim:gui(client, "Battle").Visible, client.name .. " is back exploring")
+		expect(not hudInBattle(client), client.name .. " is back exploring")
 		expect(not sim:rootPart(client.userId).Anchored, client.name .. " can walk again")
 	end
 	expect(sim:runUntil(function()
@@ -2054,7 +2129,7 @@ test("walking into an enemy face-on: the party struck first and takes a bonus tu
 	end, "round 1")
 	expect(#observer.bonusTurnTotals >= 1, "the party acted in the bonus turn")
 	expect(enemy.CFrame == standing, "the enemy it's fighting stays put")
-	expect(sim:gui(client, "Battle").Visible, "the player sees the fight")
+	expect(hudInBattle(client), "the player sees the fight")
 	assertClean(sim, observer)
 end)
 
@@ -2157,8 +2232,8 @@ test("one fight at a time: a third player sits it out, then can start the next",
 	expect(not isInBattle(battle, -3), "the party is full without Cy")
 	expect(isInBattle(battle, -1) and isInBattle(battle, -2), "Bo pulled Ann in")
 	sim:run(1)
-	expect(sim:gui(cy, "Overworld").Visible and not sim:gui(cy, "Battle").Visible, "Cy keeps exploring")
-	expect(sim:gui(cy, "Overworld", "Status").Visible, "and is told a fight is on")
+	expect(sim:gui(cy, "Overworld").Visible and not hudInBattle(cy), "Cy keeps exploring")
+	expect(sim:gui(cy, "Overworld", "Panel", "Content", "Status").Visible, "and is told a fight is on")
 	expect(not sim:rootPart(-3).Anchored, "Cy isn't frozen")
 
 	-- Cy walking into an enemy mid-fight doesn't start another one...
@@ -2244,22 +2319,33 @@ local function playMoves(sim, observer, client, moves)
 			return b.phase == "input" and actor ~= nil and actor.ownerUserId == client.userId
 		end, "Ann's turn")
 		local actor = currentActor(observer.last.battle)
-		local actions = sim:gui(client, "Battle", "Actions")
+		local safeArea = client.playerGui.CombatHUD.SafeArea
+		local ring, target, list = safeArea.Ring, safeArea.TargetPanel, client.playerGui.SkillList
 		expect(sim:runUntil(function()
-			return actions.Visible
-		end, 2), "the action panel never showed") -- the client hears about the turn a moment later
+			return ring.Visible
+		end, 2), "the ring never showed") -- the client hears about the turn a moment later
 		local spot = stage()[actor.id]
 		local character = spot:FindFirstChild("Character")
 		expect(character and not spot:FindFirstChild("Summon"), "just the character between moves")
 		local root = character.HumanoidRootPart
-		local row = if move == "Attack" or move == "Guard" then actions.Moves else actions.Abilities
-		local button = row:FindFirstChild(move)
-		expect(button and Sim.isClickable(button), move .. " should be on offer")
 		local lastSeen = client.lastSnapshot.battle.lastAction
 		local sequenceBefore = if lastSeen then lastSeen.sequence else 0
 		local tweensBefore = #sim.tweenLog
-		sim:click(client, button)
-		sim:click(client, actions.AttackButton)
+		if move == "Attack" or move == "Guard" then
+			expect(Sim.isClickable(ring[move]), move .. " should be on offer")
+			sim:click(client, ring[move])
+		else
+			sim:click(client, ring.Spell)
+			local row = list.SafeArea.List.Rows:FindFirstChild(move)
+			expect(row and Sim.isClickable(row), move .. " should be on offer")
+			sim:click(client, row)
+			if list.Enabled then
+				sim:click(client, row) -- the second tap confirms it
+			end
+		end
+		if target.Visible then
+			sim:click(client, target.Confirm) -- the preselected target
+		end
 		expect(sim:runUntil(function()
 			local last = client.lastSnapshot.battle and client.lastSnapshot.battle.lastAction
 			return last ~= nil and last.sequence > sequenceBefore
@@ -2556,7 +2642,7 @@ test("Theme, Strings, Flags and Assets: Mana not MP, every flag off, every image
 	expectEqual(ui.Strings.format.manaCost(8), "8 Mana")
 	expectEqual(ui.Strings.format.manaCost(0), "Free")
 	expectEqual(ui.Strings.format.returningIn(5), "Returning in 5...")
-	for _, flag in { "NewHud", "DownSystem", "ShowAffinities", "ShowItem", "ShowPass", "ShowRoles", "ShowSummonLevels", "UIHarness" } do
+	for _, flag in { "DownSystem", "ShowAffinities", "ShowItem", "ShowPass", "ShowRoles", "ShowSummonLevels", "UIHarness" } do
 		expect(ui.Flags[flag] == false, `Flags.{flag} is off`)
 	end
 	expect(ui.Theme.Sizes.TapMin >= 48 and ui.Theme.Sizes.TextBody >= 18, "the mobile minimums")
@@ -2703,7 +2789,7 @@ test("the harness renders every component with no art, cycles every mock state, 
 	local handle = ui.Harness.open(playerGui)
 	local gui = client.playerGui:FindFirstChild("UIHarness")
 	expect(gui ~= nil and gui.Enabled, "the harness is up")
-	expect(client.playerGui.BattleUI.Enabled == false, "the combat HUD steps aside")
+	expect(client.playerGui.CombatHUD.Enabled == false, "the combat HUD steps aside")
 
 	local buttons, images = inspect(gui)
 	expect(#buttons >= 8, "buttons, list rows and the controls are all there")
@@ -2734,7 +2820,7 @@ test("the harness renders every component with no art, cycles every mock state, 
 	expect(gui.SafeArea.SafeZoneDebug.Visible, "and is drawn")
 	handle.close()
 	expect(client.playerGui:FindFirstChild("UIHarness") == nil, "closing removes it")
-	expect(client.playerGui.BattleUI.Enabled, "and gives the combat HUD back")
+	expect(client.playerGui.CombatHUD.Enabled, "and gives the combat HUD back")
 	sim:run(0.5)
 	assertClean(sim, observer)
 end)
@@ -3090,96 +3176,9 @@ test("M2: keyboard: 1 is Attack, 2 is Spell, Enter confirms, Backspace goes back
 	assertClean(sim, observer)
 end)
 
--- Holds the new HUD to every snapshot a client receives, the way attachClientChecker does for the
--- old one: whose turn it is, what's offered, the plates, and the touch controls (R21).
-local function attachHudChecker(sim, observer, client)
-	local ui = m2Modules(client)
-	local Controls, Strings = ui.Controls, ui.Strings
-	sim:clientSignal(STATE_UPDATE, client.userId):Connect(function(snapshot)
-		client.lastSnapshot = snapshot
-		local gui = client.playerGui:FindFirstChild("CombatHUD")
-		if gui == nil then
-			observer:fail(client.name .. ": no CombatHUD")
-			return
-		end
-		if client.playerGui:FindFirstChild("BattleUI") ~= nil then
-			observer:fail(client.name .. ": the old BattleUI is up beside the new HUD")
-		end
-		local safeArea = gui.SafeArea
-		local battle = snapshot.battle
-		local inBattle = battle ~= nil and isInBattle(battle, client.userId)
-		if Controls.isEnabled() == inBattle then
-			observer:fail(`{client.name}: touch controls enabled={Controls.isEnabled()} but inBattle={inBattle}`)
-		end
-		if not inBattle then
-			if safeArea.Ring.Visible or safeArea.Party.Visible or safeArea.TurnBar.Visible or client.playerGui.Results.Enabled then
-				observer:fail(client.name .. ": battle widgets up outside a fight")
-			end
-			if battle ~= nil and not (safeArea.Overworld.Visible and safeArea.Overworld.Panel.Content.Status.Visible) then
-				observer:fail(client.name .. ": a fight is on, but the overworld notice isn't up to say so")
-			end
-			return
-		end
-		local actor = if battle.currentActorId then participantById(battle, battle.currentActorId) else nil
-		local myTurn = battle.phase == "input" and actor ~= nil and actor.ownerUserId == client.userId
-		local title = safeArea.Status.Title.Text
-		if myTurn ~= (string.find(title, Strings.YourTurn, 1, true) ~= nil) then
-			observer:fail(`{client.name}: status "{title}" but myTurn={myTurn}`)
-		end
-		local list = client.playerGui:FindFirstChild("SkillList")
-		local open = (if safeArea.Ring.Visible then 1 else 0) + (if safeArea.TargetPanel.Visible then 1 else 0) + (if list and list.Enabled then 1 else 0)
-		if not myTurn and open > 0 then
-			observer:fail(client.name .. ": choices offered off their turn")
-		elseif myTurn and open == 0 and safeArea.Status.Detail.Text ~= Strings.Sending then
-			observer:fail(client.name .. ": nothing to choose on their turn")
-		elseif open > 1 then
-			observer:fail(client.name .. ": two choosers at once")
-		end
-		if (battle.phase == "setup") ~= safeArea.Reveal.Visible then
-			observer:fail(client.name .. ": the initiative reveal is wrong")
-		end
-		if (battle.phase == "reward") ~= client.playerGui.Results.Enabled then
-			observer:fail(client.name .. ": the results screen is wrong")
-		end
-		local stage = client.env.dm:GetService("Workspace"):FindFirstChild("BattleStage")
-		local plates = client.playerGui:FindFirstChild("CombatHUDEnemies")
-		for _, p in battle.participants do
-			if p.side == "Party" then
-				local card = safeArea.Party:FindFirstChild("Card_" .. p.id)
-				if card == nil then
-					observer:fail(`{client.name}: no card for {p.id}`)
-				elseif card.Content.Hp.Value.Text ~= Strings.format.hp(p.hp, p.maxHp) then
-					observer:fail(`{client.name}: {p.id}'s card HP is stale`)
-				elseif card.Content.StatusTag.Visible ~= (p.status ~= "Active") then
-					observer:fail(`{client.name}: {p.id}'s KO tag is wrong`)
-				end
-			else
-				local plate = if plates then plates:FindFirstChild("Enemy_" .. p.id) else nil
-				local spot = if stage and stage:FindFirstChild(p.id) then stage[p.id]:FindFirstChild("Spot") else nil
-				if plate == nil then
-					observer:fail(`{client.name}: no plate for {p.id}`)
-				elseif plate.Root.Plate.Hp.Value.Text ~= Strings.format.hp(p.hp, p.maxHp) then
-					observer:fail(`{client.name}: {p.id}'s plate HP is stale`)
-				elseif spot == nil or plate.Adornee ~= spot or not plate.Enabled then
-					observer:fail(`{client.name}: {p.id}'s plate isn't over its enemy (spot={tostring(spot)}, adornee={tostring(plate.Adornee)}, nameplateAdornee={tostring(spot.Nameplate.Adornee)}, enabled={tostring(plate.Enabled)}, studs={tostring(plate.StudsOffset)})`)
-				elseif spot.Nameplate.Enabled then
-					observer:fail(`{client.name}: BattleView's plate for {p.id} is still on (R19)`)
-				end
-			end
-		end
-	end)
-end
-
--- A client on the new HUD (Flags.NewHud), joined and on the grass.
+-- A client at a phone size, joined and on the grass (the HUD is the only UI now).
 local function joinHud(sim, observer, userId, name, viewportSize)
-	local client = sim:connectClient(userId, name, { viewportSize = viewportSize, flags = { NewHud = true } })
-	assert(sim:runUntil(function()
-		return client.started == true
-	end, 5), name .. " never started")
-	localPlayer(client):SetAttribute("Zone", "Overworld")
-	sim:run(0.5)
-	attachHudChecker(sim, observer, client)
-	return client
+	return joinAt(sim, observer, userId, name, viewportSize)
 end
 
 local function lastSequence(client)

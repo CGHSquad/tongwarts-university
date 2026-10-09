@@ -2,8 +2,7 @@
 --[[
 	OverworldNotice — the small panel you see while exploring (M0 report R25, a stub until the
 	overworld HUD is designed): the grounds' name and how fights start for a few seconds on arriving,
-	who's in your party, and "a fight is on without you" while one is. Same behavior as the old
-	BattleUI's overworld panel, so nothing regresses at parity.
+	who's in your party, and "a fight is on without you" while one is.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")

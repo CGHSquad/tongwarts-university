@@ -1211,9 +1211,10 @@ function Sim:click(client, button)
 	client.env.instanceSignal(button, "Activated"):Fire(nil, 1)
 end
 
--- A client's GUI by path, e.g. sim:gui(client, "Battle", "Actions", "AttackButton")
+-- A client's HUD by path inside its SafeArea, e.g. sim:gui(client, "Ring", "Attack")
 function Sim:gui(client, ...)
-	local node = client.playerGui:FindFirstChild("BattleUI")
+	local node = client.playerGui:FindFirstChild("CombatHUD")
+	node = if node then node:FindFirstChild("SafeArea") else nil
 	for _, childName in { ... } do
 		if node == nil then
 			return nil

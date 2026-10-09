@@ -19,8 +19,6 @@
 		        tap the chosen one again
 		Sent    the request is away; locked until the server moves on or refuses it (a notice)
 	Off the player's turn everything but the status line is hidden (Idle).
-
-	Same public interface as the old BattleUI, so BattleClient runs either behind Flags.NewHud.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -64,14 +62,6 @@ export type Callbacks = {
 
 export type Options = {
 	namePrefix: string?, -- the harness runs a second HUD beside the live one
-}
-
--- What BattleClient needs from a HUD, old or new.
-export type Hud = {
-	render: (self: any, snapshot: Snapshot) -> (),
-	tick: (self: any, now: number) -> (),
-	showNotice: (self: any, message: string) -> (),
-	showOverworldBanner: (self: any, seconds: number) -> (),
 }
 
 export type Mode = "Idle" | "Ring" | "List" | "Target" | "Sent"

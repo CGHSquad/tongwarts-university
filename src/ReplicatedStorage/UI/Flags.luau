@@ -5,10 +5,6 @@
 ]]
 
 local Flags = {
-	-- The new HUD replaces the old BattleUI once it reaches parity (Q1). Until then both exist and
-	-- this picks one. Removed in the parity PR.
-	NewHud = false,
-
 	-- Persona-style Down / ONE MORE! / ALL-OUT ATTACK (Q2, R7). There is no server source for any
 	-- of it; the UI is built on mock data only. KnockedOut is never mapped to DOWN.
 	DownSystem = false,
