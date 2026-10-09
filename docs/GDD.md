@@ -174,7 +174,7 @@ Refines the leveling model above with the actual curve shape and how the player-
 | Base | Tor (1) | Wind, one enemy | 12 + Magic × 1.0 | 4 MP |
 | Base | Brace (5) | Self Defence up (light) | damage taken × 0.85, 3 turns | 5 MP |
 | Base | Strike One (10) | Strike, one enemy | 12 + Strength × 1.0 | 4 MP |
-| Base | Wind Ward (15) | Target enemy's next Wind skill within 3 turns is negated | — | 6 MP |
+| Base | Wind Ward (15) | Break: strips one enemy's Wind protection — its Wind Resist or Null (Repel/Absorb later) becomes Neutral for 3 turns; a Wind Weak stays Weak. Needs the affinity system. | — | 6 MP |
 | Base | Dizzying Gale (20) | Passive: user's Daze chances × 1.5 | — | — |
 | Base | Clap Gust (25, Signature) | Wind, all enemies, high Daze chance | 6 + Magic × 0.6; Daze 45%, 2 turns | 8 MP |
 | Elder | Groundshake Taunt (1) | Taunt: enemies must target Elder | 1 turn | 4 MP |
@@ -197,7 +197,7 @@ Refines the leveling model above with the actual curve shape and how the player-
 | Grove-Keeper | Sap Mend (13, Fortune) | Small heal; Luck-based chance to cure one ailment | 10 + Magic × 0.8; cure 40% + Luck × 2% | 5 MP |
 | Grove-Keeper | Mana Font (17) | Passive: max Mana +10% | — | — |
 | Grove-Keeper | Rilenda (21) | One enemy Attack down | damage dealt × 0.8, 3 turns | 8 MP |
-| Grove-Keeper | Grove Bond (25, Signature) | Passive: Tung Tung allies deal more damage | +5%, +5% per other Tung Tung archetype in the party, max +15% | — |
+| Grove-Keeper | Grove Bond (25, Signature) | Passive: Tung Tung allies deal more damage | +5%, +5% per other Tung Tung archetype in the party (teammates' summons count, which rewards playing with friends), max +15% | — |
 
 **Buff/debuff roots (3 turns, re-applying refreshes, never stacks):** Rile (Attack): ×1.25 damage dealt up / ×0.8 down. Guar (Defence): ×0.8 damage taken up / ×1.25 down. Foka (Hit/Evasion): ±10 points on hit and evade chances. Zipp (Agility): ±4 Agility for accuracy and evasion (turn order is never re-sorted mid-battle). Every damage-cut source still multiplies and stays under the existing 75% total cap.
 
