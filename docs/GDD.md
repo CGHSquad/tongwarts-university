@@ -197,13 +197,22 @@ Refines the leveling model above with the actual curve shape and how the player-
 | Grove-Keeper | Sap Mend (13, Fortune) | Small heal; Luck-based chance to cure one ailment | 10 + Magic × 0.8; cure 40% + Luck × 2% | 5 MP |
 | Grove-Keeper | Mana Font (17) | Passive: max Mana +10% | — | — |
 | Grove-Keeper | Rilenda (21) | One enemy Attack down | damage dealt × 0.8, 3 turns | 8 MP |
-| Grove-Keeper | Grove Bond (25, Signature) | Passive: Tung Tung allies deal more damage | +5%, +5% per other Tung Tung archetype in the party (teammates' summons count, which rewards playing with friends), max +15% | — |
+| Grove-Keeper | Grove Bond (25, Signature) | Passive: Tung Tung allies deal more damage | The sheet's reading: +5% Strength and Magic for Tung Tung allies, +5% per other Tung Tung archetype in the party (teammates' summons count, which rewards playing with friends), max +15%. Applies to the stats used in damage and heal formulas only, not to max Mana or HP pools. | — |
 
 **Buff/debuff roots (3 turns, re-applying refreshes, never stacks):** Rile (Attack): ×1.25 damage dealt up / ×0.8 down. Guar (Defence): ×0.8 damage taken up / ×1.25 down. Foka (Hit/Evasion): ±10 points on hit and evade chances. Zipp (Agility): ±4 Agility for accuracy and evasion (turn order is never re-sorted mid-battle). Every damage-cut source still multiplies and stays under the existing 75% total cap.
 
 **"Certain attacks defy this" (taunts):** all-target attacks and a boss's charged attack ignore taunts. Wild enemies use their matching archetype's kit at their own level.
 
 **Mana between and during fights.** Mana and HP refill at the start of every battle, as today. Per-turn Mana regen starts at 0, since the new pools (55–65 at Lv 1) already cover a normal fight; the simulator tunes it only if needed. With fixed costs this low, Mana mostly matters in long boss fights. **Open question:** whether Mana should instead carry between fights (Metaphor-style) is a later economy decision, not part of this build.
+
+**Combat overhaul C0 decisions, confirmed.**
+
+- **HP costs:** Vital Strike and Stick Driver cost a percent of **max** HP; Timber Fall costs 25% of **current** HP. No HP cost can ever knock out its user: every one leaves at least 1 HP.
+- **Stat effects are level-relative.** Every stat that feeds a percentage (Endurance damage reduction, the Agility hit gap, the Agility initiative bonus, Luck's crit and ailment chances) is first divided by that participant's level reference `N(L) = 10 + 38 × (L − 1) / 98` (the Medium-lean curve: 10 at Lv 1, 48 at Lv 99), then the existing per-point constants and caps apply unchanged. Lv 1 numbers are identical to before, and each archetype's percentages stay flat as it levels: a Lv 99 Elder cuts about the same share of damage as a Lv 1 Elder. Damage and heal formulas keep raw stats, so damage still grows with HP pools. (The raw constants would otherwise hit their caps by the mid-20s: Endurance's 60% cut around Elder Lv 28, the hit floor from the Agility gap, 50% crits at Luck 48.)
+- **Wind Ward** stays out of Base's kit until the affinity system exists; then it's the affinity break above.
+- **Grove Bond** follows the sheet (see the kit table).
+- **Reduced motion** follows Roblox's own reduced-motion setting (plus a debug attribute); no in-game toggle in this build.
+- **Studio playtests of the new kits** use test level 25 (at Lv 1, Elder only has its taunt).
 
 **Base stat hard boundary, confirmed explicit.** No archetype's BASE stat value may exceed 70 unless that stat's Growth Lean is "High" (the one \~70-ceiling stat each archetype specializes in) — this restates what the per-archetype ceiling table above already enforces, now as an explicit rule rather than an implication. A stat can only read above 70 through an EXTERNAL source — gear, consumables, or an active buff skill — never from leveling alone. The external-buff/gear system is still Later/Could-have scope (see the Gear System section); don't design specific numbers against it yet.
 
@@ -562,6 +571,18 @@ Damage/Tank/Healer/Support/Debuffer/Crowd-Control/Utility are useful *design lan
 **Affinity tier scoping — confirmed.** The MVP damage-type axis above uses three tiers: **Weak / Neutral / Resist**. The fuller SMT/Persona-style set — **Null, Repel, Absorb** — stays in the "Later" bucket, not because the idea's wrong (it's a great thematic fit) but because Repel/Absorb specifically invert or redirect damage rather than just scale it, which is exactly the kind of thing that could quietly produce a new unkillable "turtle" build (stack Endurance + a Repel/Absorb affinity against a common attack type) that `tools/simulate-battles` wasn't originally built to catch — that combination needs its own dedicated balance pass before it ships, not a casual addition on top of the MVP loop. Null is the cheapest of the three to pull forward early if wanted, since it's a flat zero rather than a redirect.
 
 **Update — affinities ship in this build, with Null, confirmed.** Tiers and multipliers: Weak ×1.5, Neutral ×1, Resist ×0.5, Null ×0 (Null is pulled forward as the note above allowed; Repel and Absorb stay later). Damage categories: Melee Strike / Slash / Pierce and Elemental Wind; Fire, Water and Elec rows exist in the data but nothing deals them yet. The archetype sheet's **Fortune** row changes how likely ailments are to land on that summon (Weak ×1.5 chance, Resist ×0.5, Null immune), not damage. Party summons use the archetype sheet's affinity profiles as written. **Wild enemies get their own profiles**, not copies of the party's: the Tung Tung roster resists or nulls its own Strike and Wind by design, so copying those profiles onto wild Tung Tungs would make most party attacks deal half or no damage. Each wild enemy gets at least one weakness. A weakness is revealed to the party after it's been hit once (the HUD's WEAK markers). The Down / ONE MORE! system stays off.
+
+**Wild enemy and test-boss affinity profiles, confirmed** (blank = Neutral; Fortune = ailment chance):
+
+| Enemy | Strike | Slash | Pierce | Wind | Fire | Water | Elec | Fortune | Idea |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Wild Sapling | Neutral | Weak | Neutral | Weak | Weak | Resist | Neutral | Weak | green and flighty: bends in the wind, easy to daze |
+| Wild Tung Tung Sahur | Resist | Neutral | Weak | Weak | Weak | Neutral | Resist | Neutral | hardwood shrugs off bonks, dry wood hates gusts |
+| Wild Grove-Keeper | Weak | Neutral | Neutral | Resist | Weak | Null | Weak | Resist | mossy caster with brittle branches; a Wind Ward target |
+| Wild Elder | Neutral | Weak | Resist | Resist | Weak | Neutral | Neutral | Neutral | the gnarled "wall": no weakness the party can reach until weapons (Slash); watch its fight length |
+| Test boss Grove Warden (scaled Elder) | Neutral | Resist | Weak | Resist | Weak | Resist | Neutral | Resist | Wind Resist, not Null, so the boss tests the telegraphed hit and Guard rather than being a Wind Ward check; Pierce Weak rewards the Spear |
+
+The test boss stands at a single arena spot on the grass overworld, away from regular enemies' routes and the post-battle return points.
 
 **Design-ahead is fine, implementation is not:** full Weak/Neutral/Resist/Null/Repel/Absorb affinity values can be designed now in the team's content spreadsheet for every archetype/build (cheap, it's just data) — the gate is specifically on turning Null/Repel/Absorb affinities on in a live build before they've had a dedicated balance pass.
 
