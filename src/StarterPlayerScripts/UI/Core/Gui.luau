@@ -104,7 +104,8 @@ function Gui.label(parent: Instance, name: string, props: LabelProps?): TextLabe
 	if p.stroke then
 		label.TextStrokeColor3 = Theme.Colors.Ink
 		label.TextStrokeTransparency = 0
-		Gui.stroke(label, Theme.Colors.Ink, p.stroke)
+		-- Contextual: the stroke outlines the glyphs, not the label's box (Border would draw a frame).
+		Gui.stroke(label, Theme.Colors.Ink, p.stroke).ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
 	end
 	label.Parent = parent
 	return label

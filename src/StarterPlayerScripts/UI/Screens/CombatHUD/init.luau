@@ -526,7 +526,7 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	if phase == "Setup" then
 		self.reveal.update(hud)
 	end
-	self.log.frame.Visible = (phase == "Input" or phase == "Resolve") and #hud.recentLog > 0
+	self.log.frame.Visible = (phase == "Input" or phase == "Resolve") and #hud.recentLog > 0 and self.mode ~= "List" -- the list covers its spot
 	self.log.update(hud.recentLog)
 	-- The results screen (S6) takes over once the fight is decided; the countdown follows the snapshot.
 	if phase == "Reward" then
