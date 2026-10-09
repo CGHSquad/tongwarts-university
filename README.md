@@ -173,7 +173,7 @@ top of that, your character always has Attack and Guard (see Rules):
 | `tools/typecheck.luau` | Type-checks `src/` the way Studio sees it: `lune run tools/typecheck`. |
 | `tests/run.luau`, `tests/Sim.luau` | Headless tests: bots play the real game on a fake Roblox, no Studio needed (see below). |
 | `ReplicatedStorage/UI/` | The new UI's data: `Theme` (colors, fonts, sizes), `Strings` (every piece of text; the resource is Mana), `Flags` (all off), `Assets` (image keys, ids empty until the art lands), `UITypes`, `MockData` (sample battles for 1, 2 and 4 party members), `Bindings` (snapshot to view-model, and the client-side filter for what can be picked). |
-| `StarterPlayerScripts/UI/` | The new UI's code, built to the handoff in `docs/ui/`: `Core/` (safe-zone `Layout`, `ScreenManager`, `Input`, drawn `Fallbacks` for every image), `Components/` (buttons, bars, tags, rows, tallies, toasts), `Preview/` (the Studio harness and safe-zone overlay), `Screens/` (`CombatHUD`, the combat screen S1, and `SkillList`, S7). `BattleClient` runs it instead of the old `BattleUI` when `Flags.NewHud` is on; the old one stays until the new HUD matches it. |
+| `StarterPlayerScripts/UI/` | The new UI's code, built to the handoff in `docs/ui/`: `Core/` (safe-zone `Layout`, `ScreenManager`, `Input`, drawn `Fallbacks` for every image), `Components/` (buttons, bars, tags, rows, tallies, toasts), `Preview/` (the Studio harness and safe-zone overlay), `Screens/` (`CombatHUD`, the combat screen S1; `SkillList`, S7; `Results`, S6, on mock rewards until the server has them). `BattleClient` runs it instead of the old `BattleUI` when `Flags.NewHud` is on; the old one stays until the new HUD matches it. |
 
 ### Tuning and the battle simulator
 

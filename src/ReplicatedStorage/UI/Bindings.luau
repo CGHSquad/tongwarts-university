@@ -235,4 +235,50 @@ function Bindings.selfTarget(actor: HudParticipant): string
 	return actor.id
 end
 
+-- The S6 reward view: the outcome and the party (one row per player) come from the snapshot;
+-- the numbers and items come from `mock` until the server has a reward payload (Q3). A loss
+-- gives nothing.
+function Bindings.reward(battle: HudBattle, won: boolean, mock: UITypes.RewardView?): UITypes.RewardView
+	local members: { UITypes.RewardMember } = {}
+	local seen: { [number]: boolean } = {}
+	for _, p in battle.participants do
+		local userId = p.ownerUserId
+		if p.side ~= "Party" or userId == nil or seen[userId] then
+			continue
+		end
+		seen[userId] = true
+		local sample = if won and mock then mock.members[#members + 1] else nil
+		table.insert(members, {
+			userId = userId,
+			name = p.ownerName or "",
+			level = if sample then sample.level else 1,
+			expGained = if sample then sample.expGained else 0,
+			leveledUp = sample ~= nil and sample.leveledUp,
+			newLevel = if sample then sample.newLevel else 1,
+		})
+	end
+	return {
+		exp = if won and mock then mock.exp else 0,
+		currency = if won and mock then mock.currency else 0,
+		items = if won and mock then mock.items else {},
+		members = members,
+	}
+end
+
+-- How many players are in the party, and how many members: picks the mock reward's size.
+function Bindings.partyShape(battle: HudBattle): (number, number)
+	local owners: { [number]: boolean } = {}
+	local players, members = 0, 0
+	for _, p in battle.participants do
+		if p.side == "Party" then
+			members += 1
+			if p.ownerUserId and not owners[p.ownerUserId] then
+				owners[p.ownerUserId] = true
+				players += 1
+			end
+		end
+	end
+	return players, members
+end
+
 return Bindings
