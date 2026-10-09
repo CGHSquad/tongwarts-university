@@ -571,7 +571,17 @@ function Sim:createEnv(name, side, client)
 		return nil
 	end
 
-	local EVENTS = { Activated = true, MouseButton1Click = true, Changed = true }
+	local EVENTS = {
+		Activated = true,
+		MouseButton1Click = true,
+		MouseButton1Down = true,
+		MouseButton1Up = true,
+		MouseEnter = true,
+		MouseLeave = true,
+		InputBegan = true,
+		InputEnded = true,
+		Changed = true,
+	}
 
 	wrap = function(instance)
 		if instance == nil then
@@ -755,6 +765,40 @@ function Sim:createEnv(name, side, client)
 		local playerGui = roblox.Instance.new("PlayerGui")
 		env.playerGui = playerGui
 		client.attributes = {}
+		-- Services the UI reads that Lune's instances can't answer (the M0 report's probe list).
+		-- A desktop with a mouse and keyboard, no touch, no gamepad; tests can change these.
+		services.UserInputService = {
+			TouchEnabled = false,
+			KeyboardEnabled = true,
+			MouseEnabled = true,
+			GamepadEnabled = false,
+			InputBegan = Signal.new(sim, name .. " UserInputService.InputBegan"),
+			InputEnded = Signal.new(sim, name .. " UserInputService.InputEnded"),
+			LastInputTypeChanged = Signal.new(sim, name .. " UserInputService.LastInputTypeChanged"),
+			GetLastInputType = function()
+				return roblox.Enum.UserInputType.MouseButton1
+			end,
+		}
+		services.GuiService = {
+			SelectedObject = nil,
+			MenuIsOpen = false,
+			GetGuiInset = function()
+				return roblox.Vector2.new(0, 58), roblox.Vector2.new(0, 0)
+			end,
+		}
+		services.ContentProvider = {
+			PreloadAsync = function(_, list)
+				assert(type(list) == "table", "PreloadAsync needs a list")
+			end,
+		}
+		services.TextService = {
+			-- A rough estimate: 0.55 em per character, wrapped to the bounds.
+			GetTextSize = function(_, text, size, _font, bounds)
+				local width = #text * size * 0.55
+				local lines = math.max(1, math.ceil(width / math.max(bounds.X, 1)))
+				return roblox.Vector2.new(math.min(width, bounds.X), lines * size)
+			end,
+		}
 		local attributeSignals = {}
 		local function attributeSignal(attribute)
 			attributeSignals[attribute] = attributeSignals[attribute]
@@ -782,6 +826,10 @@ function Sim:createEnv(name, side, client)
 					return attributeSignal(attribute)
 				end,
 			},
+			-- No thumbnails off the fake Roblox: the UI's head icons take their fallback path.
+			GetUserThumbnailAsync = function()
+				return "", false
+			end,
 			-- Anyone in the server, with this client's copy of their character (nil if it hasn't
 			-- replicated here).
 			GetPlayerByUserId = function(_, userId)
@@ -827,6 +875,13 @@ function Sim:createEnv(name, side, client)
 			UDim = roblox.UDim,
 			Vector2 = roblox.Vector2,
 			Vector3 = roblox.Vector3,
+			Rect = roblox.Rect,
+			Font = roblox.Font,
+			ColorSequence = roblox.ColorSequence,
+			ColorSequenceKeypoint = roblox.ColorSequenceKeypoint,
+			NumberSequence = roblox.NumberSequence,
+			NumberSequenceKeypoint = roblox.NumberSequenceKeypoint,
+			NumberRange = roblox.NumberRange,
 			CFrame = FixedCFrame,
 			Enum = roblox.Enum,
 			TweenInfo = TweenInfo,
@@ -1030,10 +1085,15 @@ function Sim:touchEnemy(userId, enemyPart, how)
 end
 
 -- A player joins: the server sees PlayerAdded now, their LocalScripts start a moment later.
-function Sim:connectClient(userId, name)
+-- `options.viewportSize` sets this client's screen size (a Vector2; 1280x720 by default), so the
+-- UI can be laid out and measured at a phone size.
+function Sim:connectClient(userId, name, options)
 	assert(self.clients[userId] == nil, "already connected")
 	local client = { userId = userId, name = name }
 	client.env = self:createEnv("client:" .. name, "client", client)
+	if options and options.viewportSize then
+		client.env.viewportSize = options.viewportSize
+	end
 	client.playerGui = client.env.playerGui
 	self.clients[userId] = client
 	table.insert(self.clientOrder, userId)

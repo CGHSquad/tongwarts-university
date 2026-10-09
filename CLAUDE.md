@@ -61,7 +61,7 @@ treat it as the current source of truth, not something to hand-edit here.
   "turtle" play (guard whenever it's likely to be attacked, stacking Guard's damage cut) must keep
   losing to "sensible" play. Guard gives no Mana (GDD Step 6), so sensible play currently never guards.
 - Before pushing gameplay or UI changes, run the headless tests from the repo root:
-  `lune run tests/run` (about a minute; `quick` and a test-name filter are options, see
+  `lune run tests/run` (about eight minutes; `quick` takes under two, and a test-name filter is an option, see
   `tests/run.luau`). They build the place with Rojo and play it on a fake Roblox
   (`tests/Sim.luau`), with bots using the real UI. When behavior changes on purpose, update the
   tests that pin it down. They can't check visuals; those need a look in Studio.
@@ -96,4 +96,8 @@ treat it as the current source of truth, not something to hand-edit here.
 
 ## UI work
 
-- The UI handoff (spec, screen-by-screen behavior, asset-sheet prompts, approved mockups) lives in `docs/ui/`: `UI_HANDOFF.md` (read section 16 first, it reconciles the spec with this repo), `ASSET_PROMPTS.md`, `mockups/S1`-`S7`. `tools/cut_sheet.py` cuts generated asset sheets into transparent PNGs. Only milestones 0-3 (foundation, skill list, combat HUD, results) are in scope for now; the mockups are style/layout references, not pixel specs.
+- The UI handoff (spec, screen-by-screen behavior, asset-sheet prompts, approved mockups) lives in `docs/ui/`: `UI_HANDOFF.md` (read section 16 first, it reconciles the spec with this repo), `ASSET_PROMPTS.md`, `mockups/S1`-`S7`, and `M0_REPORT.md` (the approved plan: conflicts, folder layout, safe zones, testing, assets). `tools/cut_sheet.py` cuts generated asset sheets into transparent PNGs. Only milestones 0-3 (foundation, skill list, combat HUD, results) are in scope for now; the mockups are style/layout references, not pixel specs.
+- Where the new UI lives (Milestone 1): data in `src/ReplicatedStorage/UI/` (`Theme`, `Strings`, `Flags`, `Assets`, `UITypes`, `MockData`; no Roblox API calls, so the Lune tests require them too) and code in `src/StarterPlayerScripts/UI/` (`Core/` Layout, Gui, Fallbacks, Input, ScreenManager, Audio; `Components/`; `Screens/` from M2; `Preview/` the Studio harness and safe-zone overlay). Rules that every screen and component follow: all text through `Strings` (the resource is Mana), every image through `Assets` by key with a drawn fallback when the id is empty, sizes in design pixels at `Layout.DESIGN` (a phone) scaled up by the root `UIScale`, nothing in `Layout.KEEP_OUT`, tap targets at least 48 px, and no game rule computed on the client. Flags (`Flags.luau`) are all off; the old `BattleUI` stays until the new HUD reaches parity.
+- Preview the components and every mock state in Studio during Play, from the command bar:
+  `require(game.Players.LocalPlayer.PlayerScripts.UI.Preview.Harness).open(game.Players.LocalPlayer.PlayerGui)`
+  (or set `Flags.UIHarness`). The layout tests in `tests/run.luau` open the same harness on the fake Roblox and measure it with `Layout.resolve`, since Lune has no `AbsoluteSize`.
