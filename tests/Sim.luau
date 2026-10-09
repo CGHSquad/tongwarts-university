@@ -794,6 +794,18 @@ function Sim:createEnv(name, side, client)
 				assert(type(list) == "table", "PreloadAsync needs a list")
 			end,
 		}
+		-- Roblox's own UI switches, as BattleClient sets them (client.coreGui.Backpack etc.; all on until set).
+		client.coreGui = {}
+		services.StarterGui = {
+			SetCoreGuiEnabled = function(_, kind, enabled)
+				assert(typeof(enabled) == "boolean", "SetCoreGuiEnabled needs a boolean")
+				client.coreGui[kind.Name] = enabled
+			end,
+			GetCoreGuiEnabled = function(_, kind)
+				local enabled = client.coreGui[kind.Name]
+				return if enabled == nil then true else enabled
+			end,
+		}
 		services.TextService = {
 			-- A rough estimate: 0.55 em per character, wrapped to the bounds.
 			GetTextSize = function(_, text, size, _font, bounds)
@@ -1079,9 +1091,9 @@ function Sim:overworldEnemies()
 	return enemies
 end
 
--- Moves a player's character into touching range of an enemy (2 studs from its center, so a
--- patrol that walks on before the server looks is still in range), facing the way a front, back
--- or side touch needs. Like a real player walking up;
+-- Moves a player's character into touching range of an enemy (2 studs from its center, at its
+-- height, so a patrol that walks on before the server looks is still in range), facing the way a
+-- front, back or side touch needs. Like a real player walking up;
 -- a character the server has anchored can't move.
 function Sim:touchEnemy(userId, enemyPart, how)
 	local root = self:rootPart(userId)
@@ -1092,7 +1104,7 @@ function Sim:touchEnemy(userId, enemyPart, how)
 	local offset = root.CFrame.Position - enemyPosition
 	local direction = roblox.Vector3.new(offset.X, 0, offset.Z)
 	direction = if direction.Magnitude > 0.1 then direction.Unit else roblox.Vector3.new(1, 0, 0)
-	local position = roblox.Vector3.new(enemyPosition.X, 3, enemyPosition.Z) + direction * 2
+	local position = roblox.Vector3.new(enemyPosition.X, enemyPosition.Y, enemyPosition.Z) + direction * 2
 	local toEnemy = -direction
 	local look = if how == "front" then toEnemy
 		elseif how == "back" then direction
