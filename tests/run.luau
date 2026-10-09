@@ -720,9 +720,10 @@ local function checkStage(observer, client, battle, stage)
 			client.seenDown = client.seenDown or {}
 			local downKey = `{battle.battleId}:{p.id}`
 			if p.status == "KnockedOut" and not client.seenDown[downKey] then
-				-- Knocked out just now: its summon may come out to fall (with a death clip).
+				-- Knocked out just now: its summon may come out to fall (with a death clip), once the
+				-- blow that felled it has landed (up to about a second after the snapshot).
 				client.seenDown[downKey] = true
-				client.summonUntil[p.id] = math.max(client.summonUntil[p.id] or 0, now + SUMMON_SECONDS)
+				client.summonUntil[p.id] = math.max(client.summonUntil[p.id] or 0, now + SUMMON_SECONDS + 1)
 			elseif fresh and action.actorId == p.id then
 				expectSummon = table.find(p.abilities, action.abilityId) ~= nil
 				if expectSummon then
@@ -906,8 +907,12 @@ local function attachClientChecker(sim, observer, client)
 				observer:fail(`{client.name}: the feed doesn't end with the latest log line`)
 			end
 		end
-		if (battle.phase == "reward") ~= results.Enabled then
-			observer:fail(client.name .. ": the results screen is wrong")
+		-- The results screen opens once the fight is decided, after the stage has played the final
+		-- blow (it waits while the stage is busy, at most CombatHUD.RESULTS_WAIT_CAP).
+		if results.Enabled and battle.phase ~= "reward" then
+			observer:fail(client.name .. ": the results screen is up before the fight is decided")
+		elseif battle.phase == "reward" and not results.Enabled and client.playerGui:GetAttribute("StageBusy") ~= true then
+			observer:fail(client.name .. ": the results screen isn't up although the stage is idle")
 		end
 	end)
 end
@@ -3489,7 +3494,9 @@ test("M2: a real fight on the new HUD: Attack, Spell and Guard through the ring,
 		sim:run(0.5)
 	end
 	local resultsGui = client.playerGui.Results
-	expect(resultsGui.Enabled, "the results screen at the end")
+	expect(sim:runUntil(function()
+		return resultsGui.Enabled
+	end, 5), "the results screen at the end, once the final blow has played")
 	local won = client.lastSnapshot.battle.winner == "Party"
 	expectEqual(resultsGui.SafeArea.Title.Text.Text, if won then Strings.Victory else Strings.Defeat)
 	-- Back (keyboard or gamepad B) skips the count-up, even though there is no actor to act for now.
@@ -3951,6 +3958,77 @@ test("C1: the ring waits for the stage to finish its beat, but never longer than
 	hud:render(snapshot)
 	expect(ring.Visible, "straight away when the stage is idle")
 	hud:destroy()
+	assertClean(sim, observer)
+end)
+
+test("C1: under the battle camera the enemy plates keep inside the HUD's box and clear of each other, and clips are compressed to the beat (phone size)", function()
+	local sim, observer = newWorld(904)
+	local client = joinHud(sim, observer, -1, "Ann", PHONE)
+	local ui = m2Modules(client)
+	local Layout = ui.Layout
+	local Summons = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.Summons)
+	local attackClip = Summons.WildSapling.art.animations.attack
+	sim.clipLengths[attackClip] = 2.4 -- a slow swing: longer than any beat's budget
+	local bot = Bot.new(sim, client, SLOW, observer)
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side") -- two Wild Saplings
+	local camera = cameraOf(client)
+	local plates = client.playerGui.CombatHUDEnemies
+
+	-- The HUD's box for the plates, as CombatHUD lays it out (viewport pixels: the GUI inset, then
+	-- the regions in design pixels at scale 1 on the design phone).
+	local regions = Layout.regions(PHONE)
+	local inset = client.env.getService("GuiService"):GetGuiInset()
+	local gap = 8
+	local statusBottom = regions.topCenter.y + (36 + 10) + 4 + 74
+	local box = {
+		left = inset.X + regions.left.x + regions.left.w + gap,
+		top = inset.Y + statusBottom + gap,
+		right = inset.X + regions.right.x - gap,
+		bottom = inset.Y + regions.center.y + regions.center.h - 48 - gap,
+	}
+	local function checkPlates(label)
+		local rects = {}
+		for _, gui in plates:GetChildren() do
+			if gui:IsA("BillboardGui") and gui.Enabled and gui.Root.Visible then
+				local spot = gui.Adornee
+				local center = spot.CFrame.Position + gui.StudsOffsetWorldSpace
+				local screen = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, PHONE, center)
+				local rect = Layout.rect(screen.X - 95, screen.Y - 30, 190, 60)
+				-- (12 px of slack: plates are placed again only once the camera has moved 0.3 studs or
+				-- turned a degree, which is about that much on screen.)
+				local slack = 12
+				expect(
+					rect.x >= box.left - slack and rect.x + rect.w <= box.right + slack and rect.y >= box.top - slack and rect.y + rect.h <= box.bottom + slack,
+					`{label}: {gui.Name} inside the HUD's box ({math.round(rect.x)}, {math.round(rect.y)}; box {math.round(box.left)}-{math.round(box.right)} x {math.round(box.top)}-{math.round(box.bottom)})`
+				)
+				table.insert(rects, rect)
+			end
+		end
+		expect(#rects >= 1, `{label}: at least one plate in frame`)
+		if #rects == 2 then
+			expect(not Layout.intersects(rects[1], rects[2]), `{label}: the two plates don't overlap ({math.round(rects[1].x)},{math.round(rects[1].y)} and {math.round(rects[2].x)},{math.round(rects[2].y)})`)
+		end
+		return #rects
+	end
+
+	runToPhase(sim, observer, myInputTurn(-1), "Ann's turn")
+	sim:run(0.8)
+	expectEqual(checkPlates("over the shoulder"), 2, "both enemies in frame from behind the party")
+	runToPhase(sim, observer, enemyInputTurn, "an enemy's turn")
+	sim:run(0.8)
+	checkPlates("enemy frontal")
+
+	-- The sapling's 2.4 s swing is played faster than real time, so it fits the beat.
+	expect(sim:runUntil(function()
+		for _, entry in sim.animationLog do
+			if entry.env == client.env.name and entry.id == attackClip and entry.event == "Play" and entry.speed > 1 then
+				return true
+			end
+		end
+		return false
+	end, 240), "a compressed attack clip never played")
+	expect(bot.turnsTaken > 0, "the bot played")
 	assertClean(sim, observer)
 end)
 

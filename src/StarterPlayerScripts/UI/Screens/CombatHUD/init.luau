@@ -118,6 +118,8 @@ type Fields = {
 	stageBusy: boolean, -- the stage is still playing a beat (BattleView), so the ring waits
 	turnOpenedAt: number?, -- server clock, when the turn being shown opened
 	ringHeld: boolean, -- the ring is due but waiting for the stage
+	rewardSeenAt: number?, -- server clock, when the fight was decided
+	resultsHeld: boolean, -- the results screen is due but waiting for the final blow to play
 	connections: { RBXScriptConnection },
 }
 
@@ -144,6 +146,8 @@ end
 -- The ring waits for the stage to finish its beat, but never longer than this past the turn's
 -- start: a slow client must never hold up the fight (the server's turn timer runs regardless).
 CombatHUD.RING_WAIT_CAP = 0.6
+-- The results screen waits for the final blow (and the fall) to play, but never longer than this.
+CombatHUD.RESULTS_WAIT_CAP = 3.5
 
 function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Callbacks, options: Options?): CombatHUD
 	local prefix = if options and options.namePrefix then options.namePrefix :: string else ""
@@ -288,6 +292,8 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		stageBusy = false,
 		turnOpenedAt = nil,
 		ringHeld = false,
+		rewardSeenAt = nil,
+		resultsHeld = false,
 		connections = {},
 	}
 	self = setmetatable(fields, CombatHUD)
@@ -346,6 +352,12 @@ function CombatHUD._ringWaits(self: CombatHUD, now: number): boolean
 	return self.stageBusy and openedAt ~= nil and now - openedAt < CombatHUD.RING_WAIT_CAP
 end
 
+-- Whether the results screen has to wait for the stage right now.
+function CombatHUD._resultsWait(self: CombatHUD, now: number): boolean
+	local seenAt = self.rewardSeenAt
+	return self.stageBusy and seenAt ~= nil and now - seenAt < CombatHUD.RESULTS_WAIT_CAP
+end
+
 -- Updates countdowns; called every frame.
 function CombatHUD.tick(self: CombatHUD, now: number)
 	local hud = self.hud
@@ -353,12 +365,14 @@ function CombatHUD.tick(self: CombatHUD, now: number)
 		return
 	end
 	self.enemies.tick()
-	if self.ringHeld and not self:_ringWaits(now) then
+	if (self.ringHeld and not self:_ringWaits(now)) or (self.resultsHeld and not self:_resultsWait(now)) then
 		self:_rerender()
 		return
 	end
 	if hud.phase == "Reward" then
-		self.results.tick(now)
+		if self.manager:isOpen(self.resultsName) then
+			self.results.tick(now)
+		end
 	elseif self.hint and self.mode == "Ring" then
 		self.status.detail.Text = self.hint :: string
 	elseif self.deadline then
@@ -465,7 +479,7 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 	-- The feed sits at the bottom of the middle's right half: under the enemies' plates, clear of
 	-- the ring and of the acting character, which the battle camera frames left of centre.
 	local feedHeight = 48
-	local feedLeft = center.x + math.floor(center.w / 2)
+	local feedLeft = center.x + math.floor(center.w * 0.4)
 	self.log.frame.Position = UDim2.fromOffset(feedLeft, center.y + center.h - feedHeight)
 	self.log.frame.Size = UDim2.fromOffset(center.x + center.w - feedLeft, feedHeight)
 	self.stamps.frame.Position = UDim2.fromOffset(center.x, center.y)
@@ -479,13 +493,14 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 	local measured = ScreenManager.measure(self.gui)
 	local scale = Layout.scaleFor(measured)
 	self.enemies.setScale(scale)
-	local safe = Layout.safeArea(virtual)
+	-- (Layout.regions already includes the safe margins; the SafeArea frame sits at the GUI's
+	-- origin, which is the inset below Roblox's top bar.)
 	local inset = Vector2.zero
 	pcall(function()
 		inset = GuiService:GetGuiInset()
 	end)
 	local function toViewport(x: number, y: number): (number, number)
-		return inset.X + (safe.x + x) * scale, inset.Y + (safe.y + y) * scale
+		return inset.X + x * scale, inset.Y + y * scale
 	end
 	local statusBottom = top.y + barHeight + 4 + 74
 	local boxLeft, boxTop = toViewport(left.x + left.w + gap, statusBottom + gap)
@@ -512,6 +527,8 @@ function CombatHUD._leaveBattle(self: CombatHUD)
 	self.ring.hide()
 	self.ringHeld = false
 	self.turnOpenedAt = nil
+	self.rewardSeenAt = nil
+	self.resultsHeld = false
 	self.manaPlate.update(nil, self.localUserId)
 	self.enemies.hide()
 	self.stamps.hide()
@@ -581,12 +598,20 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	end
 	self.log.frame.Visible = (phase == "Input" or phase == "Resolve") and #hud.recentLog > 0 and self.mode ~= "List" -- the list covers its spot
 	self.log.update(hud.recentLog)
-	-- The results screen (S6) takes over once the fight is decided; the countdown follows the snapshot.
+	-- The results screen (S6) takes over once the fight is decided and the stage has played the
+	-- final blow (it waits while the stage is busy, at most RESULTS_WAIT_CAP); the countdown
+	-- follows the snapshot.
+	self.resultsHeld = false
 	if phase == "Reward" then
+		if self.rewardSeenAt == nil then
+			self.rewardSeenAt = Workspace:GetServerTimeNow()
+		end
 		local won = hud.winner == "Party"
 		local key = `{hud.rosterKey}:{won}`
 		if self.manager:isOpen(self.resultsName) and self.resultsFor == key then
 			self.results.setReturnAt(hud.overworldReturnAt)
+		elseif self:_resultsWait(Workspace:GetServerTimeNow()) then
+			self.resultsHeld = true
 		else
 			self.resultsFor = key
 			local players, members = Bindings.partyShape(hud)

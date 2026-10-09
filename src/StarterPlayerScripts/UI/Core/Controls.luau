@@ -54,6 +54,20 @@ local function apply()
 			button.Visible = enabled
 		end
 	end)
+	-- Belt and braces for the thumbstick and jump button: Roblox hides them for a modal UI, and
+	-- their own ScreenGui (TouchGui) can be switched off outright, which the ControlModule's
+	-- Disable doesn't always do (Studio's device emulator kept them on screen).
+	pcall(function()
+		UserInputService.ModalEnabled = not enabled
+	end)
+	pcall(function()
+		local player = Players.LocalPlayer
+		local playerGui = if player then player:FindFirstChildOfClass("PlayerGui") else nil
+		local touchGui = if playerGui then playerGui:FindFirstChild("TouchGui") else nil
+		if touchGui and touchGui:IsA("ScreenGui") then
+			touchGui.Enabled = enabled
+		end
+	end)
 end
 
 function Controls.setEnabled(on: boolean)

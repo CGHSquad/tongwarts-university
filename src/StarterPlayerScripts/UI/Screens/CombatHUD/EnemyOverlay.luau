@@ -73,11 +73,11 @@ EnemyOverlay.STACK_GAP = 6 -- pixels between stacked plates
 EnemyOverlay.REPLACE_DISTANCE = 0.3 -- studs
 EnemyOverlay.REPLACE_ANGLE = math.cos(math.rad(1))
 
--- Where a world point lands on the viewport (pixels) and whether it's in front of the camera.
--- A plain function, so the per-frame pcall allocates nothing.
+-- Where a world point lands on the viewport (pixels; it may be outside it) and whether it's in
+-- front of the camera. A plain function, so the per-frame pcall allocates nothing.
 local function projectPoint(camera: Camera, point: Vector3): (number, number, boolean)
-	local screen, visible = camera:WorldToViewportPoint(point)
-	return screen.X, screen.Y, visible and screen.Z > 0
+	local screen = camera:WorldToViewportPoint(point)
+	return screen.X, screen.Y, screen.Z > 0
 end
 
 -- The stage part this participant's plate hangs over, and how high above it, from BattleView.
@@ -223,7 +223,7 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 	-- camera's projection, which the tests' fake Roblox doesn't have; then the plates stay put.
 	local lastCameraPosition: Vector3? = nil
 	local lastCameraLook: Vector3? = nil
-	type Entry = { plate: Plate, x: number, y: number, pixelsPerStud: number }
+	type Entry = { plate: Plate, x: number, y: number, anchorX: number, anchorY: number, pixelsPerStud: number }
 	local function byX(a: Entry, b: Entry): boolean
 		return a.x < b.x
 	end
@@ -242,50 +242,91 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 				continue
 			end
 			local base = spot.CFrame.Position + Vector3.new(0, plate.baseOffset, 0)
-			local ok, x, y, visible = pcall(projectPoint, camera, base)
+			local ok, x, y, inFront = pcall(projectPoint, camera, base)
 			if not ok then
-				return -- no projection here (the fake Roblox): leave every plate where it is
+				return -- no projection here (the fake Roblox without a camera): leave every plate where it is
 			end
-			plate.root.Visible = visible
-			if not visible then
+			-- A plate whose anchor is behind the camera, or far outside the frame, hides; one just
+			-- above or beside the frame (a tall enemy's head in a close shot) is pulled in below.
+			local viewport = camera.ViewportSize
+			local margin = viewport.Y * 0.5
+			local placeable = inFront and x > -margin and x < viewport.X + margin and y > -margin and y < viewport.Y + margin
+			plate.root.Visible = placeable
+			if not placeable then
 				continue
 			end
 			local _, upY = projectPoint(camera, base + Vector3.new(0, 1, 0)) -- (the first call just worked, so this one does)
 			local pixelsPerStud = math.max(y - upY, 0.001)
-			table.insert(entries, { plate = plate, x = x, y = y, pixelsPerStud = pixelsPerStud })
+			table.insert(entries, { plate = plate, x = x, y = y, anchorX = x, anchorY = y, pixelsPerStud = pixelsPerStud })
 		end
 		table.sort(entries, byX)
 
 		local plateWidth, plateHeight = width * scale, height * scale
 		local rowStep = plateHeight + EnemyOverlay.STACK_GAP
 		local box = bounds
-		local right, up = cameraCFrame.RightVector, cameraCFrame.UpVector
-		for index, entry in entries do
-			local plate = entry.plate
-			-- Inside the HUD's bounds first.
-			local cx, cy = entry.x, entry.y
-			if box then
-				cx = math.clamp(cx, box.left + plateWidth / 2, math.max(box.left + plateWidth / 2, box.right - plateWidth / 2))
-				cy = math.clamp(cy, box.top + plateHeight / 2, math.max(box.top + plateHeight / 2, box.bottom - plateHeight / 2))
-			end
-			-- Then down a row for every earlier plate it would sit on.
-			local row = 0
-			local loose = if plate.row > 0 then 24 else 8 -- hysteresis: a stacked plate unstacks later than it stacked
-			for earlier = 1, index - 1 do
-				local other = entries[earlier]
-				if math.abs(other.x - cx) < plateWidth + loose and math.abs(other.y - cy) < rowStep then
-					row = math.max(row, other.plate.row + 1)
+		local minX, maxX = -math.huge, math.huge
+		local minY, maxY = -math.huge, math.huge
+		if box then
+			minX, maxX = box.left + plateWidth / 2, math.max(box.left + plateWidth / 2, box.right - plateWidth / 2)
+			minY, maxY = box.top + plateHeight / 2, math.max(box.top + plateHeight / 2, box.bottom - plateHeight / 2)
+		end
+		-- 1. Each plate inside the box, where it would hang on its own.
+		for _, entry in entries do
+			entry.x = math.clamp(entry.x, minX, maxX)
+			entry.y = math.clamp(entry.y, minY, maxY)
+		end
+		-- 2. Plates that would sit on each other move apart: a row down when the box has room,
+		-- else pushed apart sideways, both of them, within the box. A plate that was displaced
+		-- last time only goes back once it's clear by a wider margin (hysteresis), so nothing
+		-- flickers during a pan.
+		local displaced: { [Plate]: boolean } = {}
+		for _ = 1, 3 do
+			local any = false
+			for i = 1, #entries - 1 do
+				for j = i + 1, #entries do
+					local a, b = entries[i], entries[j]
+					local loose = if a.plate.row > 0 or b.plate.row > 0 then 24 else EnemyOverlay.STACK_GAP
+					local dx, dy = b.x - a.x, b.y - a.y
+					if math.abs(dx) >= plateWidth + loose or math.abs(dy) >= plateHeight + loose then
+						continue
+					end
+					any = true
+					displaced[b.plate] = true
+					local lower = math.max(a.y, b.y) + rowStep
+					if lower <= maxY then
+						-- Room below: the one further right drops a row under the other.
+						b.y = math.max(b.y, a.y + rowStep)
+					else
+						-- Side by side: push both apart, and if the box stops one, the other gives way.
+						displaced[a.plate] = true
+						local need = plateWidth + EnemyOverlay.STACK_GAP - math.abs(dx)
+						local leftOne, rightOne = if dx >= 0 then a else b, if dx >= 0 then b else a
+						leftOne.x -= need / 2
+						rightOne.x += need / 2
+						if leftOne.x < minX then
+							rightOne.x += minX - leftOne.x
+							leftOne.x = minX
+						end
+						if rightOne.x > maxX then
+							leftOne.x -= rightOne.x - maxX
+							rightOne.x = maxX
+						end
+						leftOne.x = math.clamp(leftOne.x, minX, maxX)
+						rightOne.x = math.clamp(rightOne.x, minX, maxX)
+					end
 				end
 			end
-			plate.row = row
-			cy += row * rowStep
-			if box and cy + plateHeight / 2 > box.bottom then
-				cy = math.max(box.top + plateHeight / 2, box.bottom - plateHeight / 2)
+			if not any then
+				break
 			end
-			entry.y = cy -- later plates stack against where this one ended up
-			entry.x = cx
-			-- Back to the world: the pixel shift, along the camera's right and up.
-			local shift = right * ((cx - entry.x) / entry.pixelsPerStud) - up * ((cy - entry.y) / entry.pixelsPerStud)
+		end
+		-- 3. Back to the world: each plate's pixel shift from its anchor, along the camera's right
+		-- and up, written only when it changed.
+		local right, up = cameraCFrame.RightVector, cameraCFrame.UpVector
+		for _, entry in entries do
+			local plate = entry.plate
+			plate.row = if displaced[plate] then 1 else 0
+			local shift = right * ((entry.x - entry.anchorX) / entry.pixelsPerStud) - up * ((entry.y - entry.anchorY) / entry.pixelsPerStud)
 			local offset = Vector3.new(0, plate.baseOffset, 0) + shift
 			local last = plate.placedAt
 			if last == nil or (last - offset).Magnitude > 0.02 then

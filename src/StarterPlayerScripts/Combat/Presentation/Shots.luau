@@ -69,7 +69,9 @@ end
 -- The summon beat: well back, up and out to the character's right, clear of the socket where the
 -- summon materializes (behind the character, up over its left shoulder), so character and summon
 -- are both in frame with the enemies beyond.
-Shots.SUMMON = { back = 11, up = 6, side = 6.5, focusUp = 4, focusBlend = 0.35 }
+-- (A Tung Tung summon with its bat spans up to about 13 studs mid-swing: measured on a phone at
+-- back 11 / up 6 its head touched the top edge and its feet were cut, hence the extra distance.)
+Shots.SUMMON = { back = 15, up = 7.5, side = 7, focusUp = 4.5, focusBlend = 0.3 }
 function Shots.summon(root: CFrame, focus: Vector3): Pose
 	local s = Shots.SUMMON
 	local position = root.Position - root.LookVector * s.back + Vector3.new(0, s.up, 0) + root.RightVector * s.side
@@ -115,13 +117,13 @@ end
 -- faces (toward where the enemies stood).
 function Shots.victory(center: Vector3, facing: Vector3, t: number): Pose
 	local s = smooth(t)
-	local angle = math.rad(-50 + 70 * s)
+	local angle = math.rad(-35 + 60 * s)
 	local forward = facing.Unit
 	local right = Vector3.new(-forward.Z, 0, forward.X)
-	local radius = 15
+	local radius = 17
 	local direction = forward * math.cos(angle) + right * math.sin(angle)
-	local position = center + direction * radius + Vector3.new(0, 5.5, 0)
-	return pose(position, center + Vector3.new(0, 3, 0), 52 + 4 * s)
+	local position = center + direction * radius + Vector3.new(0, 6.5, 0)
+	return pose(position, center + Vector3.new(0, 3, 0), 54 + 4 * s)
 end
 
 -- Defeat: the camera stays in front of the fallen party and tilts down to the floor.

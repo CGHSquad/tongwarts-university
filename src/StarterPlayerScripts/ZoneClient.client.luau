@@ -169,8 +169,12 @@ local function cycle()
 	local minutes = presets:GetAttribute("CycleMinutes") or 20
 	local dayShare = presets:GetAttribute("DayShare") or 0.7
 	local p = (workspace:GetServerTimeNow() / (minutes * 60)) % 1
-	local isDay = p < dayShare
-	local q = if isDay then p / dayShare else (p - dayShare) / (1 - dayShare) -- progress through this half
+	-- A fight has its own light: a clear afternoon on the battle stage whatever the time outside
+	-- (BattleClient marks the player InBattle), so the stage never goes dark mid-fight. The cycle
+	-- picks up where it is once the fight is over.
+	local inBattle = player:GetAttribute("InBattle") == true
+	local isDay = inBattle or p < dayShare
+	local q = if inBattle then 0.55 elseif isDay then p / dayShare else (p - dayShare) / (1 - dayShare) -- progress through this half
 	Lighting.ClockTime = 6.2 + q * 11.6
 	-- how close we are to dawn/dusk (1 right at the switch, 0 from a little way in)
 	local edge = math.clamp(1 - math.min(q, 1 - q) / 0.1, 0, 1)

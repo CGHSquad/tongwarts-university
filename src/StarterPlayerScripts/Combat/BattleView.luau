@@ -78,7 +78,7 @@ local SUMMON_SOCKET = CFrame.new(-1.5, 4, 4)
 local ATTACK_MAX_SECONDS = 1.6
 local DEATH_MAX_SECONDS = 1.6
 -- The battle start: the swirl covers the screen, the stage is set, the swirl clears onto the sweep.
-local COVER_SECONDS = 0.3
+local COVER_SECONDS = 0.45
 local SWEEP_SECONDS = 1.9
 -- A beat's sequence ends this long before the server opens the next turn, so there's slack for
 -- latency; the next turn's whip-pan takes over from wherever the camera is.
@@ -119,6 +119,7 @@ type Figure = {
 	hpLabel: TextLabel,
 	appearances: number, -- bumped each time the summon comes out, so only the latest one dismisses it
 	knockedOut: boolean, -- so its fall only plays once, when it happens
+	fall: "None" | "Pending" | "Cued", -- a knockout seen but not yet played: it waits for the blow that caused it
 }
 
 local BattleView = {}
@@ -543,6 +544,7 @@ local function createFigure(participant: ParticipantState, parent: Instance, ene
 		hpLabel = hpLabel,
 		appearances = 0,
 		knockedOut = participant.status == "KnockedOut", -- already down before this client was watching
+		fall = "None",
 	}
 
 	-- A player's party member is their character on the field. Its summon stays off the field until
@@ -581,6 +583,13 @@ end
 -- How tall what stands in the spot is: a character is about five studs, a creature its height.
 local function bodyHeight(figure: Figure): number
 	return if figure.character then 5 else figure.height
+end
+
+-- Where a figure's body stands, facing the way its spot faces (an imported rig's root may be
+-- turned any way; the spot is what the stage laid out).
+local function standing(figure: Figure): CFrame
+	local _, rest = body(figure)
+	return figure.home.Rotation + rest.Position
 end
 
 -- Moves a part a little way from where it stands and straight back: a lunge or a recoil.
@@ -759,6 +768,11 @@ function BattleView.render(self: BattleView, battle: BattleState?)
 		self.lastActionSeen = action.sequence
 		actionSeconds = self:_playAction(battle, action)
 	end
+	for _, figure in self.figures do
+		if figure.fall == "Pending" then
+			self:_fall(figure) -- knocked out with no blow to wait for (joined late, or the action wasn't seen)
+		end
+	end
 	if battle.phase == "reward" and not self.resultShown then
 		self.resultShown = true
 		-- The final blow and the result arrive in one snapshot: the result camera waits for the
@@ -773,6 +787,28 @@ function BattleView.render(self: BattleView, battle: BattleState?)
 	end
 end
 
+-- A knocked-out figure falls: an enemy's creature plays its death clip where it stands; a party
+-- member's summon comes out to fall (if it has a death clip).
+function BattleView._fall(self: BattleView, figure: Figure)
+	if figure.fall == "None" then
+		return
+	end
+	figure.fall = "None"
+	if figure.character == nil then
+		playDeathClip(figure, self.sequencer)
+	elseif figure.clips and figure.clips.death then
+		bringOutSummon(figure, "death", DEATH_MAX_SECONDS, self.sequencer)
+	end
+end
+
+-- The server refused the move (or the turn moved on): back to the turn's own shot.
+function BattleView.refocus(self: BattleView)
+	local battle = self.battle
+	if battle and battle.currentActorId then
+		self:_openTurn(battle)
+	end
+end
+
 -- Runs the presentation: call every frame with the time since the last one.
 function BattleView.update(self: BattleView, dt: number)
 	self.camera:setMotionScale(Motion.scale())
@@ -783,7 +819,7 @@ end
 -- The player confirmed a move: the field of view punches at once, before the server answers, and
 -- if the move brings their summon out the camera already backs off to the summon shot, so the
 -- summon never materializes between the lens and the character.
-function BattleView.confirm(self: BattleView, abilityId: string?)
+function BattleView.confirm(self: BattleView, abilityId: string?, targetId: string?)
 	local battle = self.battle
 	if battle == nil then
 		return
@@ -791,13 +827,22 @@ function BattleView.confirm(self: BattleView, abilityId: string?)
 	self.camera:punch(CONFIRM_PUNCH)
 	local actorId = battle.currentActorId
 	local figure = if actorId then self.figures[actorId] else nil
-	if figure == nil or abilityId == nil then
+	local ability = if abilityId then Abilities[abilityId] else nil
+	if figure == nil or abilityId == nil or ability == nil then
 		return
 	end
 	for _, participant in battle.participants do
 		if participant.id == actorId and Pacing.isSummoned(participant.side, participant.abilities, abilityId) then
-			local _, rest = body(figure)
-			self.camera:moveTo(Shots.summon(rest, self:_focus("Enemy")), 0.3)
+			-- Aim where the move goes: the enemies, the ally it helps, the party, or itself.
+			local aim = self:_focus("Enemy")
+			if ability.targets == "Ally" and targetId then
+				aim = self:_focusOf({ targetId }, aim)
+			elseif ability.targets == "AllAllies" then
+				aim = self:_focus("Party")
+			elseif ability.targets == "Self" then
+				aim = self:_focusOf({ figure.id }, aim)
+			end
+			self.camera:moveTo(Shots.summon(standing(figure), aim), 0.3)
 		end
 	end
 end
@@ -918,11 +963,7 @@ function BattleView._refreshFigures(self: BattleView)
 			figure.hpLabel.Text = "Knocked out"
 			if not figure.knockedOut then
 				figure.knockedOut = true
-				if figure.character == nil then
-					playDeathClip(figure, self.sequencer)
-				elseif figure.clips and figure.clips.death then
-					bringOutSummon(figure, "death", DEATH_MAX_SECONDS, self.sequencer) -- it comes out to fall
-				end
+				figure.fall = "Pending" -- it falls when the blow lands (_playAction), or at once if nothing is coming
 			end
 		elseif participant.status == "Left" then
 			fade = 0.75
@@ -981,11 +1022,17 @@ function BattleView._focus(self: BattleView, side: BattleTypes.Side): Vector3
 	return Shots.focusOf(points, STAGE_CENTER + Vector3.new(direction * SLOT_DEPTH, 3, 0))
 end
 
--- Where a figure's body stands, facing the way its spot faces (an imported rig's root may be
--- turned any way; the spot is what the stage laid out).
-local function standing(figure: Figure): CFrame
-	local _, rest = body(figure)
-	return figure.home.Rotation + rest.Position
+-- The middle of these figures' bodies, or `fallback` when none of them is on the stage.
+function BattleView._focusOf(self: BattleView, ids: { string }, fallback: Vector3): Vector3
+	local points = {}
+	for _, id in ids do
+		local figure = self.figures[id]
+		if figure then
+			local _, rest = body(figure)
+			table.insert(points, rest.Position + Vector3.new(0, bodyHeight(figure) * 0.3, 0))
+		end
+	end
+	return Shots.focusOf(points, fallback)
 end
 
 -- The shot for whoever's turn it is: over a party member's shoulder (a teammate's from a little
@@ -1099,6 +1146,18 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			continue
 		end
 
+		if result.knockedOut and target.fall == "Pending" then
+			-- It falls as the blow lands, not before.
+			target.fall = "Cued"
+			local fallen = target
+			table.insert(cues, {
+				at = lead + HIT_DELAY,
+				run = function()
+					self:_fall(fallen)
+				end,
+			})
+		end
+
 		if ability.kind == "Attack" and target ~= actor then
 			local toward = (target.home.Position - actor.home.Position).Unit
 			-- A character or a block lunges at its target; a summon's real model has its swing.
@@ -1150,13 +1209,24 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	-- The camera for the beat.
 	if actor.side == "Party" then
 		if summoned then
-			-- (Already on its way there if this player confirmed the move: see confirm.)
-			camera:moveTo(Shots.summon(standing(actor), self:_focus("Enemy")), 0.25)
+			-- (Already on its way there if this player confirmed the move: see confirm.) An attack
+			-- looks at the enemies; a heal or buff at whoever it's for.
+			local aim = self:_focus("Enemy")
+			if not attacking then
+				local ids = {}
+				for _, result in action.results do
+					table.insert(ids, result.targetId)
+				end
+				aim = self:_focusOf(ids, aim)
+			end
+			camera:moveTo(Shots.summon(standing(actor), aim), 0.25)
 		end
 	elseif attacking and firstHit then
 		local struck = firstHit
 		local struckRest = standing(struck)
-		local over = Shots.overShoulder(standing(actor), struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), 1.2)
+		-- Over the creature's shoulder, further off the bigger it is (an Elder is thirteen studs).
+		local pull = 1.2 * math.max(1, bodyHeight(actor) / 6)
+		local over = Shots.overShoulder(standing(actor), struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), pull)
 		camera:moveTo(over, 0.2)
 		table.insert(cues, {
 			at = math.max(0, lead + HIT_DELAY - 0.1),

@@ -19,7 +19,7 @@ Transition.__index = Transition
 
 Transition.NAME = "BattleTransition"
 Transition.STRIPES = 10
-Transition.STAGGER = 0.03 -- seconds between one stripe starting and the next
+Transition.STAGGER = 0.02 -- seconds between one stripe starting and the next
 
 type Fields = {
 	playerGui: PlayerGui,

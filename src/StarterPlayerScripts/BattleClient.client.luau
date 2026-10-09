@@ -54,7 +54,7 @@ local view = BattleView.new({
 })
 local callbacks = {
 	onAction = function(abilityId: string, targetId: string) -- any move from the HUD; the server decides what happens
-		view:confirm(abilityId) -- the camera reacts at once; the server's answer is what plays out
+		view:confirm(abilityId, targetId) -- the camera reacts at once; the server's answer is what plays out
 		submitActionRemote:FireServer(abilityId, targetId)
 	end,
 	onTargetChanged = function(targetId: string?, friendly: boolean)
@@ -86,6 +86,8 @@ local function render(snapshot: BattleTypes.Snapshot)
 	ui:render(snapshot)
 	-- Touch controls off while in a fight, keyed off every snapshot (M0 report R21).
 	Controls.setEnabled(mine == nil)
+	-- The world's other client scripts (ZoneClient's day cycle) hold still for the fight.
+	localPlayer:SetAttribute("InBattle", mine ~= nil)
 end
 
 stateUpdateRemote.OnClientEvent:Connect(render)
@@ -103,6 +105,7 @@ end)
 
 noticeRemote.OnClientEvent:Connect(function(message: string)
 	ui:showNotice(message)
+	view:refocus() -- a refused move: back from wherever confirm sent the camera
 end)
 
 local ownedShown = -1

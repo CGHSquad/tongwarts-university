@@ -161,18 +161,27 @@ end
 function Sequencer._settle(self: Sequencer)
 	local serial = self.serial
 	local pending = false
-	for _, cue in self.cues do
-		if cue.ran then
-			continue
-		end
-		if cue.at <= self.time then
-			cue.ran = true
-			cue.run()
-			if self.serial ~= serial then
-				return -- the cue started or cancelled a new sequence, which settled itself
+	-- Each cue that runs restarts the scan: a cue may add cues (and the list is re-sorted), so
+	-- the loop never walks a table that changed under it.
+	local scanning = true
+	while scanning do
+		scanning = false
+		pending = false
+		for _, cue in self.cues do
+			if cue.ran then
+				continue
 			end
-		else
-			pending = true
+			if cue.at <= self.time then
+				cue.ran = true
+				cue.run()
+				if self.serial ~= serial then
+					return -- the cue started or cancelled a new sequence, which settled itself
+				end
+				scanning = true
+				break
+			else
+				pending = true
+			end
 		end
 	end
 	self:_setBusy(pending or self.time < self.endsAt)
