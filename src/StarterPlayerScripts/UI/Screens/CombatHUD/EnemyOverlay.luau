@@ -119,7 +119,7 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 			end
 			local gui = Instance.new("BillboardGui")
 			gui.Name = `Enemy_{p.id}`
-			gui.AlwaysOnTop = false -- on top, Studio's capture never showed them; above the head is enough
+			gui.AlwaysOnTop = true -- over the scene, like the handoff asks (Studio's MCP screen capture never shows AlwaysOnTop billboards; that's the capture, not the game)
 			gui.LightInfluence = 0
 			gui.Active = true
 			gui.ResetOnSpawn = false
