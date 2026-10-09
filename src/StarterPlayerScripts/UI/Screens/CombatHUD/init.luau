@@ -3,8 +3,8 @@
 	CombatHUD — S1, the combat screen (docs/ui/UI_HANDOFF.md section 7, reconciled by section 16
 	and docs/ui/M0_REPORT.md). The turn-order bar and status line at the top, the command ring on
 	the left, party cards on the right, the hero Mana plate at the bottom, plates over the enemies,
-	the initiative reveal and (until Milestone 3's S6) a plain result panel in the middle, and the
-	overworld notice while exploring.
+	the initiative reveal, the S6 results screen once the fight is over, and the overworld notice
+	while exploring.
 
 	It renders server snapshots and nothing else (handoff rule 2). The only thing it remembers is
 	the choice being made right now: which command, which ability, which target. Confirming sends
@@ -31,6 +31,7 @@ local Combat = ReplicatedStorage:WaitForChild("Combat")
 local BattleTypes = require(Combat:WaitForChild("BattleTypes"))
 local UI = ReplicatedStorage:WaitForChild("UI")
 local Bindings = require(UI:WaitForChild("Bindings"))
+local MockData = require(UI:WaitForChild("MockData")) -- the S6 rewards are mock until the server has them (Q3)
 local Strings = require(UI:WaitForChild("Strings"))
 local Theme = require(UI:WaitForChild("Theme"))
 local UITypes = require(UI:WaitForChild("UITypes"))
@@ -44,6 +45,7 @@ local Components = Root:WaitForChild("Components")
 local TapButton = require(Components:WaitForChild("TapButton"))
 local Toast = require(Components:WaitForChild("Toast"))
 local SkillList = require(script.Parent:WaitForChild("SkillList"))
+local Results = require(script.Parent:WaitForChild("Results"))
 local CommandRing = require(script:WaitForChild("CommandRing"))
 local EnemyOverlay = require(script:WaitForChild("EnemyOverlay"))
 local OverworldNotice = require(script:WaitForChild("OverworldNotice"))
@@ -89,6 +91,7 @@ type Fields = {
 	manager: ScreenManager.ScreenManager,
 	hudName: string,
 	listName: string,
+	resultsName: string,
 	gui: ScreenGui,
 	safeArea: Frame,
 
@@ -101,11 +104,11 @@ type Fields = {
 	party: Widgets.PartyCards,
 	manaPlate: Widgets.ManaPlate,
 	reveal: Widgets.Reveal,
-	result: Widgets.Result,
 	stamps: Stamps.Stamps,
 	toast: Toast.Toast,
 	enemies: EnemyOverlay.EnemyOverlay,
 	skillList: SkillList.SkillList,
+	results: Results.Results,
 
 	snapshot: Snapshot?,
 	hud: HudBattle?,
@@ -115,6 +118,7 @@ type Fields = {
 	targetId: string?,
 	submittedTurn: number?,
 	turnSeen: number?,
+	resultsFor: string?, -- which fight and outcome the results screen is showing
 	overworldBanner: number,
 	detailBase: string,
 	deadline: number?,
@@ -143,7 +147,7 @@ end
 
 function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Callbacks, options: Options?): CombatHUD
 	local prefix = if options and options.namePrefix then options.namePrefix :: string else ""
-	local hudName, listName = prefix .. CombatHUD.NAME, prefix .. SkillList.NAME
+	local hudName, listName, resultsName = prefix .. CombatHUD.NAME, prefix .. SkillList.NAME, prefix .. Results.NAME
 	local manager = ScreenManager.new(playerGui)
 	local self: CombatHUD
 
@@ -158,10 +162,10 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 	local party: Widgets.PartyCards
 	local manaPlate: Widgets.ManaPlate
 	local reveal: Widgets.Reveal
-	local result: Widgets.Result
 	local stamps: Stamps.Stamps
 	local toast: Toast.Toast
 	local skillList: SkillList.SkillList
+	local results: Results.Results
 
 	manager:register(hudName, ScreenManager.DISPLAY_ORDER.Combat, function(_, screenGui, area)
 		gui, safeArea = screenGui, area
@@ -213,7 +217,6 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		end)
 		manaPlate = Widgets.manaPlate(area)
 		reveal = Widgets.reveal(area)
-		result = Widgets.result(area)
 		stamps = Stamps.new(area)
 		toast = Toast.new(area)
 		return {
@@ -235,6 +238,10 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		})
 		return skillList.screen
 	end)
+	manager:register(resultsName, ScreenManager.DISPLAY_ORDER.Results, function(_, resultsGui, area)
+		results = Results.build(resultsGui, area, {})
+		return results.screen
+	end)
 
 	local fields: Fields = {
 		localUserId = localUserId,
@@ -243,6 +250,7 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		manager = manager,
 		hudName = hudName,
 		listName = listName,
+		resultsName = resultsName,
 		gui = gui,
 		safeArea = safeArea,
 		dim = dim,
@@ -254,11 +262,11 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		party = party,
 		manaPlate = manaPlate,
 		reveal = reveal,
-		result = result,
 		stamps = stamps,
 		toast = toast,
 		enemies = EnemyOverlay.new(playerGui, prefix .. "CombatHUDEnemies"),
 		skillList = skillList,
+		results = results,
 		snapshot = nil,
 		hud = nil,
 		mode = "Idle",
@@ -267,6 +275,7 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		targetId = nil,
 		submittedTurn = nil,
 		turnSeen = nil,
+		resultsFor = nil,
 		overworldBanner = 0,
 		detailBase = "",
 		deadline = nil,
@@ -319,8 +328,7 @@ function CombatHUD.tick(self: CombatHUD, now: number)
 		return
 	end
 	if hud.phase == "Reward" then
-		local at = hud.overworldReturnAt
-		self.result.detail.Text = if at then Strings.format.returningIn(secondsLeft(at, now)) else ""
+		self.results.tick(now)
 	elseif self.deadline then
 		self.status.detail.Text = Strings.format.pair(self.detailBase, Strings.format.secondsLeft(secondsLeft(self.deadline :: number, now)))
 	end
@@ -359,7 +367,7 @@ function CombatHUD.destroy(self: CombatHUD)
 	table.clear(self.connections)
 	self.manager:closeAll()
 	self.enemies.destroy()
-	for _, name in { self.hudName, self.listName } do
+	for _, name in { self.hudName, self.listName, self.resultsName } do
 		local entry = self.manager:entry(name)
 		if entry then
 			entry.gui:Destroy()
@@ -413,9 +421,6 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 
 	self.reveal.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.reveal.frame.Size = UDim2.fromOffset(center.w, center.h)
-	local resultHeight = 100
-	self.result.frame.Position = UDim2.fromOffset(center.x, center.y + math.floor((center.h - resultHeight) / 2))
-	self.result.frame.Size = UDim2.fromOffset(center.w, resultHeight)
 	self.stamps.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.stamps.frame.Size = UDim2.fromOffset(center.w, center.h)
 
@@ -435,7 +440,7 @@ function CombatHUD._leaveBattle(self: CombatHUD)
 	self.turnBar.frame.Visible = false
 	self.status.frame.Visible = false
 	self.reveal.frame.Visible = false
-	self.result.frame.Visible = false
+	self.manager:close(self.resultsName)
 	self.targetPanel.frame.Visible = false
 	self.dim.Visible = false
 	self.party.frame.Visible = false
@@ -500,17 +505,27 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	-- Top: the turn bar, the reveal while initiative is shown, the status line otherwise.
 	local phase = hud.phase
 	local active = if hud.activeId then hud.byId[hud.activeId :: string] else nil
-	self.turnBar.frame.Visible = phase ~= "Setup"
+	self.turnBar.frame.Visible = phase ~= "Setup" and phase ~= "Reward"
 	self.turnBar.update(hud)
 	self.reveal.frame.Visible = phase == "Setup"
 	if phase == "Setup" then
 		self.reveal.update(hud)
 	end
-	self.result.frame.Visible = phase == "Reward"
+	-- The results screen (S6) takes over once the fight is decided; the countdown follows the snapshot.
 	if phase == "Reward" then
 		local won = hud.winner == "Party"
-		self.result.title.Text = if won then Strings.Victory else Strings.Defeat
-		self.result.title.TextColor3 = if won then Theme.Colors.Gold else Theme.Colors.Crimson
+		local key = `{hud.rosterKey}:{won}`
+		if self.manager:isOpen(self.resultsName) and self.resultsFor == key then
+			self.results.setReturnAt(hud.overworldReturnAt)
+		else
+			self.resultsFor = key
+			local players, members = Bindings.partyShape(hud)
+			local size: MockData.PartySize = if members <= 1 then "One" elseif members == 2 then (if players == 1 then "TwoSolo" else "Two") else "Four"
+			local props: Results.Props = { won = won, reward = Bindings.reward(hud, won, MockData.reward(size)), returnAt = hud.overworldReturnAt }
+			self.manager:open(self.resultsName, props)
+		end
+	else
+		self.manager:close(self.resultsName)
 	end
 
 	local title, detail = "", ""
@@ -558,7 +573,7 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 
 	-- Right, bottom and over the enemies. The skill list takes the party's column while it's open.
 	local shownTarget = if self.mode == "Target" then self.targetId else nil
-	self.party.frame.Visible = self.mode ~= "List"
+	self.party.frame.Visible = self.mode ~= "List" and phase ~= "Reward"
 	self.party.update(hud, self.localUserId, if friendly then shownTarget else nil, pickable)
 	self.manaPlate.update(if myTurn then actor else nil, self.localUserId)
 	self.enemies.update(hud, if friendly then nil else shownTarget, pickable)
@@ -684,7 +699,18 @@ function CombatHUD._submit(self: CombatHUD, abilityId: string, targetId: string)
 	self:_rerender()
 end
 
+local function isBack(keyName: string): boolean
+	return keyName == "Backspace" or keyName == "Escape" or keyName == "ButtonB"
+end
+
 function CombatHUD._onKey(self: CombatHUD, keyName: string)
+	-- The results screen is up (no actor in the reward phase): Back skips its count-up.
+	if self.manager:current() == self.resultsName then
+		if isBack(keyName) then
+			self.manager:back()
+		end
+		return
+	end
 	if self.hud == nil or self:_actor() == nil then
 		return
 	end
@@ -704,7 +730,7 @@ function CombatHUD._onKey(self: CombatHUD, keyName: string)
 			self.skillList.confirm()
 		end
 	end
-	if keyName == "Backspace" or keyName == "Escape" then
+	if isBack(keyName) then
 		self:_back()
 	end
 end

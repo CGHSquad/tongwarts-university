@@ -57,6 +57,7 @@ local Strings = {
 	Party = "PARTY",
 	LevelUp = "LEVEL UP!",
 	Continue = "Continue",
+	TapToSkip = "Tap to skip",
 
 	-- Overworld notice
 	OverworldTitle = "TungWarts Grounds",

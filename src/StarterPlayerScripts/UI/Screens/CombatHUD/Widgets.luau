@@ -1,8 +1,8 @@
 --!strict
 --[[
 	Widgets — the combat HUD's own pieces (handoff S1), each built from the base components:
-	the turn-order bar, the status line under it, the party cards, the hero Mana plate, the
-	initiative reveal, and the interim result panel (Milestone 3's S6 replaces that one).
+	the turn-order bar, the status line under it, the party cards, the hero Mana plate and the
+	initiative reveal.
 	Everything is in design pixels inside the screen's SafeArea; CombatHUD places the pieces in
 	Layout's regions.
 ]]
@@ -398,33 +398,6 @@ function Widgets.reveal(parent: Instance): Reveal
 			end
 			rolls.Text = table.concat(lines, "\n")
 		end,
-		destroy = function()
-			frame:Destroy()
-		end,
-	}
-end
-
---[[ Result: VICTORY / DEFEAT and the return countdown (interim; S6 replaces it in Milestone 3) ]]
-
-export type Result = {
-	frame: Frame,
-	title: TextLabel,
-	detail: TextLabel,
-	destroy: () -> (),
-}
-
-function Widgets.result(parent: Instance): Result
-	local frame = Gui.frame(parent, "Result")
-	local panel = SlicedPanel.new(frame, { name = "Panel", padding = Theme.Sizes.Margin })
-	local title = Gui.label(panel.content, "Title", { size = Theme.Sizes.TextDisplay, font = Theme.Fonts.Display, color = Theme.Colors.Gold, stroke = Theme.Sizes.StrokeDisplay })
-	title.Size = UDim2.new(1, 0, 0, 52)
-	local detail = Gui.label(panel.content, "Detail", { size = Theme.Sizes.TextBody, font = Theme.Fonts.Bold, color = Theme.Colors.TextDim })
-	detail.Size = UDim2.new(1, 0, 0, 28)
-	detail.Position = UDim2.fromOffset(0, 56)
-	return {
-		frame = frame,
-		title = title,
-		detail = detail,
 		destroy = function()
 			frame:Destroy()
 		end,

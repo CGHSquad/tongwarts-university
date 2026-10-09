@@ -2849,8 +2849,8 @@ local function checkSafeZones(Layout, gui, label)
 	local seen = 0
 	for _, entry in visibleRects(Layout, safeArea, screen) do
 		local object, rect = entry.object, entry.rect
-		if object.Name == "Dim" then
-			continue -- the scene tint behind the list covers the whole screen on purpose
+		if object.Name == "Dim" or object.Name == "TapToSkip" then
+			continue -- the scene tint behind the list and the results' tap catcher cover the whole screen on purpose
 		end
 		seen += 1
 		expect(Layout.hitsKeepOut(rect, keepOut) == nil, `{label}: {object:GetFullName()} clears the corners ({rect.x}, {rect.y}, {rect.w}, {rect.h})`)
@@ -2941,11 +2941,12 @@ test("M2: the combat HUD renders every mock state from the harness at phone size
 		local myTurn = battle.phase == "input" and actor ~= nil and actor.ownerUserId == -1
 		expectEqual(safeArea.Ring.Visible, myTurn, `{state.name}: the ring shows only on my turn`)
 		expectEqual(safeArea.Reveal.Visible, battle.phase == "setup", `{state.name}: the initiative reveal`)
-		expectEqual(safeArea.TurnBar.Visible, battle.phase ~= "setup", `{state.name}: the turn bar`)
-		expectEqual(safeArea.Result.Visible, battle.phase == "reward", `{state.name}: the result panel`)
+		expectEqual(safeArea.TurnBar.Visible, battle.phase ~= "setup" and battle.phase ~= "reward", `{state.name}: the turn bar`)
+		local resultsGui = client.playerGui.HarnessResults
+		expectEqual(resultsGui.Enabled, battle.phase == "reward", `{state.name}: the results screen`)
 		if battle.phase == "reward" then
-			expectEqual(safeArea.Result.Panel.Content.Title.Text, if battle.winner == "Party" then Strings.Victory else Strings.Defeat, state.name)
-			expect(safeArea.Result.Panel.Content.Detail.Text ~= "", `{state.name}: the return countdown`)
+			expectEqual(resultsGui.SafeArea.Title.Text.Text, if battle.winner == "Party" then Strings.Victory else Strings.Defeat, state.name)
+			expect(resultsGui.SafeArea.Returning.Text ~= "", `{state.name}: the return countdown`)
 		end
 		if battle.phase == "setup" then
 			expect(string.find(safeArea.Reveal.Panel.Content.Rolls.Text, "+ 5 =", 1, true) ~= nil, `{state.name}: the rolls are listed`)
@@ -3111,7 +3112,7 @@ local function attachHudChecker(sim, observer, client)
 			observer:fail(`{client.name}: touch controls enabled={Controls.isEnabled()} but inBattle={inBattle}`)
 		end
 		if not inBattle then
-			if safeArea.Ring.Visible or safeArea.Party.Visible or safeArea.TurnBar.Visible or safeArea.Result.Visible then
+			if safeArea.Ring.Visible or safeArea.Party.Visible or safeArea.TurnBar.Visible or client.playerGui.Results.Enabled then
 				observer:fail(client.name .. ": battle widgets up outside a fight")
 			end
 			if battle ~= nil and not (safeArea.Overworld.Visible and safeArea.Overworld.Panel.Content.Status.Visible) then
@@ -3137,8 +3138,8 @@ local function attachHudChecker(sim, observer, client)
 		if (battle.phase == "setup") ~= safeArea.Reveal.Visible then
 			observer:fail(client.name .. ": the initiative reveal is wrong")
 		end
-		if (battle.phase == "reward") ~= safeArea.Result.Visible then
-			observer:fail(client.name .. ": the result panel is wrong")
+		if (battle.phase == "reward") ~= client.playerGui.Results.Enabled then
+			observer:fail(client.name .. ": the results screen is wrong")
 		end
 		local stage = client.env.dm:GetService("Workspace"):FindFirstChild("BattleStage")
 		local plates = client.playerGui:FindFirstChild("CombatHUDEnemies")
@@ -3295,10 +3296,19 @@ test("M2: a real fight on the new HUD: Attack, Spell and Guard through the ring,
 		end
 		sim:run(0.5)
 	end
-	expect(safeArea.Result.Visible, "the result panel at the end")
+	local resultsGui = client.playerGui.Results
+	expect(resultsGui.Enabled, "the results screen at the end")
 	local won = client.lastSnapshot.battle.winner == "Party"
-	expectEqual(safeArea.Result.Panel.Content.Title.Text, if won then Strings.Victory else Strings.Defeat)
-	expect(string.find(safeArea.Result.Panel.Content.Detail.Text, "Returning", 1, true) ~= nil, "with the return countdown")
+	expectEqual(resultsGui.SafeArea.Title.Text.Text, if won then Strings.Victory else Strings.Defeat)
+	-- Back (keyboard or gamepad B) skips the count-up, even though there is no actor to act for now.
+	if won then
+		local expValue = resultsGui.SafeArea.Tallies.Exp.Value
+		expect(resultsGui.SafeArea.SkipHint.Visible and expValue.Text ~= Strings.format.gained(ui.MockData.reward("TwoSolo").exp), "the tallies are counting")
+		client.env.getService("UserInputService").InputBegan:Fire({ KeyCode = roblox.Enum.KeyCode.Backspace, UserInputType = roblox.Enum.UserInputType.Keyboard }, false)
+		expect(not resultsGui.SafeArea.SkipHint.Visible and expValue.Text == Strings.format.gained(ui.MockData.reward("TwoSolo").exp), "Back skipped straight to the totals")
+	end
+	expect(string.find(resultsGui.SafeArea.Returning.Text, "Returning", 1, true) ~= nil, "with the return countdown")
+	expect(not safeArea.Party.Visible and not safeArea.TurnBar.Visible, "the HUD's own widgets step aside for it")
 	expect(not Controls.isEnabled(), "controls stay off on the result screen")
 	expect(sim:runUntil(function()
 		return client.lastSnapshot.battle == nil
@@ -3306,7 +3316,7 @@ test("M2: a real fight on the new HUD: Attack, Spell and Guard through the ring,
 	expect(Controls.isEnabled(), "controls back on in the overworld")
 	expectEqual(Controls.changes(), 2, "off once, on once")
 	enemies = client.playerGui.CombatHUDEnemies -- a fresh folder since the respawn mid-fight
-	expect(not safeArea.Party.Visible and not safeArea.Result.Visible and not enemies.Enemy_E1.Enabled, "the HUD cleared")
+	expect(not safeArea.Party.Visible and not resultsGui.Enabled and not enemies.Enemy_E1.Enabled, "the HUD cleared")
 	sim:run(1)
 	assertClean(sim, observer)
 end)
@@ -3352,6 +3362,98 @@ test("M2: a reset during my own turn brings the enemy plates and my pick straigh
 	expectEqual(played.abilityId, "Attack")
 	expectEqual(played.results[1].targetId, string.sub(chosen, 7))
 	sim:run(1)
+	assertClean(sim, observer)
+end)
+
+print("\nUI Milestone 3 (M3): the results screen")
+
+test("M3: the results screen (S6) on mock rewards: tallies count up in turn, items and LEVEL UP! follow, the countdown runs, a tap skips", function()
+	local sim, observer = newWorld(6200)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local ui = m2Modules(client)
+	local Layout, Strings, MockData = ui.Layout, ui.Strings, ui.MockData
+	local handle = ui.Harness.open(localPlayer(client):WaitForChild("PlayerGui"))
+	handle.setHudMode(true)
+	local resultsGui = client.playerGui.HarnessResults
+	expect(not resultsGui.Enabled, "closed until a fight is decided")
+
+	handle.setState(mockStateIndex(ui, "Four", "Victory"))
+	expect(resultsGui.Enabled, "open on the reward phase")
+	local area = resultsGui.SafeArea
+	expectEqual(area.Title.Text.Text, Strings.Victory)
+	expect(area.Title.Text.Visible and not area.Title.Lettering.Visible, "live lettering while there is no art")
+	local mock = MockData.reward("Four")
+	local exp, gold = area.Tallies.Exp.Value, area.Tallies.Currency.Value
+	expect(exp.Text ~= Strings.format.gained(mock.exp), "EXP starts counting from zero")
+	expect(area.SkipHint.Visible, "the skip hint shows while counting")
+	local slotsShown = 0
+	for _, slot in area.Tallies.Items.Content.Slots:GetChildren() do
+		if slot:IsA("ImageLabel") and slot.Visible then slotsShown += 1 end
+	end
+	expectEqual(slotsShown, 0, "items wait for the tallies")
+	expectEqual(area.Returning.Text, Strings.format.returningIn(8), "the countdown from overworldReturnAt")
+
+	sim:run(2.6) -- EXP then the currency, a second each
+	expectEqual(exp.Text, Strings.format.gained(mock.exp), "EXP counted up")
+	expectEqual(gold.Text, Strings.format.gained(mock.currency), "then the currency")
+	slotsShown = 0
+	for _, slot in area.Tallies.Items.Content.Slots:GetChildren() do
+		if slot:IsA("ImageLabel") and slot.Visible then
+			slotsShown += 1
+			expectEqual(slot.Quantity.Label.Text, Strings.format.quantity(mock.items[slotsShown].count), slot.Name)
+		end
+	end
+	expectEqual(slotsShown, #mock.items, "every item, with its count")
+	local rowsShown, badges = 0, 0
+	for _, row in area.Party.Rows:GetChildren() do
+		if row:IsA("ImageLabel") and row.Visible then
+			rowsShown += 1
+			if row.Content.LevelUp.Visible then badges += 1 end
+		end
+	end
+	expectEqual(rowsShown, 4, "one row per player")
+	expectEqual(badges, 2, "LEVEL UP! where the mock says so")
+	expectEqual(area.Party.Rows.Row1.Content.Gained.Text, Strings.format.gained(mock.members[1].expGained))
+	expect(not area.SkipHint.Visible, "no more skipping once it's all shown")
+	expectEqual(area.Returning.Text, Strings.format.returningIn(6), "the countdown runs on the server clock")
+	checkSafeZones(Layout, resultsGui, "Four / Victory")
+
+	-- A tap anywhere skips the count.
+	handle.setState(mockStateIndex(ui, "One", "Victory"))
+	expect(exp.Text ~= Strings.format.gained(mock.exp), "counting again")
+	sim:click(client, area.TapToSkip)
+	expectEqual(exp.Text, Strings.format.gained(MockData.reward("One").exp), "skipped straight to the total")
+	expectEqual(gold.Text, Strings.format.gained(MockData.reward("One").currency))
+	rowsShown = 0
+	for _, row in area.Party.Rows:GetChildren() do
+		if row:IsA("ImageLabel") and row.Visible then rowsShown += 1 end
+	end
+	expectEqual(rowsShown, 1, "one player, one row")
+
+	-- DEFEAT: the same layout, live text, nothing gained.
+	handle.setState(mockStateIndex(ui, "Two", "Defeat"))
+	expectEqual(area.Title.Text.Text, Strings.Defeat)
+	sim:run(0.3)
+	expectEqual(exp.Text, Strings.format.gained(0))
+	expectEqual(gold.Text, Strings.format.gained(0))
+	slotsShown, badges, rowsShown = 0, 0, 0
+	for _, slot in area.Tallies.Items.Content.Slots:GetChildren() do
+		if slot:IsA("ImageLabel") and slot.Visible then slotsShown += 1 end
+	end
+	for _, row in area.Party.Rows:GetChildren() do
+		if row:IsA("ImageLabel") and row.Visible then
+			rowsShown += 1
+			if row.Content.LevelUp.Visible then badges += 1 end
+		end
+	end
+	expectEqual(slotsShown, 0, "no items on a loss")
+	expectEqual(badges, 0, "no level-ups on a loss")
+	expectEqual(rowsShown, 2, "both players listed")
+	checkSafeZones(Layout, resultsGui, "Two / Defeat")
+
+	handle.setState(mockStateIndex(ui, "Two", "MyTurn"))
+	expect(not resultsGui.Enabled, "closed again once the fight is on")
+	handle.close()
 	assertClean(sim, observer)
 end)
 
