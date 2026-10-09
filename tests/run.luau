@@ -2477,6 +2477,343 @@ test("a dead avatar gets a stand-in; a copied one leaves its spawn shield behind
 	assertClean(sim, observer)
 end)
 
+print("\nUI foundation (M1): the modules, the harness and the safe zones")
+
+-- The UI modules, required on a client the way its own scripts require them.
+local function uiModules(client)
+	local dm = client.env.dm
+	local data = dm:GetService("ReplicatedStorage").UI
+	local code = dm:GetService("StarterPlayer").StarterPlayerScripts.UI
+	local req = client.env.require
+	return {
+		Theme = req(data.Theme),
+		Strings = req(data.Strings),
+		Flags = req(data.Flags),
+		Assets = req(data.Assets),
+		MockData = req(data.MockData),
+		Layout = req(code.Core.Layout),
+		ScreenManager = req(code.Core.ScreenManager),
+		Input = req(code.Core.Input),
+		Harness = req(code.Preview.Harness),
+	}
+end
+
+local PHONE = roblox.Vector2.new(844, 390)
+local TABLET = roblox.Vector2.new(1024, 768)
+local DESKTOP = roblox.Vector2.new(1920, 1080)
+
+-- A client at a given screen size, joined and on the grass.
+local function joinAt(sim, observer, userId, name, viewportSize)
+	local client = sim:connectClient(userId, name, { viewportSize = viewportSize })
+	assert(sim:runUntil(function()
+		return client.started == true
+	end, 5), name .. " never started")
+	localPlayer(client):SetAttribute("Zone", "Overworld")
+	sim:run(0.5)
+	attachClientChecker(sim, observer, client)
+	return client
+end
+
+test("Layout: scale, keep-outs and regions at phone, tablet and desktop sizes", function()
+	local sim, observer = newWorld(6000)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local Layout = uiModules(client).Layout
+
+	expectNear(Layout.scaleFor(PHONE), 1, "the design phone renders at scale 1")
+	expectNear(Layout.scaleFor(roblox.Vector2.new(1280, 720)), 1280 / 844, "a 720p window scales up")
+	expectNear(Layout.scaleFor(DESKTOP), Layout.MAX_SCALE, "1080p hits the cap")
+	expectNear(Layout.scaleFor(roblox.Vector2.new(667, 375)), 1, "a smaller phone never scales down")
+	expectEqual(Layout.deviceClass(PHONE), "Phone")
+	expectEqual(Layout.deviceClass(TABLET), "Tablet")
+	expectEqual(Layout.deviceClass(DESKTOP), "Desktop")
+
+	for _, size in { PHONE, TABLET, DESKTOP } do
+		local keepOut = Layout.keepOut(size)
+		expectNear(keepOut.bottomLeft.y, size.Y * 0.75, "the bottom keep-outs are the bottom 25%")
+		expectNear(keepOut.bottomRight.x + keepOut.bottomRight.w, size.X, "the bottom-right keep-out reaches the edge")
+		expectNear(keepOut.topLeft.x, 0, "the top-left keep-out sits in the corner")
+		for name, region in Layout.regions(size) do
+			expect(Layout.hitsKeepOut(region, keepOut) == nil, `region {name} clears the keep-outs at {size.X}x{size.Y}`)
+			expect(Layout.contains(Layout.screen(size), region), `region {name} stays on screen at {size.X}x{size.Y}`)
+		end
+	end
+
+	-- resolve() is what the layout tests use in place of AbsolutePosition / AbsoluteSize.
+	local parent = Layout.rect(100, 50, 400, 200)
+	local rect = Layout.resolve(roblox.UDim2.new(1, -10, 0, 20), roblox.UDim2.new(0.5, 0, 0, 40), roblox.Vector2.new(1, 0), parent)
+	expectNear(rect.x, 100 + 400 - 10 - 200, "anchored to the right edge")
+	expectNear(rect.y, 70)
+	expectNear(rect.w, 200)
+	expectNear(rect.h, 40)
+	assertClean(sim, observer)
+end)
+
+test("Theme, Strings, Flags and Assets: Mana not MP, every flag off, every image empty", function()
+	local sim, observer = newWorld(6001)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local ui = uiModules(client)
+	expectEqual(ui.Strings.Mana, "Mana")
+	expectEqual(ui.Strings.format.manaCost(8), "8 Mana")
+	expectEqual(ui.Strings.format.manaCost(0), "Free")
+	expectEqual(ui.Strings.format.returningIn(5), "Returning in 5...")
+	for _, flag in { "NewHud", "DownSystem", "ShowAffinities", "ShowItem", "ShowPass", "ShowRoles", "ShowSummonLevels", "UIHarness" } do
+		expect(ui.Flags[flag] == false, `Flags.{flag} is off`)
+	end
+	expect(ui.Theme.Sizes.TapMin >= 48 and ui.Theme.Sizes.TextBody >= 18, "the mobile minimums")
+	expect(ui.Theme.SchoolAccent == ui.Theme.Schools.TungWarts.accent, "TungWarts skins the launch UI")
+	local count = 0
+	for key, entry in ui.Assets.Images do
+		count += 1
+		expect(entry.id == nil and ui.Assets.image(key) == nil, `{key} has no art yet`)
+		expect(string.sub(entry.file, 1, 3) == "UI_", `{key}'s file name follows UI_<Screen>_<Part>`)
+	end
+	expect(count > 60, "every sheet's parts are keyed")
+	for screen in ui.Assets.Screens do
+		expectEqual(#ui.Assets.contentFor(screen), 0, `nothing to preload for {screen} without art`)
+	end
+	assertClean(sim, observer)
+end)
+
+test("MockData: every state is a valid snapshot with 1, 2 (solo or two players) or 4 party members", function()
+	local sim, observer = newWorld(6002)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local MockData = uiModules(client).MockData
+	local expectedMembers = { One = 1, TwoSolo = 2, Two = 2, Four = 4 }
+	local states = MockData.states()
+	expectEqual(#states, 4 * 11, "four party sizes by eleven scenarios")
+	for _, state in states do
+		local snapshot = MockData.snapshot(state.size, state.scenario, 1000)
+		local battle = snapshot.battle
+		expect(battle ~= nil, state.name .. ": has a battle")
+		local party, owners, ids = 0, {}, {}
+		for _, p in battle.participants do
+			expect(ids[p.id] == nil, state.name .. ": ids are unique")
+			ids[p.id] = p
+			if p.side == "Party" then
+				party += 1
+				owners[p.ownerUserId] = true
+				expect(p.ownerUserId ~= nil, state.name .. ": party members have owners")
+			else
+				expect(p.ownerUserId == nil, state.name .. ": enemies have none")
+			end
+			expect(p.hp <= p.maxHp and p.mana <= p.maxMana, state.name .. ": numbers stay in range")
+			expect((p.hp == 0) == (p.status == "KnockedOut"), state.name .. ": HP 0 means knocked out, and only then")
+		end
+		expectEqual(party, expectedMembers[state.size], state.name .. ": party size")
+		expect(owners[MockData.LOCAL_USER], state.name .. ": the local player is in the party")
+		if state.size == "TwoSolo" then
+			expectEqual(battle.participants[2].ownerUserId, MockData.LOCAL_USER, "solo: both members are the local player's")
+		end
+		expectEqual(#battle.turnQueue, #battle.participants, state.name .. ": everyone is in the turn queue")
+		for _, id in battle.turnQueue do
+			expect(ids[id] ~= nil, state.name .. ": the queue names real participants")
+		end
+		if battle.phase == "input" then
+			expect(battle.currentActorId ~= nil and ids[battle.currentActorId] ~= nil, state.name .. ": input has an actor")
+		elseif battle.phase == "reward" then
+			expect(battle.winner ~= nil and battle.overworldReturnAt ~= nil, state.name .. ": reward has a winner and a return time")
+		elseif battle.phase == "setup" then
+			for _, p in battle.participants do
+				expect(p.initiative ~= nil, state.name .. ": setup shows every initiative roll")
+			end
+		end
+		local action = battle.lastAction
+		if action then
+			expect(ids[action.actorId] ~= nil, state.name .. ": the last action's actor exists")
+			for _, result in action.results do
+				expect(ids[result.targetId] ~= nil, state.name .. ": its targets exist")
+			end
+		end
+		expectEqual(#MockData.reward(state.size).members, expectedMembers[state.size], state.name .. ": rewards list the party")
+	end
+	expectEqual(#MockData.affinities, 0, "no real affinity data (R8)")
+	assertClean(sim, observer)
+end)
+
+test("ScreenManager: a blank screen opens, stacks and closes; the SafeArea follows the screen size", function()
+	local sim, observer = newWorld(6003)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local ui = uiModules(client)
+	local playerGui = localPlayer(client):WaitForChild("PlayerGui")
+	local manager = ui.ScreenManager.new(playerGui)
+	local opened, closed = 0, 0
+	manager:register("Blank", 10, function(_, gui, safeArea)
+		expect(gui.ScreenInsets == roblox.Enum.ScreenInsets.CoreUISafeInsets, "Roblox's own UI is kept clear")
+		expect(safeArea.Name == "SafeArea" and safeArea:FindFirstChild("RootScale") ~= nil, "a SafeArea with a root scale")
+		return {
+			onOpen = function()
+				opened += 1
+			end,
+			onClose = function()
+				closed += 1
+			end,
+		}
+	end)
+	manager:register("Over", 12, function()
+		return {}
+	end)
+	local blank = client.playerGui:FindFirstChild("Blank")
+	expect(blank ~= nil and blank.Enabled == false, "registered screens exist, hidden")
+	expectEqual(blank.SafeArea.Size.X.Offset, 844, "the SafeArea is the screen in design pixels")
+	expectEqual(blank.SafeArea.Size.Y.Offset, 390)
+	expectNear(blank.SafeArea.RootScale.Scale, 1)
+
+	manager:open("Blank")
+	expect(blank.Enabled and manager:current() == "Blank" and opened == 1, "open shows it")
+	manager:open("Over")
+	expectEqual(manager:current(), "Over", "the newest screen is on top")
+	expect(manager:back(), "Back closes the top screen")
+	expectEqual(manager:current(), "Blank")
+	manager:close("Blank")
+	expect(not blank.Enabled and manager:current() == nil and closed == 1, "close hides it and empties the stack")
+
+	-- A big screen: scaled up, never down.
+	local big = joinAt(sim, observer, -2, "Bo", DESKTOP)
+	local bigManager = uiModules(big).ScreenManager.new(localPlayer(big):WaitForChild("PlayerGui"))
+	bigManager:register("Blank", 10, function()
+		return {}
+	end)
+	local bigBlank = big.playerGui:FindFirstChild("Blank")
+	expect(math.abs(bigBlank.SafeArea.RootScale.Scale - 1.6) < 1e-5, "1080p renders at the scale cap") -- UIScale.Scale is a float32
+	expectEqual(bigBlank.SafeArea.Size.X.Offset, 1200, "and its SafeArea is 1920 / 1.6 wide")
+	expectEqual(bigBlank.SafeArea.Size.Y.Offset, 675)
+	assertClean(sim, observer)
+end)
+
+-- Walks a built screen: every button's design size, and whether any image has art.
+local function inspect(root)
+	local buttons, images = {}, 0
+	for _, object in root:GetDescendants() do
+		if object:IsA("GuiButton") then
+			table.insert(buttons, object)
+		elseif object:IsA("ImageLabel") or object:IsA("ImageButton") then
+			if object.Image ~= "" then
+				images += 1
+			end
+		end
+	end
+	return buttons, images
+end
+
+test("the harness renders every component with no art, cycles every mock state, and keeps tap targets at 48 px", function()
+	local sim, observer = newWorld(6004)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local ui = uiModules(client)
+	local playerGui = localPlayer(client):WaitForChild("PlayerGui")
+	local handle = ui.Harness.open(playerGui)
+	local gui = client.playerGui:FindFirstChild("UIHarness")
+	expect(gui ~= nil and gui.Enabled, "the harness is up")
+	expect(client.playerGui.BattleUI.Enabled == false, "the combat HUD steps aside")
+
+	local buttons, images = inspect(gui)
+	expect(#buttons >= 8, "buttons, list rows and the controls are all there")
+	expectEqual(images, 0, "no image has art: every component is on its fallback look")
+	for _, button in buttons do
+		local size = button.Size
+		local wide = size.X.Scale > 0 or size.X.Offset >= 48
+		local tall = size.Y.Scale > 0 or size.Y.Offset >= 48
+		expect(wide and tall, `{button:GetFullName()} is at least 48 px (got {size.X.Offset}x{size.Y.Offset})`)
+	end
+	local tiny = gui.SafeArea.Gallery.Buttons.Tiny -- asked for at 20 px
+	expect(tiny.Size.X.Offset >= 48 and tiny.Size.Y.Offset >= 48 and tiny:FindFirstChildOfClass("UISizeConstraint") ~= nil, "to the minimum, with a size constraint")
+
+	local states = ui.MockData.states()
+	local seen = {}
+	for _ = 1, #states do
+		seen[handle.stateName()] = true
+		handle.next()
+		sim:run(0.1)
+	end
+	local distinct = 0
+	for _ in seen do
+		distinct += 1
+	end
+	expectEqual(distinct, #states, "every mock state was shown")
+	expect(gui.SafeArea.Gallery.Misc.Tally.Value.Text ~= "", "the tally counted")
+	expect(handle.toggleSafeZones(), "the safe-zone overlay toggles on")
+	expect(gui.SafeArea.SafeZoneDebug.Visible, "and is drawn")
+	handle.close()
+	expect(client.playerGui:FindFirstChild("UIHarness") == nil, "closing removes it")
+	expect(client.playerGui.BattleUI.Enabled, "and gives the combat HUD back")
+	sim:run(0.5)
+	assertClean(sim, observer)
+end)
+
+test("party stacks of 1 and 4 members stay out of the safe zones at phone size", function()
+	local sim, observer = newWorld(6005)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local ui = uiModules(client)
+	local Layout = ui.Layout
+	local handle = ui.Harness.open(localPlayer(client):WaitForChild("PlayerGui"))
+	local gui = client.playerGui.UIHarness
+	local safeArea = gui.SafeArea
+	local virtual = roblox.Vector2.new(safeArea.Size.X.Offset, safeArea.Size.Y.Offset)
+	expectEqual(virtual.X, 844)
+	local screen = Layout.screen(virtual)
+	local keepOut = Layout.keepOut(virtual)
+	local safe = Layout.safeArea(virtual)
+
+	local function rectOf(object, parentRect)
+		return Layout.resolve(object.Position, object.Size, object.AnchorPoint, parentRect)
+	end
+
+	local states = ui.MockData.states()
+	local checked = 0
+	for index, state in states do
+		if state.scenario ~= "MyTurn" then
+			continue
+		end
+		handle.setState(index)
+		local stack = safeArea.PartyStack
+		local stackRect = rectOf(stack, screen)
+		expect(Layout.hitsKeepOut(stackRect, keepOut) == nil, `{state.name}: the party column clears the corners`)
+		local cards = {}
+		for _, child in stack:GetChildren() do
+			if string.sub(child.Name, 1, 5) == "Card_" then
+				table.insert(cards, child)
+			end
+		end
+		local expected = { One = 1, TwoSolo = 2, Two = 2, Four = 4 }
+		expectEqual(#cards, expected[state.size], `{state.name}: one card per member`)
+		for _, card in cards do
+			local rect = rectOf(card, stackRect)
+			expect(Layout.hitsKeepOut(rect, keepOut) == nil, `{state.name}: {card.Name} clears the corners ({rect.x}, {rect.y}, {rect.w}, {rect.h})`)
+			expect(Layout.contains(safe, rect), `{state.name}: {card.Name} is inside the safe area`)
+			expect(rect.h >= 44, `{state.name}: {card.Name} keeps a readable height`)
+			expect(card.Content.Hp.Value.Text ~= "" and card.Content.Mana.Value.Text ~= "", `{state.name}: {card.Name} shows HP and Mana`)
+		end
+		local topBar = rectOf(safeArea.TopBar, screen)
+		expect(Layout.hitsKeepOut(topBar, keepOut) == nil, `{state.name}: the top bar clears the corners`)
+		checked += 1
+	end
+	expectEqual(checked, 4, "one, two solo, two and four members")
+	handle.close()
+	assertClean(sim, observer)
+end)
+
+test("BattleView keeps its enemy nameplates by default, and drops them for the new HUD (R19)", function()
+	local sim, observer = newWorld(6006)
+	local client = joinAt(sim, observer, -1, "Ann", PHONE)
+	local ui = uiModules(client)
+	local BattleView = client.env.require(client.env.dm:GetService("StarterPlayer").StarterPlayerScripts.Combat.BattleView)
+	local battle = ui.MockData.snapshot("Two", "MyTurn", 1000).battle
+	local workspace = client.env.dm:GetService("Workspace")
+
+	local plain = BattleView.new()
+	plain:render(battle)
+	local stage = workspace:FindFirstChild("BattleStage")
+	expect(stage.E1.Spot.Nameplate.Enabled and stage.P1.Spot.Nameplate.Enabled, "by default every spot has its plate")
+	plain:render(nil)
+
+	local hud = BattleView.new({ enemyNameplates = false })
+	hud:render(battle)
+	stage = workspace:FindFirstChild("BattleStage")
+	expect(not stage.E1.Spot.Nameplate.Enabled and not stage.E2.Spot.Nameplate.Enabled, "the new HUD draws enemy plates itself")
+	expect(stage.P1.Spot.Nameplate.Enabled, "party plates are untouched")
+	hud:render(nil)
+	assertClean(sim, observer)
+end)
+
 print("\nEvery summon variant, through the UI")
 
 local function setLineup(sim, lineup)

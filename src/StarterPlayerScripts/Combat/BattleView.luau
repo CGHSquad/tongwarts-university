@@ -97,6 +97,11 @@ type ViewFields = {
 	targetId: string?,
 	targetFriendly: boolean,
 	cameraActive: boolean,
+	enemyNameplates: boolean, -- off when the new HUD draws its own enemy plates (M0 report R19)
+}
+
+export type Options = {
+	enemyNameplates: boolean?, -- default true
 }
 
 export type BattleView = typeof(setmetatable({} :: ViewFields, BattleView))
@@ -408,7 +413,7 @@ end
 
 --[[ Figures ]]
 
-local function createFigure(participant: ParticipantState, parent: Instance): Figure
+local function createFigure(participant: ParticipantState, parent: Instance, enemyNameplates: boolean): Figure
 	local home = slotCFrame(participant.side, participant.slot)
 	local folder = Instance.new("Folder")
 	folder.Name = participant.id
@@ -425,6 +430,7 @@ local function createFigure(participant: ParticipantState, parent: Instance): Fi
 	nameplate.StudsOffset = Vector3.new(0, BLOCK_SIZE.Y / 2 + 1.8, 0)
 	nameplate.AlwaysOnTop = true
 	nameplate.LightInfluence = 0
+	nameplate.Enabled = enemyNameplates or participant.side ~= "Enemy" -- the new HUD draws its own enemy plates
 	nameplate.Parent = spot
 	local nameLabel = newBillboardLabel(nameplate, UDim2.fromScale(1, 0.55), UDim2.fromScale(0, 0), BattleTheme.FontBold)
 	nameLabel.Text = participant.name
@@ -637,7 +643,7 @@ end
 
 --[[ BattleView ]]
 
-function BattleView.new(): BattleView
+function BattleView.new(options: Options?): BattleView
 	local fields: ViewFields = {
 		folder = nil,
 		figures = {},
@@ -646,6 +652,7 @@ function BattleView.new(): BattleView
 		targetId = nil,
 		targetFriendly = false,
 		cameraActive = false,
+		enemyNameplates = if options and options.enemyNameplates ~= nil then options.enemyNameplates :: boolean else true,
 	}
 	return setmetatable(fields, BattleView)
 end
@@ -694,7 +701,7 @@ function BattleView._build(self: BattleView, battle: BattleState)
 	floor.Color = Color3.fromRGB(92, 115, 77)
 	floor.Parent = folder
 	for _, participant in battle.participants do
-		self.figures[participant.id] = createFigure(participant, folder)
+		self.figures[participant.id] = createFigure(participant, folder, self.enemyNameplates)
 	end
 	folder.Parent = Workspace
 	self.folder = folder

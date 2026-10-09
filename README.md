@@ -172,6 +172,8 @@ top of that, your character always has Attack and Guard (see Rules):
 | `tools/simulate-battles.luau` | Plays thousands of battles with the real rules to compare party comps (see below). |
 | `tools/typecheck.luau` | Type-checks `src/` the way Studio sees it: `lune run tools/typecheck`. |
 | `tests/run.luau`, `tests/Sim.luau` | Headless tests: bots play the real game on a fake Roblox, no Studio needed (see below). |
+| `ReplicatedStorage/UI/` | The new UI's data: `Theme` (colors, fonts, sizes), `Strings` (every piece of text; the resource is Mana), `Flags` (all off), `Assets` (image keys, ids empty until the art lands), `UITypes`, `MockData` (sample battles for 1, 2 and 4 party members). |
+| `StarterPlayerScripts/UI/` | The new UI's code, built to the handoff in `docs/ui/`: `Core/` (safe-zone `Layout`, `ScreenManager`, `Input`, drawn `Fallbacks` for every image), `Components/` (buttons, bars, tags, rows, tallies, toasts), `Preview/` (the Studio harness and safe-zone overlay). Screens come in Milestone 2; the old `BattleUI` stays until the new HUD matches it. |
 
 ### Tuning and the battle simulator
 
@@ -252,10 +254,15 @@ scripts from `src/`. Bots walk into enemies and click the real battle UI, and ev
 client receives is checked: whose turn it is, what the HUD offers, who's on the stage, and so on.
 
 ```
-lune run tests/run                # everything, about a minute
-lune run tests/run quick          # fewer seeded battles at the end
+lune run tests/run                # everything, about eight minutes
+lune run tests/run quick          # fewer seeded battles at the end, under two minutes
 lune run tests/run quick Guard    # only the tests whose names contain "Guard"
 ```
+
+The new UI has its own section at the end: it requires the UI modules on a client, opens the
+preview harness on the fake Roblox and measures it with `Layout.resolve` (Lune can't compute
+`AbsoluteSize`), checking that nothing sits in the mobile keep-out corners at phone size with 1,
+2 or 4 party members and that every button is at least 48 px.
 
 Run them from the repo root before pushing gameplay or UI changes. They cover the combat rules and
 stat model, Guard, two players through the UI, disconnects, cheating clients, overworld
