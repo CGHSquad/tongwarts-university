@@ -90,3 +90,7 @@ treat it as the current source of truth, not something to hand-edit here.
   holds its stage height, clip IDs by beat (idle/attack/death/walk) and, while the uploaded clips
   still carry a stray hip offset, a `groundOffset`. A summon with no `art` (e.g. `WildSapling`)
   stays a colored block. Missing clips: the Elder's idle/death, all of the Grove-Keeper's.
+
+## UI work
+
+- The UI handoff (spec, screen-by-screen behavior, asset-sheet prompts, approved mockups) lives in `docs/ui/`: `UI_HANDOFF.md` (read section 16 first, it reconciles the spec with this repo), `ASSET_PROMPTS.md`, `mockups/S1`-`S7`. `tools/cut_sheet.py` cuts generated asset sheets into transparent PNGs. Only milestones 0-3 (foundation, skill list, combat HUD, results) are in scope for now; the mockups are style/layout references, not pixel specs.
