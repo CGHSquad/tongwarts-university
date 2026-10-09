@@ -763,6 +763,9 @@ function Sim:createEnv(name, side, client)
 		services.Players = players
 	else
 		local playerGui = roblox.Instance.new("PlayerGui")
+		-- Inside the client's DataModel (as Roblox has it under the Player): Lune only resolves an
+		-- instance reference, like a BillboardGui's Adornee, between instances of the same tree.
+		playerGui.Parent = env.dm:GetService("Players")
 		env.playerGui = playerGui
 		client.attributes = {}
 		-- Services the UI reads that Lune's instances can't answer (the M0 report's probe list).
@@ -810,6 +813,8 @@ function Sim:createEnv(name, side, client)
 				UserId = client.userId,
 				DisplayName = client.name,
 				Name = client.name,
+				Character = nil, -- this client's copy, set when it replicates (replicateCharacter)
+				CharacterAdded = Signal.new(sim, name .. " LocalPlayer.CharacterAdded"),
 				WaitForChild = function(_, childName)
 					assert(childName == "PlayerGui", "the sim's LocalPlayer only has a PlayerGui")
 					return wrap(playerGui)
@@ -846,6 +851,7 @@ function Sim:createEnv(name, side, client)
 				}
 			end,
 		}
+		env.localPlayer = services.Players.LocalPlayer
 	end
 
 	function env.getService(serviceName)
@@ -1037,6 +1043,17 @@ function Sim:replicateCharacter(client, userId)
 	model.Archivable = false
 	model.Parent = client.env.dm:GetService("Workspace")
 	characters[userId] = model
+	local localPlayer = client.env.localPlayer
+	if userId == client.userId and localPlayer then
+		-- Like Roblox, a respawn clears the PlayerGui of everything but the ScreenGuis that opt out.
+		for _, child in client.playerGui:GetChildren() do
+			if not (child:IsA("LayerCollector") and child.ResetOnSpawn == false) then
+				child:Destroy()
+			end
+		end
+		localPlayer.Character = client.env.wrap(model)
+		localPlayer.CharacterAdded:Fire(localPlayer.Character)
+	end
 end
 
 -- The server-side HumanoidRootPart of a player's character: what a bot "walks" by moving.
@@ -1086,13 +1103,20 @@ end
 
 -- A player joins: the server sees PlayerAdded now, their LocalScripts start a moment later.
 -- `options.viewportSize` sets this client's screen size (a Vector2; 1280x720 by default), so the
--- UI can be laid out and measured at a phone size.
+-- UI can be laid out and measured at a phone size. `options.flags` sets ReplicatedStorage.UI.Flags
+-- entries on this client before its scripts run (e.g. { NewHud = true }).
 function Sim:connectClient(userId, name, options)
 	assert(self.clients[userId] == nil, "already connected")
 	local client = { userId = userId, name = name }
 	client.env = self:createEnv("client:" .. name, "client", client)
 	if options and options.viewportSize then
 		client.env.viewportSize = options.viewportSize
+	end
+	if options and options.flags then
+		local flags = client.env.require(client.env.dm:GetService("ReplicatedStorage").UI.Flags)
+		for key, value in options.flags do
+			flags[key] = value
+		end
 	end
 	client.playerGui = client.env.playerGui
 	self.clients[userId] = client

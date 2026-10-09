@@ -36,6 +36,7 @@ export type HudParticipant = {
 	isDown: boolean, -- Persona-style Down. Always false while Flags.DownSystem is off.
 	knownWeaknesses: { Id }, -- empty until the type chart exists (R8)
 	initiative: { roll: number, bonus: number, total: number }?,
+	abilityIds: { Id }, -- the summon's own abilities, in kit order: the Spell list
 }
 
 export type AbilityRow = {
@@ -59,6 +60,7 @@ export type HudPhase = "Setup" | "Input" | "Resolve" | "Reward"
 
 export type HudBattle = {
 	battleId: number,
+	rosterKey: string, -- battleId plus every participant id; per-participant widgets rebuild when it changes
 	phase: HudPhase,
 	round: number, -- 0 during the opening bonus turn
 	turnNumber: number,
@@ -73,6 +75,7 @@ export type HudBattle = {
 	turnDeadline: number?, -- server clock
 	overworldReturnAt: number?, -- server clock
 	lastActionSequence: number,
+	lastLogLine: string?, -- the server's latest log line, shown while an action resolves
 	allEnemiesDown: boolean, -- always false while Flags.DownSystem is off
 }
 

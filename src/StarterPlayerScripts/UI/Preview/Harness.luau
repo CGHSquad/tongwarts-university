@@ -12,6 +12,8 @@
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 local UI = ReplicatedStorage:WaitForChild("UI")
 local Flags = require(UI:WaitForChild("Flags"))
 local MockData = require(UI:WaitForChild("MockData"))
@@ -36,6 +38,7 @@ local Tag = require(Components:WaitForChild("Tag"))
 local TallyPlate = require(Components:WaitForChild("TallyPlate"))
 local TapButton = require(Components:WaitForChild("TapButton"))
 local Toast = require(Components:WaitForChild("Toast"))
+local CombatHUD = require(script.Parent.Parent:WaitForChild("Screens"):WaitForChild("CombatHUD"))
 local SafeZoneDebug = require(script.Parent:WaitForChild("SafeZoneDebug"))
 
 export type Handle = {
@@ -48,6 +51,12 @@ export type Handle = {
 	stateName: () -> string,
 	toggleSafeZones: () -> boolean,
 	relayout: () -> (),
+	-- HUD mode: the real combat screen and skill list on the current mock state (Milestone 2).
+	setHudMode: (on: boolean) -> (),
+	isHudMode: () -> boolean,
+	hud: () -> CombatHUD.CombatHUD?,
+	showStamp: (kind: CombatHUD.StampKind) -> (),
+	lastAction: () -> (string?, string?), -- what the HUD last asked to send (ability, target)
 	close: () -> (),
 }
 
@@ -78,6 +87,10 @@ function Harness.open(playerGui: PlayerGui): Handle
 	end
 	local states = MockData.states()
 	local index = 1
+	local hudMode = false
+	local hud: CombatHUD.CombatHUD? = nil
+	local lastAbility: string?, lastTarget: string? = nil, nil
+	local stampNext: CombatHUD.StampKind = "OneMore"
 
 	-- Everything is placed in Layout's regions, recomputed when the screen changes size.
 	local relayout: () -> () = function() end
@@ -157,7 +170,7 @@ function Harness.open(playerGui: PlayerGui): Handle
 	IconMedallion.new(medallions, { name = "Heal", iconKey = "Icon_Heal", glyph = "+" })
 
 	local rows = Gui.frame(gallery, "Rows")
-	rows.Size = UDim2.new(1, -12, 0, 4 * (Theme.Sizes.RowHeight + 24) + 3 * Theme.Sizes.Gap)
+	rows.Size = UDim2.new(1, -12, 0, 4 * (Theme.Sizes.RowHeight + ListRow.DESCRIPTION_HEIGHT + 4) + 3 * Theme.Sizes.Gap)
 	rows.LayoutOrder = #gallery:GetChildren()
 	Gui.list(rows, Enum.FillDirection.Vertical, Theme.Sizes.Gap)
 	ListRow.new(rows, { name = "Normal", title = "Gale Clap", description = "A harder hit that can daze.", capsule = Strings.format.manaCost(8), glyph = "W", layoutOrder = 1 })
@@ -186,9 +199,13 @@ function Harness.open(playerGui: PlayerGui): Handle
 	local function setState(newIndex: number)
 		index = ((newIndex - 1) % #states) + 1
 		local state = states[index]
-		local snapshot = MockData.snapshot(state.size, state.scenario)
+		local snapshot = MockData.snapshot(state.size, state.scenario, Workspace:GetServerTimeNow())
 		local battle = snapshot.battle :: BattleTypes.BattleState
 		stateLabel.Text = `{index}/{#states}  {state.name}  ·  {statusLine(battle)}`
+		local liveHud = hud
+		if liveHud then
+			liveHud:render(snapshot)
+		end
 
 		clearCards()
 		for _, participant in battle.participants do
@@ -227,8 +244,23 @@ function Harness.open(playerGui: PlayerGui): Handle
 		local virtual = ScreenManager.virtualSize(safeArea)
 		local regions = Layout.regions(virtual)
 		local top, center, right = regions.topCenter, regions.center, regions.right
-		topBar.Position = UDim2.fromOffset(top.x, top.y)
-		topBar.Size = UDim2.fromOffset(top.w, top.h)
+		if hudMode then
+			-- The HUD has the top; the harness docks at the bottom center, over the Mana plate.
+			local bottom = regions.bottomCenter
+			topBar.Position = UDim2.fromOffset(bottom.x, bottom.y)
+			topBar.Size = UDim2.fromOffset(bottom.w, bottom.h)
+			stateLabel.Position = UDim2.fromOffset(0, 0)
+			stateLabel.Size = UDim2.new(1, 0, 0, 22)
+			controls.Position = UDim2.new(1, 0, 0, 26)
+			controls.Size = UDim2.new(1, 0, 0, 48)
+		else
+			topBar.Position = UDim2.fromOffset(top.x, top.y)
+			topBar.Size = UDim2.fromOffset(top.w, top.h)
+			stateLabel.Position = UDim2.fromOffset(0, 32)
+			stateLabel.Size = UDim2.new(0.4, 0, 0, 24)
+			controls.Position = UDim2.fromScale(1, 0)
+			controls.Size = UDim2.new(0.6, 0, 0, 48)
+		end
 		gallery.Position = UDim2.fromOffset(center.x, center.y)
 		gallery.Size = UDim2.fromOffset(center.w, math.floor(virtual.Y * (1 - Layout.KEEP_OUT.bottomLeft.h)) - center.y - Theme.Sizes.Gap)
 		partyStack.Position = UDim2.fromOffset(right.x, right.y)
@@ -246,24 +278,78 @@ function Harness.open(playerGui: PlayerGui): Handle
 	end
 
 	local handle: Handle
-	TapButton.new(controls, { name = "Prev", text = Strings.HarnessPrev, size = UDim2.fromOffset(72, 48), layoutOrder = 1, onTap = function()
+	local hudButton: TapButton.TapButton
+	local stampButton: TapButton.TapButton
+
+	-- HUD mode: the real combat screen (S1) and skill list (S7) on the current mock state, in place
+	-- of the gallery and party stack. The enemy plates need a battle stage, so they stay off here.
+	local function setHudMode(on: boolean)
+		if on == hudMode then
+			return
+		end
+		hudMode = on
+		local liveHud = hud
+		if on then
+			hud = CombatHUD.new(playerGui, MockData.LOCAL_USER, {
+				onAction = function(abilityId, targetId)
+					lastAbility, lastTarget = abilityId, targetId
+					toast.show(Strings.format.pair(Strings.Sending, abilityId), 2)
+				end,
+				onTargetChanged = function() end,
+			}, { namePrefix = "Harness" })
+		elseif liveHud then
+			liveHud:destroy()
+			hud = nil
+		end
+		title.Visible = not on
+		gallery.Visible = not on
+		partyStack.Visible = not on
+		stampButton.button.Visible = on
+		hudButton.setSelected(on)
+		relayout()
+		setState(index)
+	end
+
+	TapButton.new(controls, { name = "Prev", text = Strings.HarnessPrev, size = UDim2.fromOffset(56, 48), layoutOrder = 1, onTap = function()
 		setState(index - 1)
 	end })
-	TapButton.new(controls, { name = "Next", text = Strings.HarnessNext, size = UDim2.fromOffset(72, 48), layoutOrder = 2, onTap = function()
+	TapButton.new(controls, { name = "Next", text = Strings.HarnessNext, size = UDim2.fromOffset(56, 48), layoutOrder = 2, onTap = function()
 		setState(index + 1)
 	end })
-	TapButton.new(controls, { name = "SafeZones", text = Strings.HarnessSafeZones, size = UDim2.fromOffset(120, 48), layoutOrder = 3, onTap = function()
+	hudButton = TapButton.new(controls, { name = "Hud", text = Strings.HarnessHud, size = UDim2.fromOffset(64, 48), layoutOrder = 3, onTap = function()
+		setHudMode(not hudMode)
+	end })
+	stampButton = TapButton.new(controls, { name = "Stamp", text = Strings.HarnessStamp, size = UDim2.fromOffset(72, 48), layoutOrder = 4, onTap = function()
+		local liveHud = hud
+		if liveHud then
+			liveHud:showStamp(stampNext)
+			stampNext = if stampNext == "OneMore" then "AllOut" else "OneMore"
+		end
+	end })
+	stampButton.button.Visible = false
+	TapButton.new(controls, { name = "SafeZones", text = Strings.HarnessSafeZones, size = UDim2.fromOffset(108, 48), layoutOrder = 5, onTap = function()
 		debug.toggle()
 	end })
-	TapButton.new(controls, { name = "Close", text = Strings.Close, size = UDim2.fromOffset(84, 48), layoutOrder = 4, color = Theme.Colors.Crimson, onTap = function()
+	TapButton.new(controls, { name = "Close", text = Strings.Close, size = UDim2.fromOffset(76, 48), layoutOrder = 6, color = Theme.Colors.Crimson, onTap = function()
 		handle.close()
 	end })
 
-	-- The combat HUD stays out of the way while the harness is up.
-	local battleUi = playerGui:FindFirstChild("BattleUI")
-	local battleUiWasEnabled = if battleUi and battleUi:IsA("ScreenGui") then battleUi.Enabled else nil
-	if battleUi and battleUi:IsA("ScreenGui") then
-		battleUi.Enabled = false
+	-- Countdowns on the HUD tick like the live one's.
+	local heartbeat = RunService.Heartbeat:Connect(function()
+		local liveHud = hud
+		if liveHud then
+			liveHud:tick(Workspace:GetServerTimeNow())
+		end
+	end)
+
+	-- The live combat HUD (old or new) stays out of the way while the harness is up.
+	local hidden: { ScreenGui } = {}
+	for _, liveName in { "BattleUI", "CombatHUD" } do
+		local live = playerGui:FindFirstChild(liveName)
+		if live and live:IsA("ScreenGui") and live.Enabled then
+			live.Enabled = false
+			table.insert(hidden, live)
+		end
 	end
 
 	gui.Parent = playerGui
@@ -288,13 +374,31 @@ function Harness.open(playerGui: PlayerGui): Handle
 		end,
 		toggleSafeZones = debug.toggle,
 		relayout = relayout,
+		setHudMode = setHudMode,
+		isHudMode = function()
+			return hudMode
+		end,
+		hud = function()
+			return hud
+		end,
+		showStamp = function(kind: CombatHUD.StampKind)
+			local liveHud = hud
+			if liveHud then
+				liveHud:showStamp(kind)
+			end
+		end,
+		lastAction = function()
+			return lastAbility, lastTarget
+		end,
 		close = function()
 			if open ~= handle then
 				return
 			end
 			open = nil
-			if battleUi and battleUi:IsA("ScreenGui") and battleUiWasEnabled ~= nil then
-				battleUi.Enabled = battleUiWasEnabled
+			heartbeat:Disconnect()
+			setHudMode(false)
+			for _, live in hidden do
+				live.Enabled = true
 			end
 			gui:Destroy()
 		end,

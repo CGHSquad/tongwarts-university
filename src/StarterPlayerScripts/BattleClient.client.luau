@@ -6,6 +6,9 @@
 	is the whole truth and gets drawn as-is, and the buttons only send requests (SubmitAction) that
 	the server validates and resolves. Fights start on the server too, when your character walks
 	into an overworld enemy; only the players in a fight see it.
+
+	Flags.NewHud picks the HUD: the new one (UI/Screens/CombatHUD) or the old BattleUI, until the
+	new one reaches parity and the old one goes (docs/ui/M0_REPORT.md, Q1).
 ]]
 
 local Players = game:GetService("Players")
@@ -14,9 +17,13 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local BattleTypes = require(ReplicatedStorage:WaitForChild("Combat"):WaitForChild("BattleTypes"))
+local Flags = require(ReplicatedStorage:WaitForChild("UI"):WaitForChild("Flags"))
 local Combat = script.Parent:WaitForChild("Combat")
 local BattleUI = require(Combat:WaitForChild("BattleUI"))
 local BattleView = require(Combat:WaitForChild("BattleView"))
+local UIFolder = script.Parent:WaitForChild("UI")
+local Controls = require(UIFolder:WaitForChild("Core"):WaitForChild("Controls"))
+local CombatHUD = require(UIFolder:WaitForChild("Screens"):WaitForChild("CombatHUD"))
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Battle")
 local submitActionRemote = remotes:WaitForChild("SubmitAction") :: RemoteEvent
@@ -25,15 +32,20 @@ local stateUpdateRemote = remotes:WaitForChild("StateUpdate") :: RemoteEvent
 local noticeRemote = remotes:WaitForChild("Notice") :: RemoteEvent
 
 local localPlayer = Players.LocalPlayer
-local view = BattleView.new()
-local ui = BattleUI.new(localPlayer:WaitForChild("PlayerGui") :: PlayerGui, localPlayer.UserId, {
-	onAction = function(abilityId, targetId) -- any move from the panel; the server decides what happens
+local playerGui = localPlayer:WaitForChild("PlayerGui") :: PlayerGui
+-- The new HUD draws the enemies' plates itself (M0 report R19).
+local view = BattleView.new({ enemyNameplates = not Flags.NewHud })
+local callbacks = {
+	onAction = function(abilityId: string, targetId: string) -- any move from the HUD; the server decides what happens
 		submitActionRemote:FireServer(abilityId, targetId)
 	end,
-	onTargetChanged = function(targetId, friendly)
+	onTargetChanged = function(targetId: string?, friendly: boolean)
 		view:setTarget(targetId, friendly)
 	end,
-})
+}
+local ui: CombatHUD.Hud = if Flags.NewHud
+	then (CombatHUD.new(playerGui, localPlayer.UserId, callbacks) :: any)
+	else (BattleUI.new(playerGui, localPlayer.UserId, callbacks) :: any)
 
 -- The battle, if this player is in it.
 local function myBattle(snapshot: BattleTypes.Snapshot): BattleTypes.BattleState?
@@ -49,8 +61,16 @@ local function myBattle(snapshot: BattleTypes.Snapshot): BattleTypes.BattleState
 end
 
 stateUpdateRemote.OnClientEvent:Connect(function(snapshot: BattleTypes.Snapshot)
-	view:render(myBattle(snapshot))
+	local mine = myBattle(snapshot)
+	view:render(mine)
 	ui:render(snapshot)
+	-- Touch controls off while in a fight, keyed off every snapshot (M0 report R21).
+	Controls.setEnabled(mine == nil)
+end)
+
+-- A fresh character (a reset mid-fight, the respawn after a loss) gets the same controls back.
+localPlayer.CharacterAdded:Connect(function()
+	Controls.reapply()
 end)
 
 noticeRemote.OnClientEvent:Connect(function(message: string)
