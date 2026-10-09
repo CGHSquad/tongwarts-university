@@ -31,6 +31,7 @@ type HudParticipant = UITypes.HudParticipant
 export type EnemyOverlay = {
 	folder: Folder,
 	update: (battle: HudBattle, targetId: string?, pickable: { [string]: boolean }) -> (),
+	tick: () -> (), -- every frame: re-stacks the plates whenever the battle camera has moved
 	setScale: (scale: number) -> (),
 	hide: () -> (),
 	onPick: (callback: (id: string) -> ()) -> (),
@@ -194,15 +195,19 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 		builtFor = battle.rosterKey
 	end
 
-	-- The battle camera is fixed and the enemies stand close, so two plates of a fixed pixel size
-	-- can land on top of each other (ten studs apart is about a plate's width on a phone). Plates
-	-- whose enemies overlap on screen stack instead: the later one in screen order moves up a row.
-	-- Needs the camera's projection, which the tests' fake Roblox doesn't have; then they stay put.
+	-- Two plates of a fixed pixel size can land on top of each other when the battle camera puts
+	-- their enemies close together on screen. Plates whose enemies overlap on screen stack instead:
+	-- the later one in screen order moves up a row. Re-run whenever the camera moves (tick). Needs
+	-- the camera's projection, which the tests' fake Roblox doesn't have; then they stay put.
+	local lastCameraCFrame: CFrame? = nil
 	local function stagger()
 		local camera = Workspace.CurrentCamera
 		if camera == nil then
 			return
 		end
+		pcall(function()
+			lastCameraCFrame = camera.CFrame
+		end)
 		local entries: { { plate: Plate, x: number, pixelsPerStud: number } } = {}
 		for _, plate in plates do
 			local spot: Instance? = plate.gui.Adornee
@@ -303,9 +308,24 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 		stagger()
 	end
 
+	local function tick()
+		local camera = Workspace.CurrentCamera
+		if camera == nil or next(plates) == nil then
+			return
+		end
+		local moved = false
+		pcall(function()
+			moved = camera.CFrame ~= lastCameraCFrame
+		end)
+		if moved then
+			stagger()
+		end
+	end
+
 	api = {
 		folder = folder,
 		update = update,
+		tick = tick,
 		setScale = function(newScale: number)
 			scale = newScale
 			for _, plate in plates do

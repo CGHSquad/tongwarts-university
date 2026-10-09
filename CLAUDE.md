@@ -56,6 +56,19 @@ treat it as the current source of truth, not something to hand-edit here.
   style) only for an ability in its own list, then dismisses; the universal moves (`universal` in
   `Abilities`: `Attack` and `Guard`) are the character's alone. Enemies are just their creature.
   This is presentation only: summons still own every stat, HP and Mana.
+- Combat overhaul (plan and decisions in `docs/combat-overhaul/C0_REPORT.md`). C1 added the
+  presentation layer under `StarterPlayerScripts/Combat/Presentation/`: `Sequencer` (a timeline of
+  cues per beat that owns what it creates and reports when the stage is busy), `BattleCamera`
+  (critically damped springs between `Shots` poses, with sway, shake, FOV punch and whip roll, all
+  scaled by the reduced-motion setting), `Shots` (pure CFrame math per beat) and `Transition` (the
+  battle-start swirl). `ReplicatedStorage/Combat/Pacing.luau` gives the seconds the server waits
+  after each action (`CombatConfig.ResolvePauseSeconds` plus `ResolveExtraSeconds` per beat);
+  BattleDirector waits exactly that and the client treats it as its budget, which the tests'
+  observer checks on every turn. `UI/Core/Motion.luau` reads Roblox's reduce-motion switch
+  (`GuiService.ReducedMotionEnabled`) or a `ReducedMotion` attribute on the LocalPlayer (debug).
+  The HUD holds the command ring while the stage is busy, at most `CombatHUD.RING_WAIT_CAP`;
+  BattleClient mirrors the stage's `StageBusy` / `StageOwned` as attributes on PlayerGui for the
+  tests. Clip, sound and effect ids stay in data modules, never in BattleView.
 - After changing combat numbers or rules, run `lune run tools/simulate-battles` (Lune is pinned
   in `rokit.toml`) to see win rates per party comp, what each role does, and how Guard gets used.
   "turtle" play (guard whenever it's likely to be attacked, stacking Guard's damage cut) must keep

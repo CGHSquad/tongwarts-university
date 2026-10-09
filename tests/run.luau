@@ -140,6 +140,8 @@ function Observer.attach(sim)
 	self.Abilities = server.require(server.dm:GetService("ReplicatedStorage").Combat.Abilities)
 	self.Config = server.require(server.dm:GetService("ReplicatedStorage").Combat.CombatConfig)
 	self.StatusEffects = server.require(server.dm:GetService("ReplicatedStorage").Combat.StatusEffects)
+	self.Pacing = server.require(server.dm:GetService("ReplicatedStorage").Combat.Pacing)
+	self.pacingChecks = 0
 
 	table.insert(sim.hooks.serverSend, function(fullName, userId, payload)
 		if fullName == NOTICE then
@@ -271,6 +273,37 @@ function Observer:check(snapshot)
 
 	if battle.turnNumber < self.lastTurnSeen then
 		self:fail("turn number went backwards")
+	end
+
+	-- Pacing: after a turn resolves, the next one opens exactly Pacing.resolveSeconds later, for
+	-- what that turn did (its new action, or nothing when it passed or was lost). A snapshot that
+	-- only repeats the resolve (someone left) doesn't restart the clock.
+	if battle.phase == "resolve" then
+		local resolveAction = battle.lastAction
+		local fresh = resolveAction ~= nil and not self.seenActions[resolveAction.sequence]
+		if self.resolveTurn ~= battle.turnNumber then
+			self.resolveTurn = battle.turnNumber
+			self.resolveAt = self.sim.now
+			local expected = self.Pacing.resolveSeconds(nil, nil, false)
+			if fresh and resolveAction then
+				local attacker = byId[resolveAction.actorId]
+				local ability = self.Abilities[resolveAction.abilityId]
+				local summoned = attacker ~= nil and self.Pacing.isSummoned(attacker.side, attacker.abilities, resolveAction.abilityId)
+				expected = self.Pacing.resolveSeconds(ability, resolveAction.results, summoned)
+			end
+			self.resolveExpected = expected
+		end
+	elseif battle.phase == "input" and self.resolveAt ~= nil then
+		local gap = self.sim.now - self.resolveAt
+		if math.abs(gap - self.resolveExpected) > 1e-6 then
+			self:fail(`turn {battle.turnNumber} opened {string.format("%.3f", gap)}s after the last resolve; Pacing says {string.format("%.3f", self.resolveExpected)}s`)
+		end
+		self.pacingChecks += 1
+		self.resolveAt = nil
+		self.resolveTurn = nil
+	elseif battle.phase ~= "input" then
+		self.resolveAt = nil
+		self.resolveTurn = nil
 	end
 	if battle.turnNumber > self.lastTurnSeen and battle.currentActorId then
 		self.guardWaiting[battle.currentActorId] = nil -- its Guard ended as its turn began
@@ -532,7 +565,9 @@ local function checkChooser(observer, client, battle, actor)
 	local ring, target, list = safeArea.Ring, safeArea.TargetPanel, client.playerGui.SkillList
 	local open = (if ring.Visible then 1 else 0) + (if target.Visible then 1 else 0) + (if list.Enabled then 1 else 0)
 	if open == 0 then
-		if safeArea.Status.Detail.Text ~= strings.Sending then
+		-- Nothing on offer is fine only while the request is away, or while the stage is still
+		-- playing the last beat (the ring waits for it, at most CombatHUD.RING_WAIT_CAP).
+		if safeArea.Status.Detail.Text ~= strings.Sending and client.playerGui:GetAttribute("StageBusy") ~= true then
 			observer:fail(`{client.name}: nothing to choose on their turn`)
 		end
 		return
@@ -3724,6 +3759,185 @@ test("hundreds of seeded two-player battles stay consistent", function()
 		firstActorSides.Party, openings.None, ttsBeatsBothSaplings, seeds))
 	expect(openings.Party > 0 and openings.None > 0 and openings.Enemy > 0, "bots touched enemies every way")
 	expect(firstActorSides.Party > 0 and firstActorSides.Enemy > 0, "initiative should vary between battles")
+end)
+
+print("\nCombat overhaul C1: camera and flow")
+
+local function cameraOf(client)
+	return client.env.dm:GetService("Workspace").CurrentCamera
+end
+
+local function stageOf(client)
+	return client.env.dm:GetService("Workspace"):FindFirstChild("BattleStage")
+end
+
+local function myInputTurn(userId)
+	return function(b)
+		local actor = currentActor(b)
+		return b.phase == "input" and actor ~= nil and actor.ownerUserId == userId
+	end
+end
+
+local function enemyInputTurn(b)
+	local actor = currentActor(b)
+	return b.phase == "input" and actor ~= nil and actor.side == "Enemy"
+end
+
+-- A slow bot: it takes two to three seconds over each move, so the camera can be measured holding.
+local SLOW = { thinkMin = 2, thinkMax = 3, policy = "attack" }
+
+test("C1: the camera sweeps the stage under the start swirl, sits over the acting party member's shoulder, faces an acting enemy, and lets go afterwards", function()
+	local sim, observer = newWorld(901)
+	local client = join(sim, observer, -1, "Ann", SLOW)
+	local camera = cameraOf(client)
+	sim:run(1)
+	expect(camera.CameraType.Name ~= "Scriptable", "the player's own camera in the overworld")
+	touch(sim, observer, -1, "SouthLookout", "side")
+	sim:run(0.25)
+	expectEqual(camera.CameraType.Name, "Scriptable")
+	local transition = client.playerGui:FindFirstChild("BattleTransition")
+	expect(transition ~= nil and transition:FindFirstChild("Wedges") ~= nil, "the swirl covers the start")
+	expect(client.playerGui:GetAttribute("StageBusy") == true, "the stage is busy for the start")
+	local a = camera.CFrame.Position
+	sim:run(1)
+	local b = camera.CFrame.Position
+	expect((a - b).Magnitude > 3, `the sweep moves the camera during the reveal ({(a - b).Magnitude})`)
+	local stage = stageOf(client)
+	local e1, e2 = stage.E1.Spot.CFrame.Position, stage.E2.Spot.CFrame.Position
+	expect((e1 - e2).Magnitude >= 14, `the enemies stand far enough apart for their plates ({(e1 - e2).Magnitude})`)
+	expect(not stage.P1.Spot.Nameplate.Enabled and not stage.E1.Spot.Nameplate.Enabled, "the new HUD turns every stage plate off")
+
+	-- Ann's turn: over her character's shoulder, looking at the enemies.
+	runToPhase(sim, observer, myInputTurn(-1), "Ann's turn")
+	sim:run(0.8) -- the whip-pan settles; the bot is still thinking
+	expect(client.playerGui:FindFirstChild("BattleTransition") == nil, "the swirl is gone")
+	local battle = observer.last.battle
+	local actor = currentActor(battle)
+	local root = stage[actor.id].Character.HumanoidRootPart.CFrame
+	local cam = camera.CFrame
+	local behind = (cam.Position - root.Position):Dot(root.LookVector)
+	expect(behind < -3 and behind > -12, `the camera stands behind the acting character ({behind})`)
+	expect(cam.Position.Y > root.Position.Y, "and above its hips")
+	local enemyAt = summonRoot(stage.E1.Summon).CFrame.Position
+	expect(cam.LookVector:Dot((enemyAt - cam.Position).Unit) > 0.75, "looking toward the enemies")
+	expect(math.abs(camera.FieldOfView - 60) < 2, `a 60 degree field of view ({camera.FieldOfView})`)
+	-- A subtle sway while it holds.
+	local held = camera.CFrame.Position
+	sim:run(0.4)
+	local drift = (camera.CFrame.Position - held).Magnitude
+	expect(drift > 0.001 and drift < 0.6, `a subtle sway while holding ({drift})`)
+
+	-- An enemy's turn: an offset frontal shot, from the party's side.
+	runToPhase(sim, observer, enemyInputTurn, "an enemy's turn")
+	sim:run(0.8)
+	battle = observer.last.battle
+	actor = currentActor(battle)
+	local enemy = summonRoot(stage[actor.id].Summon).CFrame
+	cam = camera.CFrame
+	expect((cam.Position - enemy.Position):Dot(enemy.LookVector) > 3, "in front of the acting enemy, on the party's side")
+	expect(cam.LookVector:Dot((enemy.Position - cam.Position).Unit) > 0.85, "looking at it")
+
+	-- Afterwards: the camera is the player's again and nothing of the fight is left.
+	expect(sim:runUntil(function()
+		return observer.battlesFinished >= 1 and backInOverworld(observer)
+	end, 900), "the fight never ended")
+	sim:run(0.5)
+	expectEqual(camera.CameraType.Name, "Custom", "the camera is given back")
+	expect(stageOf(client) == nil, "no stage")
+	expect(client.playerGui:FindFirstChild("BattleTransition") == nil, "no transition left")
+	expectEqual(client.playerGui:GetAttribute("StageOwned"), 0, "the presentation holds nothing")
+	expect(client.playerGui:GetAttribute("StageBusy") ~= true, "and isn't busy")
+	expect(observer.pacingChecks > 5, "the observer checked the pacing of every turn")
+	assertClean(sim, observer)
+end)
+
+test("C1: reduced motion: a plain fade instead of the swirl, no sway while holding; the camera still cuts and moves", function()
+	local sim, observer = newWorld(902)
+	local client = join(sim, observer, -1, "Ann", SLOW)
+	localPlayer(client):SetAttribute("ReducedMotion", true)
+	local Theme = client.env.require(client.env.dm:GetService("ReplicatedStorage").UI.Theme)
+	expect(Theme.Motion.reduced == true, "Theme follows the setting")
+	sim:run(1)
+	touch(sim, observer, -1, "SouthLookout", "side")
+	sim:run(0.1)
+	local transition = client.playerGui:FindFirstChild("BattleTransition")
+	expect(transition ~= nil and transition:FindFirstChild("Cover") ~= nil and transition:FindFirstChild("Wedges") == nil, "a fade, no swirl")
+	runToPhase(sim, observer, myInputTurn(-1), "Ann's turn")
+	sim:run(0.8)
+	local camera = cameraOf(client)
+	local stage = stageOf(client)
+	local root = stage[currentActor(observer.last.battle).id].Character.HumanoidRootPart.CFrame
+	expect((camera.CFrame.Position - root.Position):Dot(root.LookVector) < -3, "still over the shoulder")
+	local held = camera.CFrame.Position
+	sim:run(0.4)
+	expect((camera.CFrame.Position - held).Magnitude < 1e-4, `no sway with reduced motion ({(camera.CFrame.Position - held).Magnitude})`)
+	localPlayer(client):SetAttribute("ReducedMotion", nil)
+	expect(Theme.Motion.reduced == false, "back to normal when the override is cleared")
+	expect(sim:runUntil(function()
+		return observer.battlesFinished >= 1 and backInOverworld(observer)
+	end, 900), "the fight never ended")
+	assertClean(sim, observer)
+end)
+
+test("C1: Pacing: the pause after an action grows with what the stage has to show; a passed turn waits only the base", function()
+	local sim = Sim.new(PLACE, { seed = 7 })
+	local rs = sim.server.dm:GetService("ReplicatedStorage")
+	local Pacing = sim.server.require(rs.Combat.Pacing)
+	local Abilities = sim.server.require(rs.Combat.Abilities)
+	local Config = sim.server.require(rs.Combat.CombatConfig)
+	local function result(hit, critical, knockedOut)
+		return { targetId = "E1", hit = hit, critical = critical, damage = if hit then 5 else 0, healed = 0, knockedOut = knockedOut, cleansed = false }
+	end
+	local base = Pacing.resolveSeconds(nil, nil, false)
+	expectEqual(base, Config.ResolvePauseSeconds, "a passed or lost turn")
+	local attack = Pacing.resolveSeconds(Abilities.Attack, { result(true, false, false) }, false)
+	expect(attack > base, "an attack takes longer than nothing")
+	local strike = Pacing.resolveSeconds(Abilities.Strike, { result(true, false, false) }, true)
+	expectNear(strike, attack + Config.ResolveExtraSeconds.Summon, "a summon's attack adds the summon beat")
+	expect(Pacing.resolveSeconds(Abilities.Strike, { result(true, true, true) }, true) > strike, "a knockout on a critical holds longer")
+	expect(Pacing.resolveSeconds(Abilities.Attack, { result(false, false, false) }, false) < attack, "a miss is quicker")
+	expect(Pacing.resolveSeconds(Abilities.GaleClap, { result(true, false, false), result(true, false, false) }, true) > strike, "two targets take longer than one")
+	expect(Pacing.resolveSeconds(Abilities.Guard, nil, false) >= Config.MinResolveSeconds, "never under the minimum")
+	expect(Pacing.resolveSeconds(Abilities.SapMend, { result(true, false, false) }, true) > base, "a cast has its beat")
+	expect(Pacing.isSummoned("Party", { "Strike" }, "Strike"), "a party member's own ability brings its summon out")
+	expect(not Pacing.isSummoned("Party", { "Strike" }, "Attack"), "its character's Attack doesn't")
+	expect(not Pacing.isSummoned("Enemy", { "Strike" }, "Strike"), "enemies have no summon to bring out")
+end)
+
+test("C1: the ring waits for the stage to finish its beat, but never longer than RING_WAIT_CAP", function()
+	local sim, observer = newWorld(903)
+	local client = joinHud(sim, observer, -1, "Ann", PHONE)
+	local ui = m2Modules(client)
+	local CombatHUD = client.env.require(client.env.dm:GetService("StarterPlayer").StarterPlayerScripts.UI.Screens.CombatHUD)
+	local hud = CombatHUD.new(client.playerGui, ui.MockData.LOCAL_USER, {
+		onAction = function() end,
+		onTargetChanged = function() end,
+	}, { namePrefix = "Gate" })
+	local snapshot = ui.MockData.snapshot("Two", "MyTurn", sim.now)
+	local ring = client.playerGui.GateCombatHUD.SafeArea.Ring
+
+	hud:setStageBusy(true)
+	hud:render(snapshot)
+	expect(not ring.Visible, "held while the stage is busy")
+	sim:run(0.3)
+	hud:tick(sim.now)
+	expect(not ring.Visible, "still held before the cap")
+	sim:run(0.4)
+	hud:tick(sim.now)
+	expect(ring.Visible, "shown once the cap has passed, busy or not")
+
+	snapshot.battle.turnNumber += 1 -- the next turn: held again, then released the moment the stage is free
+	hud:setStageBusy(true)
+	hud:render(snapshot)
+	expect(not ring.Visible, "held on the new turn")
+	hud:setStageBusy(false)
+	expect(ring.Visible, "released as soon as the stage is done")
+
+	snapshot.battle.turnNumber += 1 -- a stage that isn't busy never holds the ring
+	hud:render(snapshot)
+	expect(ring.Visible, "straight away when the stage is idle")
+	hud:destroy()
+	assertClean(sim, observer)
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

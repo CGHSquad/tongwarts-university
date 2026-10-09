@@ -114,6 +114,9 @@ type Fields = {
 	overworldBanner: number,
 	detailBase: string,
 	deadline: number?,
+	stageBusy: boolean, -- the stage is still playing a beat (BattleView), so the ring waits
+	turnOpenedAt: number?, -- server clock, when the turn being shown opened
+	ringHeld: boolean, -- the ring is due but waiting for the stage
 	connections: { RBXScriptConnection },
 }
 
@@ -136,6 +139,10 @@ local KEY_COMMANDS: { [string]: CommandId } = {
 local function secondsLeft(at: number, now: number): number
 	return math.max(0, math.ceil(at - now))
 end
+
+-- The ring waits for the stage to finish its beat, but never longer than this past the turn's
+-- start: a slow client must never hold up the fight (the server's turn timer runs regardless).
+CombatHUD.RING_WAIT_CAP = 0.6
 
 function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Callbacks, options: Options?): CombatHUD
 	local prefix = if options and options.namePrefix then options.namePrefix :: string else ""
@@ -277,6 +284,9 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		overworldBanner = 0,
 		detailBase = "",
 		deadline = nil,
+		stageBusy = false,
+		turnOpenedAt = nil,
+		ringHeld = false,
 		connections = {},
 	}
 	self = setmetatable(fields, CombatHUD)
@@ -319,10 +329,32 @@ function CombatHUD.render(self: CombatHUD, snapshot: Snapshot)
 	self:tick(Workspace:GetServerTimeNow())
 end
 
+-- The stage started or finished playing a beat (BattleView): the ring waits for it.
+function CombatHUD.setStageBusy(self: CombatHUD, busy: boolean)
+	if self.stageBusy == busy then
+		return
+	end
+	self.stageBusy = busy
+	if not busy and self.ringHeld then
+		self:_rerender()
+	end
+end
+
+-- Whether the ring has to wait for the stage right now.
+function CombatHUD._ringWaits(self: CombatHUD, now: number): boolean
+	local openedAt = self.turnOpenedAt
+	return self.stageBusy and openedAt ~= nil and now - openedAt < CombatHUD.RING_WAIT_CAP
+end
+
 -- Updates countdowns; called every frame.
 function CombatHUD.tick(self: CombatHUD, now: number)
 	local hud = self.hud
 	if hud == nil then
+		return
+	end
+	self.enemies.tick()
+	if self.ringHeld and not self:_ringWaits(now) then
+		self:_rerender()
 		return
 	end
 	if hud.phase == "Reward" then
@@ -460,6 +492,8 @@ function CombatHUD._leaveBattle(self: CombatHUD)
 	self.dim.Visible = false
 	self.party.frame.Visible = false
 	self.ring.hide()
+	self.ringHeld = false
+	self.turnOpenedAt = nil
 	self.manaPlate.update(nil, self.localUserId)
 	self.enemies.hide()
 	self.stamps.hide()
@@ -471,6 +505,7 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	-- A new turn starts clean, and "Sending..." only lasts until the server moves on.
 	if self.turnSeen ~= hud.turnNumber then
 		self.turnSeen = hud.turnNumber
+		self.turnOpenedAt = Workspace:GetServerTimeNow()
 		self.submittedTurn = nil
 		self:_setMode("Idle")
 	end
@@ -575,9 +610,16 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	self.detailBase = detail
 	self.status.detail.Text = detail
 
-	-- Left: the ring, or the target panel.
+	-- Left: the ring (once the stage has finished its beat, or RING_WAIT_CAP after the turn
+	-- opened, whichever comes first), or the target panel.
+	self.ringHeld = false
 	if self.mode == "Ring" then
-		self.ring.show(self.commands)
+		if self:_ringWaits(Workspace:GetServerTimeNow()) then
+			self.ringHeld = true
+			self.ring.hide()
+		else
+			self.ring.show(self.commands)
+		end
 	else
 		self.ring.hide()
 	end

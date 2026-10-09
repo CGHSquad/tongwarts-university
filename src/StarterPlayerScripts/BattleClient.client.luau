@@ -19,6 +19,7 @@ local Combat = script.Parent:WaitForChild("Combat")
 local BattleView = require(Combat:WaitForChild("BattleView"))
 local UIFolder = script.Parent:WaitForChild("UI")
 local Controls = require(UIFolder:WaitForChild("Core"):WaitForChild("Controls"))
+local Motion = require(UIFolder:WaitForChild("Core"):WaitForChild("Motion"))
 local CombatHUD = require(UIFolder:WaitForChild("Screens"):WaitForChild("CombatHUD"))
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Battle")
@@ -34,17 +35,32 @@ local playerGui = localPlayer:WaitForChild("PlayerGui") :: PlayerGui
 -- uses 1-5 for its commands. Nothing in the game hands out Tools, so the Backpack is off for good.
 -- (If Tools ever arrive, switch it per snapshot the way Controls handles the touch controls.)
 StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
--- The HUD draws the enemies' plates itself (M0 report R19).
-local view = BattleView.new({ enemyNameplates = false })
+-- The reduced-motion setting (Roblox's switch, or a ReducedMotion attribute on the player).
+Motion.start()
+-- The HUD draws the enemies' plates and the party's cards itself (M0 report R19), and holds the
+-- command ring while the stage is still playing a beat. Both flags are attributes on PlayerGui so
+-- the headless tests can read them.
+local ui: CombatHUD.CombatHUD
+local view = BattleView.new({
+	enemyNameplates = false,
+	partyNameplates = false,
+	onBusyChanged = function(busy: boolean)
+		playerGui:SetAttribute("StageBusy", busy)
+		if ui then
+			ui:setStageBusy(busy)
+		end
+	end,
+})
 local callbacks = {
 	onAction = function(abilityId: string, targetId: string) -- any move from the HUD; the server decides what happens
+		view:confirm() -- the camera reacts at once; the server's answer is what plays out
 		submitActionRemote:FireServer(abilityId, targetId)
 	end,
 	onTargetChanged = function(targetId: string?, friendly: boolean)
 		view:setTarget(targetId, friendly)
 	end,
 }
-local ui = CombatHUD.new(playerGui, localPlayer.UserId, callbacks)
+ui = CombatHUD.new(playerGui, localPlayer.UserId, callbacks)
 
 -- The battle, if this player is in it.
 local function myBattle(snapshot: BattleTypes.Snapshot): BattleTypes.BattleState?
@@ -88,8 +104,15 @@ noticeRemote.OnClientEvent:Connect(function(message: string)
 	ui:showNotice(message)
 end)
 
-RunService.Heartbeat:Connect(function()
+local ownedShown = -1
+RunService.Heartbeat:Connect(function(dt: number)
+	view:update(dt)
 	ui:tick(Workspace:GetServerTimeNow())
+	local owned = view:ownedCount()
+	if owned ~= ownedShown then
+		ownedShown = owned
+		playerGui:SetAttribute("StageOwned", owned) -- what the presentation still holds (the tests check it's nothing after a fight)
+	end
 end)
 
 -- The overworld panel pops up for a few seconds each time you arrive on the grass (ZoneClient sets "Zone").

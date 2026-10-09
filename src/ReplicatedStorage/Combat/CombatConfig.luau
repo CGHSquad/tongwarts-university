@@ -18,9 +18,24 @@ local CombatConfig = {
 	EnemySummons = { "WildSapling", "WildSapling" },
 
 	-- Pacing, in seconds.
-	InitiativeRevealSeconds = 3, -- time to read the initiative rolls (and who struck first) before the first turn
-	EnemyThinkSeconds = 1.25, -- small delay so enemy turns are readable
-	ResolvePauseSeconds = 1.5, -- after an action, before the next turn opens
+	InitiativeRevealSeconds = 3.5, -- time to read the initiative rolls (and who struck first) before the first turn; the battle-start camera sweep plays under it
+	EnemyThinkSeconds = 1.25, -- small delay so enemy turns are readable (the camera holds on the enemy)
+	-- After an action, before the next turn opens: this base, plus what the action's beats add
+	-- (Pacing.resolveSeconds), so the stage can play it out before anyone acts again. A lost or
+	-- passed turn waits only the base. Attack by a character ~1.4, a summon's attack ~2.3, a
+	-- knockout on a critical ~3.1.
+	ResolvePauseSeconds = 0.9,
+	ResolveExtraSeconds = {
+		Lunge = 0.5, -- an attack: the swing and the recoil
+		Summon = 0.9, -- a party member's summon materializes behind it, performs, and dismisses
+		AllTarget = 0.3, -- more than one target
+		Knockout = 0.8, -- hold on the fall
+		Miss = -0.2, -- nothing to sell
+		Critical = 0.2, -- the flash
+		Cast = 0.4, -- a heal or a status
+		Guard = 0.2,
+	},
+	MinResolveSeconds = 0.5,
 	TurnTimeoutSeconds = 30, -- a player who doesn't act in time skips the turn (AFK/disconnect rule)
 	ResultScreenSeconds = 8, -- victory/defeat screen before everyone's back in the overworld
 

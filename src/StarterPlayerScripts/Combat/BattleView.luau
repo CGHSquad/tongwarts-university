@@ -1,7 +1,9 @@
 --!strict
 --[[
-	BattleView — the 3D side of the prototype: the combatants on a little stage, an outline on
-	whoever is acting and on your chosen target, a small hit effect, and a fixed battle camera.
+	BattleView — the 3D side of a fight: the combatants on a stage, the battle camera, and the
+	presentation of every beat (the battle-start swirl and sweep, each turn's shot, the actions,
+	the result). It's redrawn from server snapshots and exists only on this client: a picture of the
+	BattleSession, never the real thing.
 
 	Who you see (GDD Step 6, "The player character on the field"):
 		party    each player's own character, which never leaves its spot. It makes its own moves
@@ -17,8 +19,14 @@
 	block when it doesn't. Stats, HP and Mana all still belong to the summon; this is only how a
 	turn looks.
 
-	Everything here exists only on this client and is redrawn from server snapshots: it's a picture
-	of the BattleSession, not the real thing.
+	How it looks (C0 report, sections 3 and 4): the camera (Presentation/BattleCamera) sits low
+	over the acting party member's shoulder, teammates included, cuts to an offset frontal shot of
+	an acting enemy, whip-pans to whoever's next, punches its field of view on confirm, and sways a
+	little while it holds. Every beat is a sequence on Presentation/Sequencer, which owns whatever
+	the beat creates and reports when the stage is busy; its length comes from Pacing, the same
+	numbers the server waits for, so a turn never opens over an unfinished beat. Clip, sound and
+	effect ids are never written here: they come from the data modules (Summons.art and, from C2,
+	the character and sound tables).
 ]]
 
 local Debris = game:GetService("Debris")
@@ -30,21 +38,34 @@ local Workspace = game:GetService("Workspace")
 local Combat = ReplicatedStorage:WaitForChild("Combat")
 local Abilities = require(Combat:WaitForChild("Abilities"))
 local BattleTypes = require(Combat:WaitForChild("BattleTypes"))
+local Pacing = require(Combat:WaitForChild("Pacing"))
 local StatusEffects = require(Combat:WaitForChild("StatusEffects"))
 local Summons = require(Combat:WaitForChild("Summons"))
 local BattleTheme = require(script.Parent:WaitForChild("BattleTheme"))
+local Presentation = script.Parent:WaitForChild("Presentation")
+local BattleCamera = require(Presentation:WaitForChild("BattleCamera"))
+local Sequencer = require(Presentation:WaitForChild("Sequencer"))
+local Shots = require(Presentation:WaitForChild("Shots"))
+local Transition = require(Presentation:WaitForChild("Transition"))
+local Motion = require(script.Parent.Parent:WaitForChild("UI"):WaitForChild("Core"):WaitForChild("Motion"))
 
 type BattleState = BattleTypes.BattleState
 type ParticipantState = BattleTypes.ParticipantState
+type ActionRecord = BattleTypes.ActionRecord
 
 -- The stage is its own little arena out past the north edge of the overworld's baseplate, so
--- nothing out exploring wanders through the fight. The camera looks across it, away from the
--- overworld, with the party on the left and the enemies on the right, matching the HUD panels.
+-- nothing out exploring wanders through the fight. The party stands on the west side facing east,
+-- the enemies on the east facing west; the HUD's columns (ring left, party cards right) suit the
+-- over-the-shoulder shot that follows.
 local STAGE_CENTER = Vector3.new(0, 0, -700)
-local STAGE_FLOOR_SIZE = Vector3.new(80, 1, 60)
+local STAGE_FLOOR_SIZE = Vector3.new(100, 1, 80)
 local BLOCK_SIZE = Vector3.new(5, 5, 5)
-local CAMERA_POSITION = STAGE_CENTER + Vector3.new(0, 20, 40)
-local CAMERA_FOCUS = STAGE_CENTER + Vector3.new(0, 3, 0)
+-- Slot 1 stands nearer the middle, slot 2 further out and to the side; the two on a side are
+-- SLOT_GAP studs apart across, far enough for both enemies' plates to clear each other from the
+-- party's shoulder on a phone.
+local SLOT_GAP = 14
+local SLOT_DEPTH = 9
+local SLOT_DEPTH_STEP = 5
 -- A party member's summon is only out while it uses one of its own abilities: it materializes, does
 -- the move and dismisses in SUMMON_SECONDS, fading in and out over SUMMON_FADE_SECONDS of that.
 local SUMMON_SECONDS = 1.2
@@ -53,8 +74,17 @@ local SUMMON_FADE_SECONDS = 0.2
 -- over its shoulder, and a step further from the camera, so the character stays in view in front.
 local SUMMON_SOCKET = CFrame.new(-1.5, 4, 4)
 -- A summon's attack clip plays sped up when it's longer than this, so even a slow swing is over
--- before the next turn opens (CombatConfig.ResolvePauseSeconds after the action).
+-- before the next turn opens (Pacing's summon budget).
 local ATTACK_MAX_SECONDS = 1.6
+-- The battle start: the swirl covers the screen, the stage is set, the swirl clears onto the sweep.
+local COVER_SECONDS = 0.3
+local SWEEP_SECONDS = 1.9
+-- A beat's sequence ends this long before the server opens the next turn, so there's slack for
+-- latency; the next turn's whip-pan takes over from wherever the camera is.
+local RESOLVE_SLACK = 0.3
+local HIT_DELAY = 0.12 -- after the blow lands: the recoil, the flinch, the shake
+local CONFIRM_PUNCH = 8 -- degrees of field of view, on confirming a move
+local RESULT_SECONDS = 2.5
 
 -- A summon's animation tracks, loaded from its art once its model is in the DataModel. Any can be
 -- missing (see Summons.SummonAnimations).
@@ -66,8 +96,11 @@ type Clips = {
 }
 
 -- One combatant's spot on the stage. Its folder (named after the participant) holds what's on the
--- field there, named "Character" and "Summon", plus the Spot that carries its nameplate and popups.
+-- field there, named "Character" and "Summon", plus the Spot that carries its nameplate.
 type Figure = {
+	id: string,
+	side: BattleTypes.Side,
+	ownerUserId: number?,
 	folder: Folder,
 	home: CFrame, -- the spot, facing the other side
 	spot: Part, -- invisible, at home
@@ -75,6 +108,7 @@ type Figure = {
 	summonRoot: BasePart, -- the summon's anchored root; everything else hangs off it by its joints
 	summonHome: CFrame, -- where that root stands: on the spot for an enemy, a party member's socket
 	summonBlock: Part?, -- the colored block, when there's no real model
+	height: number, -- how tall the summon stands
 	art: Summons.SummonArt?, -- the real model's animations, when it has one
 	clips: Clips?, -- loaded once the model has been on the stage
 	character: Model?, -- party members: the player's character, always on the field
@@ -94,14 +128,22 @@ type ViewFields = {
 	figures: { [string]: Figure },
 	battle: BattleState?,
 	lastActionSeen: number,
+	turnSeen: number,
+	resultShown: boolean,
 	targetId: string?,
 	targetFriendly: boolean,
-	cameraActive: boolean,
 	enemyNameplates: boolean, -- off when the new HUD draws its own enemy plates (M0 report R19)
+	partyNameplates: boolean, -- off for the new HUD too: its party cards carry the same
+	localUserId: number?,
+	camera: BattleCamera.BattleCamera,
+	sequencer: Sequencer.Sequencer,
+	transition: Transition.Transition?,
 }
 
 export type Options = {
 	enemyNameplates: boolean?, -- default true
+	partyNameplates: boolean?, -- default true
+	onBusyChanged: ((busy: boolean) -> ())?, -- the stage started or finished playing a beat
 }
 
 export type BattleView = typeof(setmetatable({} :: ViewFields, BattleView))
@@ -109,7 +151,8 @@ export type BattleView = typeof(setmetatable({} :: ViewFields, BattleView))
 -- Slot 2 stands further out and nearer the camera so the two on a side don't overlap.
 local function slotCFrame(side: string, slot: number): CFrame
 	local direction = if side == "Party" then -1 else 1
-	local position = STAGE_CENTER + Vector3.new(direction * (9 + (slot - 1) * 5), BLOCK_SIZE.Y / 2, (slot - 1.5) * 10)
+	local position = STAGE_CENTER
+		+ Vector3.new(direction * (SLOT_DEPTH + (slot - 1) * SLOT_DEPTH_STEP), BLOCK_SIZE.Y / 2, (slot - 1.5) * SLOT_GAP)
 	return CFrame.lookAt(position, position - Vector3.new(direction, 0, 0)) -- face the other side
 end
 
@@ -413,7 +456,7 @@ end
 
 --[[ Figures ]]
 
-local function createFigure(participant: ParticipantState, parent: Instance, enemyNameplates: boolean): Figure
+local function createFigure(participant: ParticipantState, parent: Instance, enemyNameplates: boolean, partyNameplates: boolean): Figure
 	local home = slotCFrame(participant.side, participant.slot)
 	local folder = Instance.new("Folder")
 	folder.Name = participant.id
@@ -430,7 +473,8 @@ local function createFigure(participant: ParticipantState, parent: Instance, ene
 	nameplate.StudsOffset = Vector3.new(0, BLOCK_SIZE.Y / 2 + 1.8, 0)
 	nameplate.AlwaysOnTop = true
 	nameplate.LightInfluence = 0
-	nameplate.Enabled = enemyNameplates or participant.side ~= "Enemy" -- the new HUD draws its own enemy plates
+	-- The new HUD draws its own enemy plates and party cards, so it turns these off.
+	nameplate.Enabled = if participant.side == "Enemy" then enemyNameplates else partyNameplates
 	nameplate.Parent = spot
 	local nameLabel = newBillboardLabel(nameplate, UDim2.fromScale(1, 0.55), UDim2.fromScale(0, 0), BattleTheme.FontBold)
 	nameLabel.Text = participant.name
@@ -471,6 +515,9 @@ local function createFigure(participant: ParticipantState, parent: Instance, ene
 	highlight.Parent = folder
 
 	local figure: Figure = {
+		id = participant.id,
+		side = participant.side,
+		ownerUserId = participant.ownerUserId,
 		folder = folder,
 		home = home,
 		spot = spot,
@@ -478,6 +525,7 @@ local function createFigure(participant: ParticipantState, parent: Instance, ene
 		summonRoot = summonRoot,
 		summonHome = summonRoot.CFrame,
 		summonBlock = summonBlock,
+		height = height,
 		art = art,
 		clips = nil,
 		character = nil,
@@ -520,6 +568,11 @@ local function body(figure: Figure): (BasePart, CFrame)
 		return root, characterHome
 	end
 	return figure.summonRoot, figure.summonHome
+end
+
+-- How tall what stands in the spot is: a character is about five studs, a creature its height.
+local function bodyHeight(figure: Figure): number
+	return if figure.character then 5 else figure.height
 end
 
 -- Moves a part a little way from where it stands and straight back: a lunge or a recoil.
@@ -621,11 +674,13 @@ local function bringOutSummon(figure: Figure, beat: Beat): number
 	return lands
 end
 
--- A word or number that floats up off a spot and fades: damage, MISS, healing, a status.
+-- A word or number that floats up off whoever stands in a spot and fades: damage, MISS, healing,
+-- a status. It follows the body (which lunges and recoils), not the spot.
 local function showPopup(figure: Figure, text: string, color: Color3, startHeight: number)
+	local part = body(figure)
 	local popup = Instance.new("BillboardGui")
 	popup.Name = "Popup"
-	popup.Adornee = figure.spot
+	popup.Adornee = part
 	popup.Size = UDim2.fromOffset(160, 40)
 	popup.StudsOffset = Vector3.new(0, startHeight, 0)
 	popup.AlwaysOnTop = true
@@ -644,15 +699,23 @@ end
 --[[ BattleView ]]
 
 function BattleView.new(options: Options?): BattleView
+	local sequencer = Sequencer.new(if options then options.onBusyChanged else nil)
+	local localPlayer = Players.LocalPlayer
 	local fields: ViewFields = {
 		folder = nil,
 		figures = {},
 		battle = nil,
 		lastActionSeen = 0,
+		turnSeen = 0,
+		resultShown = false,
 		targetId = nil,
 		targetFriendly = false,
-		cameraActive = false,
 		enemyNameplates = if options and options.enemyNameplates ~= nil then options.enemyNameplates :: boolean else true,
+		partyNameplates = if options and options.partyNameplates ~= nil then options.partyNameplates :: boolean else true,
+		localUserId = if localPlayer then localPlayer.UserId else nil,
+		camera = BattleCamera.new(),
+		sequencer = sequencer,
+		transition = nil,
 	}
 	return setmetatable(fields, BattleView)
 end
@@ -662,22 +725,56 @@ function BattleView.render(self: BattleView, battle: BattleState?)
 	local previous = self.battle
 	self.battle = battle
 	if battle == nil then
-		self:_clear()
-		self:_setBattleCamera(false)
+		if previous ~= nil or self.folder ~= nil then
+			self:_leave()
+		end
 		return
 	end
 
-	if previous == nil or previous.battleId ~= battle.battleId or self.folder == nil then
+	local fresh = previous == nil or previous.battleId ~= battle.battleId or self.folder == nil
+	if fresh then
 		self:_build(battle)
 	end
-	self:_setBattleCamera(true)
 	self:_refreshFigures()
 
+	if battle.turnNumber ~= self.turnSeen and battle.currentActorId ~= nil then
+		self.turnSeen = battle.turnNumber
+		self:_openTurn(battle)
+	end
 	local action = battle.lastAction
 	if action ~= nil and action.sequence > self.lastActionSeen then
 		self.lastActionSeen = action.sequence
 		self:_playAction(battle, action)
 	end
+	if battle.phase == "reward" and not self.resultShown then
+		self.resultShown = true
+		self:_playResult(battle)
+	end
+end
+
+-- Runs the presentation: call every frame with the time since the last one.
+function BattleView.update(self: BattleView, dt: number)
+	self.camera:setMotionScale(Motion.scale())
+	self.sequencer:update(dt)
+	self.camera:update(dt)
+end
+
+-- The player confirmed a move: the field of view punches at once, before the server answers.
+function BattleView.confirm(self: BattleView)
+	if self.battle then
+		self.camera:punch(CONFIRM_PUNCH)
+	end
+end
+
+-- Whether a beat is still playing on the stage (the HUD holds the ring until it isn't).
+function BattleView.isBusy(self: BattleView): boolean
+	return self.sequencer:isBusy()
+end
+
+-- How many things the presentation is holding (for the tests: none after a fight).
+function BattleView.ownedCount(self: BattleView): number
+	local transition = self.transition
+	return self.sequencer:ownedCount() + (if transition and transition:isShowing() then 1 else 0)
 end
 
 -- Outlines the summon you've picked in the HUD: red for an enemy, green for a party member
@@ -693,6 +790,7 @@ end
 
 function BattleView._build(self: BattleView, battle: BattleState)
 	self:_clear()
+	self.sequencer:cancel()
 	local folder = Instance.new("Folder")
 	folder.Name = "BattleStage"
 	local floor = stagePart("Floor", STAGE_FLOOR_SIZE)
@@ -701,7 +799,7 @@ function BattleView._build(self: BattleView, battle: BattleState)
 	floor.Color = Color3.fromRGB(92, 115, 77)
 	floor.Parent = folder
 	for _, participant in battle.participants do
-		self.figures[participant.id] = createFigure(participant, folder, self.enemyNameplates)
+		self.figures[participant.id] = createFigure(participant, folder, self.enemyNameplates, self.partyNameplates)
 	end
 	folder.Parent = Workspace
 	self.folder = folder
@@ -724,6 +822,29 @@ function BattleView._build(self: BattleView, battle: BattleState)
 	end
 	-- Don't replay an action that happened before this client started watching.
 	self.lastActionSeen = if battle.lastAction then battle.lastAction.sequence else 0
+	self.turnSeen = 0
+	self.resultShown = false
+
+	self.camera:activate()
+	if battle.phase == "setup" then
+		self:_playStart()
+	else
+		-- Joining a fight already under way: straight to its current shot.
+		self.camera:cut(self:_shotFor(battle.currentActorId))
+	end
+end
+
+-- Back to the overworld: nothing of the fight stays behind.
+function BattleView._leave(self: BattleView)
+	self.sequencer:cancel()
+	local transition = self.transition
+	if transition then
+		transition:destroy()
+	end
+	self:_clear()
+	self.camera:deactivate()
+	self.turnSeen = 0
+	self.resultShown = false
 end
 
 function BattleView._clear(self: BattleView)
@@ -798,11 +919,94 @@ function BattleView._refreshFigures(self: BattleView)
 	end
 end
 
+--[[ Camera shots ]]
+
+-- The middle of the standing figures on a side (their bodies' centers), to aim at.
+function BattleView._focus(self: BattleView, side: BattleTypes.Side): Vector3
+	local points = {}
+	local battle = self.battle
+	for _, figure in self.figures do
+		if figure.side == side then
+			local standing = true
+			if battle then
+				for _, participant in battle.participants do
+					if participant.id == figure.id then
+						standing = participant.status == "Active"
+					end
+				end
+			end
+			if standing then
+				local _, rest = body(figure)
+				table.insert(points, rest.Position + Vector3.new(0, bodyHeight(figure) * 0.3, 0))
+			end
+		end
+	end
+	local direction = if side == "Party" then -1 else 1
+	return Shots.focusOf(points, STAGE_CENTER + Vector3.new(direction * SLOT_DEPTH, 3, 0))
+end
+
+-- The shot for whoever's turn it is: over a party member's shoulder (a teammate's from a little
+-- further back), an offset frontal on an enemy; the wide shot when there is no one.
+function BattleView._shotFor(self: BattleView, actorId: string?): Shots.Pose
+	local figure = if actorId then self.figures[actorId] else nil
+	if figure == nil then
+		return Shots.wide(STAGE_CENTER)
+	end
+	local _, rest = body(figure)
+	if figure.side == "Party" then
+		local mine = figure.ownerUserId ~= nil and figure.ownerUserId == self.localUserId
+		return Shots.overShoulder(rest, self:_focus("Enemy"), if mine then 1 else 1.3)
+	end
+	return Shots.enemyFrontal(rest, bodyHeight(figure))
+end
+
+-- A turn opened: whip-pan to its actor.
+function BattleView._openTurn(self: BattleView, battle: BattleState)
+	self.camera:moveTo(self:_shotFor(battle.currentActorId), BattleCamera.WHIP_SECONDS)
+end
+
+--[[ Beats ]]
+
+-- The battle start: the swirl covers the screen, then clears onto the sweep across both sides,
+-- which ends behind the party just as the initiative reveal gives way to the first turn.
+function BattleView._playStart(self: BattleView)
+	local transition = self.transition
+	if transition == nil then
+		local localPlayer = Players.LocalPlayer
+		local playerGui = if localPlayer then localPlayer:WaitForChild("PlayerGui") else nil
+		if playerGui and playerGui:IsA("PlayerGui") then
+			transition = Transition.new(playerGui)
+			self.transition = transition
+		end
+	end
+	local scale = Motion.scale()
+	local sweep = function(t: number): Shots.Pose
+		return Shots.sweep(STAGE_CENTER, Vector3.xAxis, t / SWEEP_SECONDS)
+	end
+	if transition then
+		transition:coverScreen(COVER_SECONDS, scale)
+	end
+	self.camera:cut(sweep(0))
+	self.sequencer:play(COVER_SECONDS + SWEEP_SECONDS, {
+		{
+			at = COVER_SECONDS,
+			run = function()
+				if transition then
+					transition:uncoverScreen(COVER_SECONDS, Motion.scale())
+				end
+				self.camera:follow(sweep, SWEEP_SECONDS)
+			end,
+		},
+	})
+end
+
 -- Plays what an action did: a party member's summon comes out if it's one of the summon's own
 -- abilities (swinging its attack clip, if it has one; only a character or a block lunges at its
 -- target), hits make the target recoil as the blow lands (a player's character flinches too), and
 -- every target gets a popup (damage, CRIT, MISS, an ailment, healing, GUARD, or the status gained).
-function BattleView._playAction(self: BattleView, battle: BattleState, action: BattleTypes.ActionRecord)
+-- The camera: it holds over a party member's shoulder (pulling back for its summon) and shakes as
+-- a blow lands; for an enemy's attack it cuts over the enemy's shoulder, then to whoever it hit.
+function BattleView._playAction(self: BattleView, battle: BattleState, action: ActionRecord)
 	local actor = self.figures[action.actorId]
 	local ability = Abilities[action.abilityId]
 	if actor == nil or ability == nil then
@@ -816,12 +1020,10 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: B
 	local lead = 0 -- how long the move waits: for its performer to materialize, then its swing
 	local summoned = false
 	for _, participant in battle.participants do
-		if participant.id == action.actorId and participant.side == "Party" then
-			if table.find(participant.abilities, ability.id) ~= nil then
-				summoned = true
-				lead = bringOutSummon(actor, if attacking then "attack" else "cast")
-				performer, performerHome = actor.summonRoot, actor.summonHome
-			end
+		if participant.id == action.actorId and Pacing.isSummoned(participant.side, participant.abilities, ability.id) then
+			summoned = true
+			lead = bringOutSummon(actor, if attacking then "attack" else "cast")
+			performer, performerHome = actor.summonRoot, actor.summonHome
 		end
 	end
 	if attacking and not summoned and actor.character == nil then
@@ -830,6 +1032,10 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: B
 		lead = impact or 0
 	end
 
+	local cues: { Sequencer.Cue } = {}
+	local camera = self.camera
+	local firstHit: Figure? = nil
+	local anyCritical = false
 	for index, result in action.results do
 		local target = self.figures[result.targetId]
 		if target == nil then
@@ -845,11 +1051,13 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: B
 			end
 			if result.hit then
 				local struck, struckHome = body(target)
-				nudge(struck, struckHome, toward * 1.5, 0.1, lead + 0.12)
+				nudge(struck, struckHome, toward * 1.5, 0.1, lead + HIT_DELAY)
 				local character, characterRoot = target.character, target.characterRoot
 				if character and characterRoot then
-					flinch(character, characterRoot, lead + 0.12)
+					flinch(character, characterRoot, lead + HIT_DELAY)
 				end
+				firstHit = firstHit or target
+				anyCritical = anyCritical or result.critical
 			end
 		end
 
@@ -880,21 +1088,55 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: B
 			showPopup(target, if def then def.name else ability.name, BattleTheme.Accent, 0)
 		end
 	end
+
+	-- The camera for the beat.
+	if actor.side == "Party" then
+		if summoned then
+			local _, rest = body(actor)
+			camera:moveTo(Shots.summon(rest, self:_focus("Enemy")), 0.25)
+		end
+	elseif attacking and firstHit then
+		local struck = firstHit
+		local _, actorRest = body(actor)
+		local _, struckRest = body(struck)
+		local over = Shots.overShoulder(actorRest, struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), 1.2)
+		camera:moveTo(over, 0.2)
+		table.insert(cues, {
+			at = math.max(0, lead + HIT_DELAY - 0.1),
+			run = function()
+				camera:moveTo(Shots.reaction(struckRest, bodyHeight(struck)), 0.15)
+			end,
+		})
+	end
+	if firstHit then
+		table.insert(cues, {
+			at = lead + HIT_DELAY,
+			run = function()
+				camera:shake(if anyCritical then 0.4 else 0.25, if anyCritical then 0.35 else 0.25)
+				if anyCritical then
+					camera:punch(-4)
+				end
+			end,
+		})
+	end
+
+	local seconds = Pacing.resolveSeconds(ability, action.results, summoned)
+	self.sequencer:play(math.max(0, seconds - RESOLVE_SLACK), cues)
 end
 
-function BattleView._setBattleCamera(self: BattleView, active: boolean)
-	if self.cameraActive == active then
-		return
-	end
-	self.cameraActive = active
-
-	local camera = Workspace.CurrentCamera
-	if active then
-		camera.CameraType = Enum.CameraType.Scriptable
-		camera.CFrame = CFrame.lookAt(CAMERA_POSITION, CAMERA_FOCUS)
-	else
-		camera.CameraType = Enum.CameraType.Custom
-	end
+-- The fight is decided: a slow orbit of the party for a win, a tilt down to the floor for a loss.
+-- The results screen opens over it.
+function BattleView._playResult(self: BattleView, battle: BattleState)
+	local center = self:_focus("Party")
+	local facing = Vector3.xAxis
+	local track = if battle.winner == "Party"
+		then function(t: number): Shots.Pose
+			return Shots.victory(center, facing, t / RESULT_SECONDS)
+		end
+		else function(t: number): Shots.Pose
+			return Shots.defeat(center, facing, t / RESULT_SECONDS)
+		end
+	self.camera:follow(track, RESULT_SECONDS)
 end
 
 return BattleView
