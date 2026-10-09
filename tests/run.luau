@@ -3300,6 +3300,13 @@ test("M2: a real fight on the new HUD: Attack, Spell and Guard through the ring,
 	expect(resultsGui.Enabled, "the results screen at the end")
 	local won = client.lastSnapshot.battle.winner == "Party"
 	expectEqual(resultsGui.SafeArea.Title.Text.Text, if won then Strings.Victory else Strings.Defeat)
+	-- Back (keyboard or gamepad B) skips the count-up, even though there is no actor to act for now.
+	if won then
+		local expValue = resultsGui.SafeArea.Tallies.Exp.Value
+		expect(resultsGui.SafeArea.SkipHint.Visible and expValue.Text ~= Strings.format.gained(ui.MockData.reward("TwoSolo").exp), "the tallies are counting")
+		client.env.getService("UserInputService").InputBegan:Fire({ KeyCode = roblox.Enum.KeyCode.Backspace, UserInputType = roblox.Enum.UserInputType.Keyboard }, false)
+		expect(not resultsGui.SafeArea.SkipHint.Visible and expValue.Text == Strings.format.gained(ui.MockData.reward("TwoSolo").exp), "Back skipped straight to the totals")
+	end
 	expect(string.find(resultsGui.SafeArea.Returning.Text, "Returning", 1, true) ~= nil, "with the return countdown")
 	expect(not safeArea.Party.Visible and not safeArea.TurnBar.Visible, "the HUD's own widgets step aside for it")
 	expect(not Controls.isEnabled(), "controls stay off on the result screen")

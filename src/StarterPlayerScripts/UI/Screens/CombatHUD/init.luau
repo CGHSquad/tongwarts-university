@@ -699,7 +699,18 @@ function CombatHUD._submit(self: CombatHUD, abilityId: string, targetId: string)
 	self:_rerender()
 end
 
+local function isBack(keyName: string): boolean
+	return keyName == "Backspace" or keyName == "Escape" or keyName == "ButtonB"
+end
+
 function CombatHUD._onKey(self: CombatHUD, keyName: string)
+	-- The results screen is up (no actor in the reward phase): Back skips its count-up.
+	if self.manager:current() == self.resultsName then
+		if isBack(keyName) then
+			self.manager:back()
+		end
+		return
+	end
 	if self.hud == nil or self:_actor() == nil then
 		return
 	end
@@ -719,7 +730,7 @@ function CombatHUD._onKey(self: CombatHUD, keyName: string)
 			self.skillList.confirm()
 		end
 	end
-	if keyName == "Backspace" or keyName == "Escape" then
+	if isBack(keyName) then
 		self:_back()
 	end
 end
