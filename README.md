@@ -66,7 +66,9 @@ are still colored blocks.
    move (your character's **Attack** or **Guard**, or one of your summon's abilities), pick a
    target if it needs one, and press the big button. The enemies act on their own.
 4. When one side is knocked out you get a Victory or Defeat screen, then you're back exploring.
-   A beaten enemy disappears for 20 seconds; if your party lost, you respawn at the spawn point.
+   A beaten enemy disappears for 20 seconds. If your party lost, you respawn and are brought back
+   to the arrival circle of the area you fought in (the overworld or that campus: `zone` in
+   `EnemySpawns`).
 
 Playing alone? Press **Play** and walk into an enemy. You control both party summons.
 

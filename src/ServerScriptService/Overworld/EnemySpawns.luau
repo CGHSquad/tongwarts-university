@@ -15,6 +15,9 @@
 
 export type Behavior = "Patrol" | "Idle"
 
+-- The areas of the map a fight can happen in (ZoneTravel has an arrival circle for each).
+export type Zone = "Overworld" | "SahurCollege" | "Tralala" | "Cappuccino" | "Ballerina"
+
 export type EnemySpawn = {
 	id: string,
 	name: string, -- shown over its head
@@ -25,6 +28,7 @@ export type EnemySpawn = {
 	height: number?, -- how tall that model stands, in studs (default 4.2, kid-sized)
 	reach: number?, -- how close (across the ground) counts as touching it; default CombatConfig.EncounterContactDistance
 	facing: Vector3?, -- Idle only: stand still facing this direction instead of looking around
+	zone: Zone?, -- where it stands; a party it beats comes back at that zone's arrival circle (nil = Overworld)
 }
 
 local EnemySpawns: { EnemySpawn } = {
@@ -64,6 +68,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "TungTungSapling",
 		height = 4.2,
 		reach = 4,
+		zone = "SahurCollege",
 		facing = Vector3.new(0, 0, 1),
 	},
 	{
@@ -75,6 +80,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildTungTungSahur",
 		height = 6.2,
 		reach = 5,
+		zone = "SahurCollege",
 		facing = Vector3.new(0, 0, 1),
 	},
 	{
@@ -86,6 +92,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildGroveKeeper",
 		height = 9,
 		reach = 6.5,
+		zone = "SahurCollege",
 		facing = Vector3.new(0, 0, 1),
 	},
 	{
@@ -97,6 +104,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildElder",
 		height = 16,
 		reach = 9,
+		zone = "SahurCollege",
 		facing = Vector3.new(0, 0, 1),
 	},
 
@@ -111,6 +119,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "TungTungSapling",
 		height = 4.2,
 		reach = 4,
+		zone = "Tralala",
 		facing = Vector3.new(-0.932, 0, -0.362),
 	},
 	{
@@ -122,6 +131,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildTungTungSahur",
 		height = 6.2,
 		reach = 5,
+		zone = "Tralala",
 		facing = Vector3.new(-0.932, 0, -0.362),
 	},
 	{
@@ -133,6 +143,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildGroveKeeper",
 		height = 9,
 		reach = 6.5,
+		zone = "Tralala",
 		facing = Vector3.new(-0.932, 0, -0.362),
 	},
 	{
@@ -144,6 +155,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildElder",
 		height = 16,
 		reach = 9,
+		zone = "Tralala",
 		facing = Vector3.new(-0.932, 0, -0.362),
 	},
 	-- Cappuccino Assassino University arena gym (lava campus): the same sparring partners on the
@@ -157,6 +169,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "TungTungSapling",
 		height = 4.2,
 		reach = 4,
+		zone = "Cappuccino",
 		facing = Vector3.new(-0.974, 0, 0.228),
 	},
 	{
@@ -168,6 +181,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildTungTungSahur",
 		height = 6.2,
 		reach = 5,
+		zone = "Cappuccino",
 		facing = Vector3.new(-0.974, 0, 0.228),
 	},
 	{
@@ -179,6 +193,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildGroveKeeper",
 		height = 9,
 		reach = 6.5,
+		zone = "Cappuccino",
 		facing = Vector3.new(-0.974, 0, 0.228),
 	},
 	{
@@ -190,6 +205,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildElder",
 		height = 16,
 		reach = 9,
+		zone = "Cappuccino",
 		facing = Vector3.new(-0.974, 0, 0.228),
 	},
 	-- Cappuccino Ballerina Academy Grand Theatre gym (snowy mountainside): the same sparring partners on the
@@ -203,6 +219,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "TungTungSapling",
 		height = 4.2,
 		reach = 4,
+		zone = "Ballerina",
 		facing = Vector3.new(-0.811, 0, 0.585),
 	},
 	{
@@ -214,6 +231,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildTungTungSahur",
 		height = 6.2,
 		reach = 5,
+		zone = "Ballerina",
 		facing = Vector3.new(-0.811, 0, 0.585),
 	},
 	{
@@ -225,6 +243,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildGroveKeeper",
 		height = 9,
 		reach = 6.5,
+		zone = "Ballerina",
 		facing = Vector3.new(-0.811, 0, 0.585),
 	},
 	{
@@ -236,6 +255,7 @@ local EnemySpawns: { EnemySpawn } = {
 		look = "WildElder",
 		height = 16,
 		reach = 9,
+		zone = "Ballerina",
 		facing = Vector3.new(-0.811, 0, 0.585),
 	},
 }

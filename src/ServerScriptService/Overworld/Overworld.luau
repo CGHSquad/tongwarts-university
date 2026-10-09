@@ -10,7 +10,8 @@
 	other fight can start. When it's over (endBattle):
 
 		the party won   the enemy vanishes and comes back EnemyRespawnSeconds later
-		the party lost  everyone in it respawns at the spawn point
+		the party lost  everyone in it respawns, and `returnBeaten` (from BattleServer) brings them back
+		                to the arrival circle of the zone they fought in (EnemySpawn.zone)
 		either way      the party gets EncounterCooldownSeconds to walk away before another fight
 
 	An enemy is one anchored block with a face on its front, so players can see which way it's
@@ -33,6 +34,8 @@ type EnemySpawn = EnemySpawns.EnemySpawn
 -- Starts a fight because `userId` touched `spawn`'s enemy. Returns the user ids of everyone
 -- pulled into it, or nil if no fight started.
 export type StartBattle = (userId: number, spawn: EnemySpawn, contact: Encounter.Contact) -> { number }?
+-- Brings a beaten player, just respawned, back to where the fight was.
+export type ReturnBeaten = (player: Player, zone: EnemySpawns.Zone) -> ()
 
 local BODY_SIZE = Vector3.new(4, 6, 4)
 local BODY_COLOR = Color3.fromRGB(196, 78, 64)
@@ -76,6 +79,7 @@ Overworld.__index = Overworld
 
 type OverworldFields = {
 	startBattle: StartBattle,
+	returnBeaten: ReturnBeaten?,
 	folder: Folder,
 	enemies: { Enemy },
 	clock: number, -- seconds of Heartbeat time since start()
@@ -264,13 +268,14 @@ end
 
 --[[ Overworld ]]
 
-function Overworld.new(startBattle: StartBattle): Overworld
+function Overworld.new(startBattle: StartBattle, returnBeaten: ReturnBeaten?): Overworld
 	local folder = Instance.new("Folder")
 	folder.Name = "OverworldEnemies"
 	folder.Parent = Workspace
 
 	local fields: OverworldFields = {
 		startBattle = startBattle,
+		returnBeaten = returnBeaten,
 		folder = folder,
 		enemies = {},
 		clock = 0,
@@ -329,8 +334,12 @@ function Overworld.endBattle(self: Overworld, winner: BattleTypes.Side?)
 			self:_unfreeze(player)
 			self.cooldownUntil[userId] = self.clock + CombatConfig.EncounterCooldownSeconds
 			if winner == "Enemy" then
+				local zone: EnemySpawns.Zone = fight.enemy.spawn.zone or "Overworld"
 				task.spawn(function()
-					player:LoadCharacterAsync() -- beaten: back to the spawn point
+					player:LoadCharacterAsync() -- beaten: a fresh character, at the spawn point (the lobby)
+					if self.returnBeaten then
+						self.returnBeaten(player, zone) -- then back where the fight was
+					end
 				end)
 			end
 		end
