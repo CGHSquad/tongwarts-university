@@ -35,6 +35,12 @@ local CombatConfig = {
 		Cast = 0.4, -- a heal or a status
 		Guard = 0.2,
 	},
+	-- An enemy's action holds on its outcome (the target's reaction, the damage, a status, a
+	-- knockout) for EnemyHoldSeconds after it lands, then the camera eases back to whoever's next
+	-- over EnemyReturnSeconds; both are added to the wait for every enemy action, so the next turn
+	-- never opens mid-hold.
+	EnemyHoldSeconds = 0.9,
+	EnemyReturnSeconds = 0.45,
 	MinResolveSeconds = 0.5,
 	TurnTimeoutSeconds = 30, -- a player who doesn't act in time skips the turn (AFK/disconnect rule)
 	ResultScreenSeconds = 8, -- victory/defeat screen before everyone's back in the overworld

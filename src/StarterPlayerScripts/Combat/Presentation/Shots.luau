@@ -30,7 +30,7 @@ Shots.FOV = 60
 -- Over the shoulder: measured against the HUD's columns on a phone (844x390) and a 16:9 desktop,
 -- the acting character's head lands around a quarter of the way across, the enemies between 0.4
 -- and 0.6, their plates clear of each other and (just) of the party cards' column.
-Shots.OTS = { back = 6.5, up = 2.6, side = 2.4, focusUp = 2, focusBlend = 0.7 }
+Shots.OTS = { back = 8.5, up = 3, side = 2.8, focusUp = 2, focusBlend = 0.65 }
 Shots.ENEMY = { front = 5, side = 3, up = 0.15, focusUp = 0.1, offset = 1.5, fov = 58 }
 Shots.WIDE = { back = 40, up = 20, focusUp = 3 }
 

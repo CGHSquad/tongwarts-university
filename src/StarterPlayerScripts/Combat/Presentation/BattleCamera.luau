@@ -238,6 +238,14 @@ function BattleCamera.getTarget(self: BattleCamera): Pose
 	return self.target
 end
 
+-- Whether the camera is already heading to (or holding) this pose, so a second move there would
+-- only add a kick.
+function BattleCamera.isHeadingTo(self: BattleCamera, pose: Pose): boolean
+	return self.track == nil
+		and (self.target.position - pose.position).Magnitude < 0.5
+		and (self.target.lookAt - pose.lookAt).Magnitude < 0.5
+end
+
 function BattleCamera.isSettled(self: BattleCamera): boolean
 	return self.track == nil
 		and (self.position - self.target.position).Magnitude < 0.05

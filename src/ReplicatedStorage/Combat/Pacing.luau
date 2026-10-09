@@ -22,15 +22,21 @@ function Pacing.isSummoned(side: BattleTypes.Side, abilities: { string }, abilit
 end
 
 -- Seconds between an action resolving and the next turn opening. `ability` is nil when the turn
--- passed or was lost to an ailment: nothing to show but the log line.
+-- passed or was lost to an ailment: nothing to show but the log line. `side` is the actor's: an
+-- enemy's action holds on its outcome and the camera eases back afterwards (CombatConfig's
+-- EnemyHoldSeconds and EnemyReturnSeconds), which the wait covers.
 function Pacing.resolveSeconds(
 	ability: Abilities.Ability?,
 	results: { BattleTypes.ActionResult }?,
-	summoned: boolean
+	summoned: boolean,
+	side: BattleTypes.Side?
 ): number
 	local seconds = CombatConfig.ResolvePauseSeconds
 	if ability == nil then
 		return seconds
+	end
+	if side == "Enemy" then
+		seconds += CombatConfig.EnemyHoldSeconds + CombatConfig.EnemyReturnSeconds
 	end
 	local extra = CombatConfig.ResolveExtraSeconds
 	if ability.kind == "Attack" then

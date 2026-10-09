@@ -289,7 +289,7 @@ function Observer:check(snapshot)
 				local attacker = byId[resolveAction.actorId]
 				local ability = self.Abilities[resolveAction.abilityId]
 				local summoned = attacker ~= nil and self.Pacing.isSummoned(attacker.side, attacker.abilities, resolveAction.abilityId)
-				expected = self.Pacing.resolveSeconds(ability, resolveAction.results, summoned)
+				expected = self.Pacing.resolveSeconds(ability, resolveAction.results, summoned, if attacker then attacker.side else nil)
 			end
 			self.resolveExpected = expected
 		end
@@ -3919,6 +3919,11 @@ test("C1: Pacing: the pause after an action grows with what the stage has to sho
 	expect(Pacing.resolveSeconds(Abilities.GaleClap, { result(true, false, false), result(true, false, false) }, true) > strike, "two targets take longer than one")
 	expect(Pacing.resolveSeconds(Abilities.Guard, nil, false) >= Config.MinResolveSeconds, "never under the minimum")
 	expect(Pacing.resolveSeconds(Abilities.SapMend, { result(true, false, false) }, true) > base, "a cast has its beat")
+	expectNear(
+		Pacing.resolveSeconds(Abilities.Strike, { result(true, false, false) }, false, "Enemy"),
+		Pacing.resolveSeconds(Abilities.Strike, { result(true, false, false) }, false, "Party") + Config.EnemyHoldSeconds + Config.EnemyReturnSeconds,
+		"an enemy's action holds on its outcome and eases back"
+	)
 	expect(Pacing.isSummoned("Party", { "Strike" }, "Strike"), "a party member's own ability brings its summon out")
 	expect(not Pacing.isSummoned("Party", { "Strike" }, "Attack"), "its character's Attack doesn't")
 	expect(not Pacing.isSummoned("Enemy", { "Strike" }, "Strike"), "enemies have no summon to bring out")

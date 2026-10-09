@@ -285,7 +285,7 @@ function BattleDirector.resolveSeconds(session: BattleSession.BattleSession, act
 	local actor = session.byId[action.actorId]
 	local ability = Abilities[action.abilityId]
 	local summoned = actor ~= nil and Pacing.isSummoned(actor.side, actor.abilities, action.abilityId)
-	return Pacing.resolveSeconds(ability, action.results, summoned)
+	return Pacing.resolveSeconds(ability, action.results, summoned, if actor then actor.side else nil)
 end
 
 function BattleDirector._showResults(self: BattleDirector)
