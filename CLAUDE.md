@@ -38,7 +38,10 @@ treat it as the current source of truth, not something to hand-edit here.
 ## Code layout
 
 - Rojo project: `default.project.json` maps `src/ServerScriptService` (server-only),
-  `src/ReplicatedStorage` (shared data/types) and `src/StarterPlayerScripts` (client UI/visuals).
+  `src/ReplicatedStorage` (shared data/types), `src/StarterPlayerScripts` (client UI/visuals) and
+  `src/ReplicatedFirst` (loading screen). The map (Workspace) is NOT in Rojo: it lives in the Team
+  Create place ("Midnight Mushroom!") and is edited there. Scripts and data are only edited in `src/`;
+  if a teammate edits them in Studio, capture that with `rojo syncback` before the next sync.
   Rojo is pinned in `rokit.toml`. Setup and playtest steps are in `README.md`.
 - Combat prototype (GDD Phase 1): all rules live in `ServerScriptService/Combat/BattleSession.luau`
   (pure Luau, no Roblox APIs); `BattleDirector.luau` starts fights and runs turn timers;

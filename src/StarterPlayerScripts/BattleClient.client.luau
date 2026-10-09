@@ -61,5 +61,15 @@ RunService.Heartbeat:Connect(function()
 	ui:tick(Workspace:GetServerTimeNow())
 end)
 
+-- The overworld panel pops up for a few seconds each time you arrive on the grass (ZoneClient sets "Zone").
+local OVERWORLD_BANNER_SECONDS = 6
+local function onZone()
+	if localPlayer:GetAttribute("Zone") == "Overworld" then
+		ui:showOverworldBanner(OVERWORLD_BANNER_SECONDS)
+	end
+end
+localPlayer:GetAttributeChangedSignal("Zone"):Connect(onZone)
+onZone()
+
 -- Ask for the current state now that we're listening (a battle may already be running).
 requestSyncRemote:FireServer()

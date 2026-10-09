@@ -372,6 +372,7 @@ type UIFields = {
 	gui: ScreenGui,
 
 	overworldFrame: Frame,
+	overworldBanner: number, -- bumped by each showOverworldBanner; 0 when the arrival panel is hidden
 	partyLabel: TextLabel,
 	overworldStatus: TextLabel,
 
@@ -617,6 +618,7 @@ function BattleUI.new(playerGui: PlayerGui, localUserId: number, callbacks: Call
 		gui = gui,
 
 		overworldFrame = overworldFrame,
+		overworldBanner = 0,
 		partyLabel = partyLabel,
 		overworldStatus = overworldStatus,
 
@@ -681,7 +683,9 @@ function BattleUI.render(self: BattleUI, snapshot: Snapshot)
 	self.snapshot = snapshot
 	local battle = snapshot.battle
 	local inBattle = battle ~= nil and isInBattle(battle, self.localUserId)
-	self.overworldFrame.Visible = not inBattle
+	-- Out of a fight, the panel shows for a moment on arriving (showOverworldBanner), and whenever a
+	-- fight you're not in is on, so you're told about it.
+	self.overworldFrame.Visible = not inBattle and (self.overworldBanner > 0 or battle ~= nil)
 	self.battleFrame.Visible = inBattle
 
 	if battle and inBattle then
@@ -708,6 +712,20 @@ function BattleUI.tick(self: BattleUI, now: number)
 	elseif self.detailDeadline then
 		self.turnDetail.Text = `{self.detailBase}  ·  {secondsLeft(self.detailDeadline, now)}s left`
 	end
+end
+
+-- Shows the overworld panel ("TungWarts Grounds" and how fights start) for `seconds`, then hides it.
+-- BattleClient calls this when the player walks out onto the grass.
+function BattleUI.showOverworldBanner(self: BattleUI, seconds: number)
+	self.overworldBanner += 1
+	local banner = self.overworldBanner
+	self:_rerender()
+	task.delay(seconds, function()
+		if self.overworldBanner == banner then -- not shown again since
+			self.overworldBanner = 0
+			self:_rerender()
+		end
+	end)
 end
 
 -- Shows why the server refused a request, and lets the player try again.

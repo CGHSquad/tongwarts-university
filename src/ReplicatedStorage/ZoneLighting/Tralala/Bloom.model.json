@@ -1,0 +1,8 @@
+{
+  "className": "BloomEffect",
+  "properties": {
+    "Size": 32.0,
+    "Threshold": 1.399999976158142,
+    "Intensity": 0.699999988079071
+  }
+}
