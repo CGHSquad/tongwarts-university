@@ -1,6 +1,6 @@
 # UI Milestone 0 report
 
-**Status:** report only, no UI code. Written against `main` at `868328b` (after PR #10). Approving this report starts Milestone 1.
+**Status:** approved by the owner on 2026-10-09, with two amendments folded in below (R24 and R12, both from the Codex review of PR #11). Written against `main` at `868328b` (after PR #10). Milestone 1 starts from this.
 **Reads:** CLAUDE.md, `docs/GDD.md`, `docs/ui/UI_HANDOFF.md` (section 16 first), the seven mockups, `docs/ui/ASSET_PROMPTS.md`, `tools/cut_sheet.py`, and the combat and client code named below.
 **Owner decisions already taken (section 16.2):** Q1 replace `BattleUI` once at parity · Q2 Down system stays off · Q3 S6 runs on mock rewards · Q4 hide WEAK/affinity UI · Q5 mockup palette as the base, one per-school accent · R19 (new, below) add a tiny nameplate opt-out to `BattleView`.
 
@@ -28,16 +28,16 @@ All 18 rows of 16.1 hold against the code. Refinements and additions:
 | R3 ✔ | Q1 answered: replace at parity. Cost: ~30 test references and `Sim:gui`'s root name move with it. | `Flags.NewHud` exists during M2 only; the parity PR deletes `BattleUI.luau` and the flag. |
 | R4 ✔ | Correct. The "ActionResolved" window is `phase == "resolve"` plus `lastAction`, 1.5 s before the next turn opens; HP tweens and stamps must fit in it. | Derive every UI event from changes in `lastAction.sequence`. |
 | R6 ✔ | Correct. Attack targets an Enemy (needs a pick); Guard's target is `Self`, sent as the actor's own id. | The ring submits `("Attack", enemyId)` / `("Guard", actorId)`. |
-| R12 ✔ | Correct, plus: a **solo player owns both party members**. "Local actor" is per turn, but two party cards are "you", and the hero Mana plate shows the **current actor's** summon. | Mock data covers 1 player/2 members and 2 players/2 members. |
+| R12 ✔ | Correct, plus: a **solo player owns both party members**. "Local actor" is per turn, but two party cards are "you", and the hero Mana plate shows the **current actor's** summon. | **Amended:** `MockData` carries 1-member, 2-member (solo owning both, and 2 players) and 4-member states; the harness cycles all of them; the layout tests assert no safe-zone overlap and the 48 px minimum at 1 and 4 members, at phone size. Real play can't make a 4-member party yet (`MaxPartySize = 2`), but the layouts are covered before the size is raised. |
 | R13 ✔ | Correct. Setup lasts 3 s with `initiative.roll / bonus / total`; `turnDeadline` is 30 s out; `round == 0` is the bonus turn; `opening` and `startedBy` feed the headline. | Added to S1 acceptance. |
 | R14 ✔ | Probed Lune 0.10.5 (the test runtime). **Works:** `ScreenGui.ScreenInsets`, `SafeAreaCompatibility`, ViewportFrame, WorldModel, UIScale, UIAspectRatioConstraint, 9-slice ImageLabels, UIGradient / UIStroke / CanvasGroup, ScrollingFrame, BlurEffect, ParticleEmitter, `Font.fromEnum`, gamepad KeyCodes. **Missing:** `AbsoluteSize` / `AbsolutePosition`, `TextBounds`, `GuiState`, `UserInputService.TouchEnabled / KeyboardEnabled`, `GuiService:GetGuiInset` and `SelectedObject`, `ContentProvider:PreloadAsync`, `TextService:GetTextSize`, `Players:GetUserThumbnailAsync`. | Fakes for each in `Sim.luau`; layout verified by arithmetic (§4). |
 | R17 ✔ | Correct: Stage 1 branch at Lv 25, Mastery at player Lv 40, Stage 2 post-launch. S4 stays blocked. | — |
 | **R19 new** | `BattleView` already draws enemy name/HP plates, damage popups and target outlines; S1's enemy overlay would duplicate the plates. | **Decided:** a tiny opt-out in `BattleView` that skips its own enemy nameplates, defaulting to plates ON so `BattleUI` and today's tests are unchanged. Only the new HUD, with its flag on, turns the plates off and draws its own. Nothing else in `BattleView` changes. |
 | **R20 new** | Other client scripts own ScreenGuis at DisplayOrder 40 (PortalToast), 50 (AbyssFlash), 55 / 60 (ZoneClient's whiteout and fade), 100 (LoadingScreen). They must cover the HUD. | All UI ScreenGuis use DisplayOrder 10–30. |
-| **R21 new** | In combat the character is frozen, but Roblox's thumbstick and jump button (and the Sprint touch button, §8) stay on screen. The handoff says "verify". | M1: try `PlayerModule:GetControls():Disable()` during battle (client-only, no rules change). The bottom corners stay clear per the rules either way. |
+| **R21 new** | In combat the character is frozen, but Roblox's thumbstick and jump button (and the Sprint touch button, §8) stay on screen. The handoff says "verify". | M1: try `PlayerModule:GetControls():Disable()` during battle (client-only, no rules change), and hide the Sprint button with the controls. If they're disabled, they are re-enabled reliably when the battle ends, including when the player leaves or dies mid-fight (keyed off the snapshot, not the battle's happy path). The bottom corners stay clear per the rules either way. |
 | **R22 new** | `BattleUI` mirrors targeting legality and affordability on the client (what is *selectable*); the handoff wants `canAfford` from the server. The server re-checks everything, so this is a filter, not an outcome. | Keep it, sourced only from `Abilities` data and snapshot numbers; no new remote. |
 | **R23 new** | `Strings` needs format *functions*, not just constants: Guard's description is built from `CombatConfig` numbers, headlines interpolate names. | `Strings.luau` exports constants and `Strings.format.*`. |
-| **R24 new** | S6 CONTINUE: the server returns everyone after 8 s (`overworldReturnAt`); there is no remote to leave early and none is added. | CONTINUE hides the results panel; the auto-return stands. Logged as a later server question. |
+| **R24 new** | S6 CONTINUE: the server returns everyone after 8 s (`overworldReturnAt`); there is no remote to leave early and none is added. A CONTINUE that only hid the panel would leave the player on an empty battle stage until the server's timer ran out. | **Amended:** no CONTINUE button for now. In its place a "Returning in N…" countdown driven by the snapshot's `overworldReturnAt` (text through `Strings.format`). Tapping during the tallies still skips the count-up. **Later server question:** an early return / party ready-up request, once rewards exist. DEFEAT reuses the S6 layout with live text in place of the VICTORY lettering; no new design. |
 | **R25 new** | The "overworld HUD" isn't designed (§12), but the current overworld panel (arrival banner, "a fight is on") is tested behavior. | Keep it as a stub component, `OverworldNotice`, so nothing regresses at parity. |
 
 ## 3. Folder layout and module names
@@ -90,7 +90,9 @@ function Assets.preload(screen)         -- PreloadAsync on filled ids only, pcal
 
 Keys follow the sheet names in `ASSET_PROMPTS.md` (`Combat_*`, `Turn_*`, `Party_*`, `SkillList_*`, `Results_*`). Fallback looks live in each component. The two lettering pieces fall back to styled text.
 
-**Uploading through the Studio MCP.** `upload_image` takes http URLs and returns an `rbxassetid` map, so the cut PNGs can be served from a local `python -m http.server` and the ids written straight into `Assets.luau`. Untested so far (it creates assets under the owner's account, so it waits for a go-ahead in M6). `search_asset` with `scope = "user", assetType = "Image"` reads back the ids of anything the artist uploads through Asset Manager, which is likely the simpler path.
+**How the art gets in (owner's answer).** The artist uploads the cut PNGs through Studio's Asset Manager (bulk import), named `UI_<Screen>_<Part>.png`, under the owner of the experience. Nothing is uploaded from this side. When art arrives, the job here is: find each upload by its file name, write its id into `Assets.luau`, set the slice values for the stretchable parts, and verify in Studio with screenshots. In M1, `Assets.luau` holds the keys with empty ids.
+
+**Ownership check (read-only, through the Studio MCP).** The owner says the experience is group-owned. The MCP reports universe `10768201973` as `creatorType = "User"` (account `Chrisghrobot2`), and the account belongs to one group, **PhantomVerse (6222756)**. Worth confirming in the Creator Dashboard before the bulk import, because group-owned images only load in a group-owned experience (or after granting the experience permission per asset). Either way the id lookup works: `search_asset` with `scope = "group", groupId = 6222756, assetType = "Image"` lists the group's images (verified: it returned PhantomVerse's existing thumbnails and textures), and `scope = "user"` lists the account's. If a lookup ever can't see the uploads, the next simplest path is the Asset Manager's own list: select the imported images and copy their ids into `Assets.luau` by hand.
 
 ## 6. Q1–Q5, with what each answer means
 
@@ -102,7 +104,12 @@ Keys follow the sheet names in `ASSET_PROMPTS.md` (`Combat_*`, `Turn_*`, `Party_
 
 ## 7. Tools
 
-- **Blender MCP:** the server answered but its handshake with Blender failed ("connection lost"), so Blender wasn't running or its MCP add-on's server wasn't started. The four extensions (Blender Studio Plugin, Validation Tool, Calisthenics Tool, Roblox Rig for Animations) couldn't be verified; none belong to the MCP's own libraries (Poly Haven / Sketchfab / Poly Pizza and the generators are all off). With Blender open and the MCP server started, the installed add-ons can be listed read-only and reported before M3's victory poses need them.
+- **Blender (read-only check, Blender 5.2.2 LTS, nothing changed):**
+  - **Roblox Blender plugin** ("Upload to Roblox", `roblox-blender-plugin` 1.0.5, by Roblox): **installed and enabled.** Uploads selected meshes and rigs straight from Blender to Roblox through the Open Cloud API. This is what the handoff calls the Blender Studio Plugin.
+  - **Validation Tool** (`ValidationTool` 1.0, by Roblox): **installed and enabled.** A sidebar panel that checks a model against Roblox's layered-clothing / avatar asset requirements before upload.
+  - **Calisthenics Tool** (`CalisthenicsTool` 2.1.0, by Roblox): **installed and enabled.** Plays a sample animation on a rigged mesh to show whether the skinning deforms correctly.
+  - **Roblox Rig for Animations:** not an add-on; it's Roblox's R15 rig `.blend` file, and it is **open in Blender right now** (unsaved): an armature with the R15 skeleton (`HumanoidRootNode`, `LowerTorso`, `UpperTorso`, `Head`, limbs; 51 bones including the dynamic-head face bones), the `*_Geo` body meshes, `*_Att` attachment markers and `*_OuterCage` meshes. It's the right base for the party's victory poses on the R15 avatar (M3). The summons use Mixamo skeletons, so their poses would be separate clips on their own rigs.
+  - The MCP's own libraries (Poly Haven / Sketchfab / Poly Pizza) and generators are all off, and aren't needed.
 - **Studio MCP:** `upload_image` (http URLs → asset ids), `store_image` (local file → image URI for the generators; not an upload), `search_asset`, `insert_asset`, `execute_luau`, `screen_capture`.
 
 ## 8. PR #10's client scripts against the safe-zone rules
@@ -119,8 +126,8 @@ These came with the map sync and were not written for the UI spec. None of them 
 | `SummonFX` | A full-screen `AbyssFlash` (50) for about 1 s. | Fine. | — |
 | `AFKClient` | Nothing on screen. | — | — |
 
-Two cross-cutting notes: the DisplayOrder ladder (40 / 50 / 55 / 60 / 100) leaves room for the UI at 10–30, which is what §2 R20 assumes; and these scripts aren't `--!strict` and have no type annotations, which CLAUDE.md asks for. That is a code-quality cleanup, not UI scope.
+Two cross-cutting notes: the DisplayOrder ladder (40 / 50 / 55 / 60 / 100) leaves room for the UI at 10–30, which is what §2 R20 assumes; and these scripts aren't `--!strict` and have no type annotations, which CLAUDE.md asks for. That is a code-quality cleanup, not UI scope. **Owner's call:** these scripts are left alone in M1 (no strict-mode cleanup, no `PortalToast` refactor); they're separate tasks.
 
-## Milestone 1 scope (on approval)
+## Milestone 1 scope (approved)
 
-Foundation modules (`Theme`, `Strings`, `Flags`, `Assets`, `UITypes`, `MockData`, `Layout`, `Input`, `ScreenManager`, `Audio`); the base components with fallbacks; the harness and `SafeZoneDebug`; the R19 opt-out in `BattleView`; the Sim fakes and layout tests. Done when a blank screen opens and closes, the components render with no art, and `lune run tools/typecheck` and `lune run tests/run` stay green.
+Foundation modules (`Theme`, `Strings`, `Flags`, `Assets` with empty ids, `UITypes`, `MockData` with the 1 / 2 / 4-member states, `Layout`, `Input`, `ScreenManager`, `Audio`); the base components with fallbacks; the harness (cycling every mock state) and `SafeZoneDebug`; the R19 opt-out in `BattleView`; the Sim fakes and the layout tests at phone size for 1 and 4 members. Done when a blank screen opens and closes, the components render with no art, and `lune run tools/typecheck` and `lune run tests/run` stay green.
