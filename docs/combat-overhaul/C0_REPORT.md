@@ -321,11 +321,12 @@ Wind-resistant enemies exist so Wind Ward has a job.
 | Wild Tung Tung Sahur | Resist | Neutral | Weak | **Weak** | Weak | Neutral | Resist | Neutral | hardwood shrugs off bonks, dry wood hates gusts |
 | Wild Grove-Keeper | **Weak** | Neutral | Neutral | Resist | Weak | Null | Weak | Resist | mossy caster: brittle branches, wind-wise; Wind Ward target |
 | Wild Elder | Neutral | Weak | Resist | Resist | Weak | Neutral | Neutral | Neutral | gnarled wall: Wind Ward target; its Strike is Neutral so Lv-1 parties aren't stonewalled |
-| Test boss "Grove Warden" (scaled Elder, 16 studs) | Neutral | Resist | **Weak** | **Null** | Weak | Resist | Neutral | Resist | Wind Null is the gimmick Wind Ward exists for; Pierce Weak rewards the Spear (C4/C9 debug); ailments mostly bounce |
+| Test boss "Grove Warden" (scaled Elder, 16 studs) | Neutral | Resist | **Weak** | **Resist** | Weak | Resist | Neutral | Resist | Wind Resist (changed from Null on approval): Wind Ward still matters, the fight isn't gated on it; Pierce Weak rewards the Spear (C4/C9 debug); ailments mostly bounce |
 
-Alternative for the boss if you want a Lv-1 party to have a weakness without a weapon: Wind Resist
-(not Null) and Strike Neutral; then Ward still matters but the fight isn't gated on it. Fire/Water/
-Elec rows are data only (nothing deals them). **Please approve or edit this table; C7 copies it.**
+**Approved 2026-10-09** with the boss changed to Wind Resist / Strike Neutral. Wild Elder stays as
+proposed: its only weaknesses (Slash, Fire) are unreachable before C9, it is the "wall", and C7
+reports Wild Elder fight lengths specifically. Fire/Water/Elec rows are data only (nothing deals
+them). C7 copies this table.
 
 ## 10. Data shapes
 
@@ -396,8 +397,10 @@ Elec rows are data only (nothing deals them). **Please approve or edit this tabl
 
 ## 11. Disagreements: sheet vs GDD vs code (none resolved silently)
 
-1. **Grove Bond**: sheet "raises TungWarts allies' Attack and Magic by 5%" (stat buff; would also
-   boost heals and Mana); GDD "Tung Tung allies deal more damage, +5%…". Plan: GDD (damage only).
+1. **Grove Bond — resolved (the sheet's reading)**: +5% Strength and Magic for Tung Tung allies,
+   +5% per other Tung Tung archetype in the party (teammates' summons count), max +15%, applied
+   only to the stats as used in damage and heal formulas, never to max Mana or the pools. The
+   GDD's "deal more damage" wording should be updated to match.
 2. **Wind Ward — resolved.** The export first read had the Legend's "Ward" rule in two wordings
    (row 62 "actively negates one element's skill", row 63 "strips protection… becomes Neutral")
    and the Base tab saying "Nullifies 1 foe's Wind resistance". The owner confirms the fresh sheet
@@ -407,16 +410,19 @@ Elec rows are data only (nothing deals them). **Please approve or edit this tabl
    costs are authoritative and the guide now describes them (plain weak single 4, single with a
    rider 5–6, self light buff 5, weak all-target 6, buffs/debuffs on another target 8, Signatures
    8–12). The data modules copy the table.
-4. **HP-cost basis**: GDD "8% HP"/"10% HP" (max or current unspecified) vs Timber Fall "25% of
-   current HP (can't KO)". Sheet only says "Health". Needs your call (§13).
-5. **Stat-to-effect constants don't fit the 1–99 range** (code vs GDD intent): `DamageReductionPerEndurance
-   0.02` caps at 60% once Endurance is 30 (Elder reaches it around Lv 28; Base at Lv 50), after which
-   Endurance growth does nothing; `HitChancePerAgility 0.02` with a 70-point Agility gap at Lv 99
-   (Sapling 65 vs Elder 30) pins hit chance at the 50% floor from the mid-game on; `CritChancePerLuck
-   0.01` gives 50% crits at Luck 48; `floor(Agility/2)` initiative bonus outgrows the d20 by Lv 25.
-   The GDD fixes the formulas' shape but not these constants (they are "placeholders per Step 11
-   Q6"). C5 must either re-fit them to the sheet's ranges or make them relative (e.g. reduction =
-   End / (End + K)). This is the biggest hidden decision in C5 (§13).
+4. **HP-cost basis — resolved**: Vital Strike and Stick Driver cost a percent of **max** HP;
+   Timber Fall costs 25% of **current** HP; no HP cost can ever KO the user (every HP-cost skill
+   leaves at least 1 HP).
+5. **Stat-to-effect constants don't fit the 1–99 range — resolved (level-relative)**. The problem:
+   `DamageReductionPerEndurance 0.02` caps at 60% once Endurance is 30 (Elder around Lv 28), the
+   Agility hit gap pins to the 50% floor mid-game, Luck 48 means 50% crits, the initiative bonus
+   outgrows the d20 by Lv 25. Decision: every stat used for a percentage (Endurance damage
+   reduction, the Agility hit gap, the Agility initiative bonus, Luck crit and ailment chances) is
+   divided by the level's reference value `N(L) = 10 + 38 × (L − 1) / 98` (the Medium-lean curve,
+   10 at Lv 1 → 48 at Lv 99) using each participant's own level, i.e. `effective = stat × 10 / N(L)`,
+   and the existing constants and caps apply unchanged, so Level 1 numbers stay identical. Damage
+   and heal formulas keep raw stats. C5's report shows the percentages flat across Lv 1 / 25 / 99
+   per archetype.
 6. **Band Aid**: GDD cost "—", sheet "Mana". Moot in battle; data will carry `battleUsable = false`.
 7. **Elder has two Signatures** (Windbreak and Heartwood Stand) in both sheet and GDD; the other
    three have one. Just noting.
@@ -449,26 +455,26 @@ Sahur + GK, 59 vs 80). "Rounds" are full queue cycles (4 turns each with two-a-s
 will add turns. Elder + Grove-Keeper at 17.8 rounds is already the slow outlier and gets slower if
 Wild Elder resists Strike, which is why §9 keeps its Strike Neutral.
 
-## 13. Decisions I need from you
+## 13. Decisions (approved 2026-10-09)
 
-1. **Affinity table (§9)**: approve or edit, including the boss's Wind Null vs Resist.
-2. **HP costs**: % of max HP for Vital Strike / Stick Driver (current for Timber Fall as written),
-   and "no HP cost can KO" for all three? Or only Timber Fall as the table literally says.
-3. **Stat constants (§11.5)**: re-fit the per-point constants to the 1–99 range in C5, or keep
-   them and accept the caps binding by the mid-20s. My recommendation: make Endurance reduction
-   and the Agility hit gap relative (saturating), keep the GDD's caps, fit so Lv-1 numbers stay
-   within a point or two of today's.
-4. **Wind Ward in C6**: listed-but-disabled (my default) or left out until C7. (Its effect is
-   settled: an affinity break, §11.2.)
-5. **Grove Bond**: GDD damage-only reading, or the sheet's stat reading.
-6. **Grove-Keeper attack clip**: does anyone still have its published asset id? (The upload flow
-   itself is settled, §1: I park clips in `AnimSaves`, you publish under PhantomVerse and paste
-   the ids back; each handoff reminds you to test one clip in a live server.)
-7. **Reduced motion**: `UserGameSettings.ReducedMotion` + a debug attribute, no in-game toggle in
-   this build. OK?
-8. **Boss placement**: a fifth sparring partner on each gym stage, or a single arena spot?
+1. **Affinity table (§9)**: approved with the boss at Wind Resist / Strike Neutral / Pierce Weak;
+   Wild Elder as proposed; C7 reports Wild Elder fight lengths specifically.
+2. **HP costs**: Vital Strike and Stick Driver cost a percent of max HP; Timber Fall 25% of
+   current HP; no HP cost can KO the user, for every HP-cost skill.
+3. **Stat constants**: level-relative (§11.5): percentage stats divided by `N(L) = 10 + 38 × (L − 1) / 98`
+   with the participant's own level; constants and caps unchanged; damage and heals keep raw stats;
+   C5 shows flat percentages at Lv 1 / 25 / 99.
+4. **Wind Ward**: left out of Base's kit until C7 (not listed-disabled).
+5. **Grove Bond**: the sheet's reading, +5% Strength and Magic (+5% per other Tung Tung archetype,
+   teammates' summons count, max +15%), on the stats used in damage and heal formulas only.
+6. **Grove-Keeper attack clip**: assumed gone; re-authored in C3 unless an id turns up from the
+   group's Creator Dashboard. Upload flow as in §1.
+7. **Reduced motion**: `UserGameSettings.ReducedMotion` plus a debug attribute, no in-game toggle.
+8. **Boss placement**: a single arena spot on the original grass overworld, away from the regular
+   enemies' routes and the post-battle return points.
+9. Also approved as proposed: Dizzying Gale multiplies the base chance before Luck and the cap;
+   Luck vs Luck applies to Windbreak's Daze; Fokanda lowers both hit and evasion; Strike Evade
+   subtracts before the 50–98% clamp. Studio playtests of the new kits run at `TestLevel 25`.
 
-Settled since the first draft: the kit table's costs are authoritative (GDD 353ecea), Wind Ward
-is a break (sheet and GDD agree), and the animation upload flow (§1).
-
-Nothing in this milestone changed code. C1 starts on your go.
+Settled earlier: the kit table's costs are authoritative (GDD 353ecea), Wind Ward is a break, and
+the animation upload flow (§1). Nothing in this milestone changed code.
