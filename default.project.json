@@ -10,6 +10,11 @@
     "ReplicatedStorage": {
       "$path": "src/ReplicatedStorage",
 
+      "CombatAssets": {
+        "$className": "Folder",
+        "$ignoreUnknownInstances": true
+      },
+
       "Remotes": {
         "$className": "Folder",
         "Battle": {

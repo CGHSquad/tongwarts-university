@@ -40,7 +40,9 @@ function Pacing.resolveSeconds(
 	end
 	local extra = CombatConfig.ResolveExtraSeconds
 	if ability.kind == "Attack" then
-		seconds += extra.Lunge
+		-- A party member's character makes its own Attack: it dashes in, swings and dashes back.
+		-- Anything else swings or lunges where it stands.
+		seconds += if side == "Party" and not summoned then extra.Dash else extra.Lunge
 		local hits, criticals, knockouts = 0, 0, 0
 		local list: { BattleTypes.ActionResult } = results or {}
 		for _, result in list do
@@ -59,6 +61,9 @@ function Pacing.resolveSeconds(
 		end
 		if results and hits == 0 then
 			seconds += extra.Miss
+		end
+		if hits > 0 then
+			seconds += extra.HitStop
 		end
 		if criticals > 0 then
 			seconds += extra.Critical

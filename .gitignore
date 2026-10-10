@@ -16,3 +16,22 @@ sourcemap.json
 # OS / editor noise
 .DS_Store
 Thumbs.db
+
+# Purchased asset packs (BuiltByBit, see CREDITS.md): licensed for use in our game with attribution,
+# not for redistribution, and this repo is public. Pack files (places, models, meshes, textures,
+# animation data) and anything exported from them live only in the Team Create place
+# (ServerStorage/AssetPacks and the Studio-only runtime folders). Only our code, data and published
+# asset ids are committed.
+*AssetPack*/
+**/AssetPacks/
+**/PackExports/
+**/pack-exports/
+*Weapon Animations*
+*Weapon Models*
+*Animations & Weapons*
+*Combat VFX*
+*.rbxl
+*.rbxlx
+# A local copy of the Studio-only CombatAssets folder (pack clips, effects, weapons) must never
+# be committed, e.g. after a rojo syncback.
+src/ReplicatedStorage/CombatAssets/

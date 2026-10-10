@@ -3993,7 +3993,7 @@ test("C1: Pacing: the pause after an action grows with what the stage has to sho
 	expect(Pacing.resolveSeconds(Abilities.SapMend, { result(true, false, false) }, true) > base, "a cast has its beat")
 	expectNear(
 		Pacing.resolveSeconds(Abilities.Strike, { result(true, false, false) }, false, "Enemy"),
-		Pacing.resolveSeconds(Abilities.Strike, { result(true, false, false) }, false, "Party") + Config.EnemyHoldSeconds + Config.EnemyReturnSeconds,
+		Pacing.resolveSeconds(Abilities.Strike, { result(true, false, false) }, false, nil) + Config.EnemyHoldSeconds + Config.EnemyReturnSeconds,
 		"an enemy's action holds on its outcome and eases back"
 	)
 	expect(Pacing.isSummoned("Party", { "Strike" }, "Strike"), "a party member's own ability brings its summon out")
@@ -4541,7 +4541,8 @@ local function checkPopupClearAt(seed, size, label, attackerSide)
 		end
 		return nil
 	end
-	local watchFor = if attackerSide == "Enemy" then 0.45 + Config.EnemyHoldSeconds else 1.0
+	-- (A party member's own Attack lands after its dash in, ~0.8 s.)
+	local watchFor = if attackerSide == "Enemy" then 0.45 + Config.EnemyHoldSeconds else 0.8 + Config.EnemyHoldSeconds
 	while sim.now + 0.2 <= startedAt + watchFor - 0.05 do -- (while the camera holds)
 		sim:run(0.2)
 		bottom = bottomBound()
@@ -4689,6 +4690,565 @@ test("C1: the camera's guess at who acts next follows the turn queue, the openin
 	expectEqual(BattleView.nextActorId(battle("P1", 0, "Party")), "P2", "the party's bonus turn")
 	expectEqual(BattleView.nextActorId(battle("P2", 0, "Party")), "E1", "then round 1")
 	expectEqual(BattleView.nextActorId(battle("E1", 3, nil, { P1 = true, P2 = true }, "reward")), nil, "no one: the fight is decided")
+end)
+
+print("\nCombat overhaul C2: Strike attack and impact feel")
+
+local function deepCopy(value)
+	if type(value) ~= "table" then
+		return value
+	end
+	local copy = {}
+	for k, v in value do
+		copy[k] = deepCopy(v)
+	end
+	return copy
+end
+
+-- A real input-phase snapshot of a 2v2 on the grass (Ann's two summons against two Wild Saplings),
+-- to build crafted beats from.
+local craftedCache = nil
+local function inputSnapshot()
+	if craftedCache then
+		return deepCopy(craftedCache)
+	end
+	local sim, observer = newWorld(930)
+	join(sim, observer, -1, "Ann", nil)
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side")
+	runToPhase(sim, observer, function(b)
+		return b.phase == "input"
+	end, "the first turn")
+	craftedCache = deepCopy(observer.last.battle)
+	return deepCopy(craftedCache)
+end
+
+local function participant(battle, id)
+	for _, p in battle.participants do
+		if p.id == id then
+			return p
+		end
+	end
+	return nil
+end
+
+local function result(targetId, hit, critical, damage, knockedOut)
+	return { targetId = targetId, hit = hit, critical = critical, damage = if hit then damage else 0, healed = 0, knockedOut = knockedOut == true, cleansed = false }
+end
+
+-- A standalone BattleView on a fresh client (no fight of its own), driven in small steps so
+-- frame-level timing (hit-stop, stagger, slow-mo) can be measured. `prepare(client)` runs before
+-- the stage is built (fake CombatAssets, a RightHand, a weapon attribute).
+local function stageView(seed, prepare)
+	local sim = Sim.new(PLACE, { seed = seed })
+	sim:startServer()
+	local client = sim:connectClient(-1, "Ann")
+	assert(sim:runUntil(function()
+		return client.started == true
+	end, 5), "Ann never started")
+	sim:run(0.5)
+	if prepare then
+		prepare(client)
+	end
+	local BattleView = client.env.require(client.env.dm:GetService("StarterPlayer").StarterPlayerScripts.Combat.BattleView)
+	local view = BattleView.new({ enemyNameplates = false, partyNameplates = false, playerGui = client.playerGui })
+	local battle = inputSnapshot()
+	for _, p in battle.participants do
+		if p.side == "Party" then
+			p.ownerUserId = -1
+		end
+	end
+	view:render(battle)
+	for _ = 1, 20 do
+		view:update(0.05)
+	end
+	local stage = client.env.dm:GetService("Workspace"):FindFirstChild("BattleStage")
+	return {
+		sim = sim,
+		client = client,
+		view = view,
+		battle = battle,
+		stage = stage,
+		BattleView = BattleView,
+	}
+end
+
+-- Plays `action` on the view and steps it 1/60 s at a time for `seconds`, calling `sample(t)`
+-- after each step (t = real seconds since the action was rendered).
+local function playBeat(h, action, mutate, seconds, sample)
+	local battle = deepCopy(h.battle)
+	battle.phase = "resolve"
+	battle.currentActorId = action.actorId
+	h.sequence = (h.sequence or (battle.lastAction and battle.lastAction.sequence or 0)) + 1
+	action.sequence = h.sequence
+	battle.lastAction = action
+	if mutate then
+		mutate(battle)
+	end
+	h.view:render(battle)
+	local t = 0
+	if sample then
+		sample(0)
+	end
+	while t < seconds do
+		h.view:update(1 / 60)
+		t += 1 / 60
+		if sample then
+			sample(t)
+		end
+	end
+	return battle
+end
+
+local function popupsOn(h, id)
+	local list = {}
+	for _, child in h.stage[id].Spot:GetChildren() do
+		if child.Name == "Popup" then
+			table.insert(list, child)
+		end
+	end
+	return list
+end
+
+test("C2: a character's own Attack dashes to just short of its target, lands on the contact frame, and dashes back to its spot", function()
+	local h = stageView(931)
+	local root = h.stage.P1.Character.HumanoidRootPart
+	local home = root.CFrame.Position
+	local enemy = h.stage.E1.Spot.CFrame.Position
+	local nearestAt, nearest = nil, math.huge
+	local firstPopupAt = nil
+	local separation: number? = nil
+	playBeat(h, { actorId = "P1", abilityId = "Attack", results = { result("E1", true, false, 9) } }, nil, 2.6, function(t)
+		local flat = root.CFrame.Position - enemy
+		local d = roblox.Vector3.new(flat.X, 0, flat.Z).Magnitude
+		if d < nearest then
+			nearest, nearestAt = d, t
+		end
+		if firstPopupAt == nil and #popupsOn(h, "E1") > 0 then
+			firstPopupAt = t
+			-- On the contact frame the target is seen beside the attacker, not behind it.
+			local camera = h.client.env.dm:GetService("Workspace").CurrentCamera
+			local eye = camera.CFrame.Position
+			local toAttacker = (root.CFrame.Position - eye).Unit
+			local toTarget = (enemy - eye).Unit
+			separation = math.deg(math.acos(math.clamp(toAttacker:Dot(toTarget), -1, 1)))
+		end
+	end)
+	expect(separation ~= nil and separation > 5, `the attacker doesn't hide its target at contact ({separation} degrees apart from the camera)`)
+	local start = (home - enemy).Magnitude
+	expect(nearest < 6 and nearest > 2, `stops just short of the target ({nearest} studs from its middle; started {start})`)
+	expect(firstPopupAt ~= nil and math.abs(firstPopupAt - 0.77) < 0.05, `the number shows on the contact frame, 0.77 s in ({firstPopupAt})`)
+	expect((root.CFrame.Position - home).Magnitude < 0.05, `back on its formation spot afterwards ({(root.CFrame.Position - home).Magnitude})`)
+	expectEqual(h.stage.P1.Character:GetAttribute("Stance"), "Idle", "and back in its idle stance")
+	expectEqual(h.stage.P1.Character:GetAttribute("Weapon"), "Club", "the default weapon")
+end)
+
+test("C2: on contact the clock holds for the hit-stop (4 frames, 6 on a critical), then a critical's slow-mo; several targets register 4 frames apart", function()
+	local h = stageView(932)
+	local scales, popupAt = {}, {}
+	playBeat(h, { actorId = "P1", abilityId = "Attack", results = { result("E1", true, true, 14), result("E2", true, false, 9) } }, nil, 2, function(t)
+		table.insert(scales, { t = t, scale = h.view.sequencer:timeScale() })
+		for _, id in { "E1", "E2" } do
+			if popupAt[id] == nil and #popupsOn(h, id) > 0 then
+				popupAt[id] = t
+			end
+		end
+	end)
+	local frozen, slowed = 0, 0
+	for _, s in scales do
+		if s.scale == 0 then
+			frozen += 1
+		elseif s.scale > 0 and s.scale < 1 then
+			slowed += 1
+		end
+	end
+	expect(frozen >= 5 and frozen <= 7, `a critical's hit-stop freezes about 6 frames ({frozen})`)
+	expect(slowed >= 16 and slowed <= 20, `then a slow-mo of about 0.3 s ({slowed} frames)`)
+	expect(popupAt.E1 ~= nil and popupAt.E2 ~= nil, "both numbers show")
+	local gap = popupAt.E2 - popupAt.E1
+	-- The second target registers 4 frames of the clock later; the clock is frozen 0.1 s and then
+	-- runs at a quarter speed, so that's 0.1 + 0.067 / 0.25 ≈ 0.37 s of real time.
+	expect(gap > 0.25 and gap < 0.45, `the second target registers a few frames after the first, stretched by the slow-mo ({gap})`)
+	local styles = {}
+	for _, id in { "E1", "E2" } do
+		local p = popupsOn(h, id)[1]
+		styles[id] = p and p:GetAttribute("Style")
+	end
+	expectEqual(styles.E1, "Critical", "the critical's number is the critical style")
+	expectEqual(styles.E2, "Normal", "the other is a normal number")
+	local flash = h.client.playerGui:FindFirstChild("BattleFlash")
+	expect(flash == nil, "the flash is gone once it has played")
+end)
+
+test("C2: a critical flashes the screen; with reduced motion there's no hit-stop, slow-mo or flash", function()
+	local h = stageView(933)
+	local sawFlash, minScale = false, 1
+	playBeat(h, { actorId = "P1", abilityId = "Attack", results = { result("E1", true, true, 14) } }, nil, 1.2, function()
+		sawFlash = sawFlash or h.client.playerGui:FindFirstChild("BattleFlash") ~= nil
+		minScale = math.min(minScale, h.view.sequencer:timeScale())
+	end)
+	expect(sawFlash, "a white flash on the critical")
+	expectEqual(minScale, 0, "and a hit-stop")
+
+	local r = stageView(934, function(client)
+		localPlayer(client):SetAttribute("ReducedMotion", true)
+	end)
+	local Motion = r.client.env.require(r.client.env.dm:GetService("StarterPlayer").StarterPlayerScripts.UI.Core.Motion)
+	Motion.start()
+	sawFlash, minScale = false, 1
+	playBeat(r, { actorId = "P1", abilityId = "Attack", results = { result("E1", true, true, 14) } }, nil, 1.2, function()
+		sawFlash = sawFlash or r.client.playerGui:FindFirstChild("BattleFlash") ~= nil
+		minScale = math.min(minScale, r.view.sequencer:timeScale())
+	end)
+	expect(not sawFlash, "no flash with reduced motion")
+	expectEqual(minScale, 1, "no hit-stop or slow-mo with reduced motion")
+	expectEqual(r.BattleView.heldSeconds(true, true), 0, "and the beat budgets no held time")
+end)
+
+test("C2: a miss reads MISS on an enemy and EVADE on a hero; a guarded hit is blue; a guarding character holds its guard stance", function()
+	local h = stageView(935)
+	playBeat(h, { actorId = "P1", abilityId = "Attack", results = { result("E1", false, false, 0) } }, nil, 1.4)
+	local miss = popupsOn(h, "E1")[1]
+	expect(miss ~= nil and miss:GetAttribute("Style") == "Miss", "MISS on the enemy")
+	-- An enemy swings at P1, who dodges.
+	playBeat(h, { actorId = "E1", abilityId = "Strike", results = { result("P1", false, false, 0) } }, nil, 1.4)
+	local evade = popupsOn(h, "P1")
+	local found = false
+	for _, p in evade do
+		found = found or p:GetAttribute("Style") == "Evade"
+	end
+
+	expect(found, "EVADE on the hero who dodged")
+	-- P1 guards: it takes its guard stance, and a blow on it reads blue.
+	local function bracing(battle)
+		table.insert(participant(battle, "P1").statuses, { id = "Bracing", name = "Bracing", kind = "Buff", turnsLeft = 1 })
+	end
+	playBeat(h, { actorId = "P1", abilityId = "Guard", results = { { targetId = "P1", hit = true, critical = false, damage = 0, healed = 0, knockedOut = false, cleansed = false, applied = "Bracing" } } }, bracing, 1)
+	expectEqual(h.stage.P1.Character:GetAttribute("Stance"), "Guard", "the guard stance while Bracing")
+	playBeat(h, { actorId = "E2", abilityId = "Strike", results = { result("P1", true, false, 5) } }, bracing, 1.4)
+	local guarded = false
+	for _, p in popupsOn(h, "P1") do
+		guarded = guarded or p:GetAttribute("Style") == "Guarded"
+	end
+	expect(guarded, "a guarded hit reads in the guarded style")
+	-- Its next turn: Bracing is gone, back to the idle stance.
+	local battle = deepCopy(h.battle)
+	battle.currentActorId = "P1"
+	battle.turnNumber += 5
+	h.view:render(battle)
+	expectEqual(h.stage.P1.Character:GetAttribute("Stance"), "Idle", "back to idle when Bracing ends")
+end)
+
+test("C2: a knocked-out character crumples to the floor and dims, out of its teammate's shot", function()
+	local h = stageView(936)
+	local root = h.stage.P1.Character.HumanoidRootPart
+	local standingUp = root.CFrame.UpVector.Y
+	playBeat(h, { actorId = "E1", abilityId = "Strike", results = { result("P1", true, false, 90, true) } }, function(battle)
+		local p = participant(battle, "P1")
+		p.status = "KnockedOut"
+		p.hp = 0
+	end, 2.2)
+	h.sim:run(1) -- (the fake Roblox lands tweens on its own clock)
+	expect(standingUp > 0.9, "standing before")
+	expectEqual(h.stage.P1.Character:GetAttribute("Stance"), "Downed", "the downed stance")
+	expect(root.CFrame.UpVector.Y < 0.3, `lying down ({root.CFrame.UpVector.Y})`)
+	local floorY = h.stage.P1.Spot.CFrame.Position.Y - 2.5
+	expect(root.CFrame.Position.Y < floorY + 1.2, `on the floor ({root.CFrame.Position.Y - floorY} studs up)`)
+	local dimmed = h.stage.P1.Character.Head.LocalTransparencyModifier
+	expect(dimmed > 0.2, `dimmed ({dimmed})`)
+	-- From over the other party member's shoulder it no longer stands in the frame: its head is
+	-- below the camera's sight line to the enemies.
+	expect(root.CFrame.Position.Y < h.stage.P2.Character.HumanoidRootPart.CFrame.Position.Y - 1.5, "lower than its standing teammate's hips")
+end)
+
+test("C2: the weapon is held in the right hand (DebugWeapon picks it); effects and sounds play from the data modules when their assets exist", function()
+	local h = stageView(937, function(client)
+		local dm = client.env.dm
+		local character = dm:GetService("Workspace"):FindFirstChild("Ann")
+		local hand = roblox.Instance.new("Part")
+		hand.Name = "RightHand"
+		hand.Size = roblox.Vector3.new(1, 1, 1)
+		hand.Parent = character
+		local assets = dm:GetService("ReplicatedStorage"):FindFirstChild("CombatAssets")
+		local weapons = roblox.Instance.new("Folder")
+		weapons.Name = "Weapons"
+		weapons.Parent = assets
+		local club = roblox.Instance.new("Model")
+		club.Name = "Club"
+		local main = roblox.Instance.new("Part")
+		main.Name = "Main"
+		main.Size = roblox.Vector3.new(1.1, 2.5, 7.3) -- the warhammer's grip part: longest along Z, taller than it's thick
+		main.Parent = club
+		club:SetAttribute("GripC0", roblox.CFrame.new(0, -0.5, 0))
+		club.Parent = weapons
+		local vfx = roblox.Instance.new("Folder")
+		vfx.Name = "Vfx"
+		vfx.Parent = assets
+		for _, name in { "HitClub", "DashDust" } do
+			local template = roblox.Instance.new("Part")
+			template.Name = name
+			local emitter = roblox.Instance.new("ParticleEmitter")
+			emitter:SetAttribute("EmitCount", 200)
+			emitter.Parent = template
+			template.Parent = vfx
+		end
+	end)
+	local weapon = h.stage.P1.Character:FindFirstChild("Weapon")
+	expect(weapon ~= nil, "a weapon in the character")
+	local grip = weapon and weapon:FindFirstChild("WeaponGrip", true)
+	expect(grip ~= nil and grip.Part0 ~= nil and grip.Part0.Name == "RightHand", "held by a Motor6D on its right hand")
+	local sawHit, sawDust, sawSwing, sawHitSound = false, false, false, false
+	local sound = h.client.env.dm:GetService("SoundService")
+	playBeat(h, { actorId = "P1", abilityId = "Attack", results = { result("E1", true, false, 9) } }, nil, 1.2, function()
+		sawHit = sawHit or h.stage:FindFirstChild("HitClub") ~= nil
+		sawDust = sawDust or h.stage:FindFirstChild("DashDust") ~= nil
+		sawSwing = sawSwing or sound:FindFirstChild("Sfx_swing") ~= nil
+		sawHitSound = sawHitSound or sound:FindFirstChild("Sfx_hit") ~= nil
+	end)
+	expect(sawDust, "dust as the dash starts")
+	expect(sawHit, "the Club's hit effect on contact")
+	expect(sawSwing and sawHitSound, "the swing and hit sounds")
+
+	-- Knocked out, it lets go: the weapon lies flat on the floor beside it.
+	playBeat(h, { actorId = "E1", abilityId = "Strike", results = { result("P1", true, false, 90, true) } }, function(battle)
+		local p = participant(battle, "P1")
+		p.status = "KnockedOut"
+		p.hp = 0
+	end, 2.2)
+	h.sim:run(1)
+	local dropped = h.stage.P1.Character:FindFirstChild("Weapon")
+	local mainPart = dropped and dropped:FindFirstChild("Main", true)
+	expect(mainPart ~= nil and mainPart.Anchored and dropped:FindFirstChild("WeaponGrip", true) == nil, "dropped: out of the hand, resting where it fell")
+	local floorTop = h.stage.Floor.CFrame.Position.Y + h.stage.Floor.Size.Y / 2
+	local cf = mainPart.CFrame
+	local half = (math.abs(cf.RightVector.Y) * mainPart.Size.X + math.abs(cf.UpVector.Y) * mainPart.Size.Y + math.abs(cf.LookVector.Y) * mainPart.Size.Z) / 2
+	expect(math.abs(cf.LookVector.Y) < 0.05, `its long axis lies flat ({cf.LookVector.Y})`)
+	expect(math.abs(cf.Position.Y - half - floorTop) < 0.1, `resting on the floor, not in it ({cf.Position.Y - half - floorTop})`)
+
+	-- Fists: no model in the hand.
+	local f = stageView(938, function(client)
+		local character = client.env.dm:GetService("Workspace"):FindFirstChild("Ann")
+		local hand = roblox.Instance.new("Part")
+		hand.Name = "RightHand"
+		hand.Parent = character
+		localPlayer(client):SetAttribute("DebugWeapon", "Fists")
+	end)
+	expectEqual(f.stage.P1.Character:GetAttribute("Weapon"), "Fists", "DebugWeapon picks the Fists")
+	expect(f.stage.P1.Character:FindFirstChild("Weapon") == nil, "bare hands")
+end)
+
+test("C2: with clips: the character breathes in its idle, its swing freezes in the hit-stop, it flinches, blocks while guarding, and stops everything when downed", function()
+	local ids = {}
+	local h = stageView(940, function(client)
+		local dm = client.env.dm
+		local character = dm:GetService("Workspace"):FindFirstChild("Ann")
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		humanoid.RigType = roblox.Enum.HumanoidRigType.R15
+		-- Published ids for every clip (as after publishing under the group).
+		local CharacterMoves = client.env.require(dm:GetService("ReplicatedStorage").Combat.CharacterMoves)
+		for index, clip in CharacterMoves.all() do
+			clip.id = `rbxassetid://{99100 + index}`
+			ids[clip.key] = clip.id
+		end
+	end)
+	local sim = h.sim
+	local p1 = h.view.figures.P1.rig
+	local p2 = h.view.figures.P2.rig
+	expect(p1 ~= nil and p1:hasClips(), "the character has its clips")
+	local idle = p1.tracks["Hammer.Idle"]
+	expect(idle ~= nil and idle.IsPlaying and idle.Looped, "the combat idle loops")
+
+	-- The swing: played fitted to the dash, frozen through the hit-stop, running again after.
+	local swingSpeeds = {}
+	playBeat(h, { actorId = "P1", abilityId = "Attack", results = { result("E1", true, false, 9) } }, nil, 2.2, function()
+		local swing = p1.tracks["Hammer.Attack"]
+		if swing and swing.IsPlaying then
+			table.insert(swingSpeeds, { scale = h.view.sequencer:timeScale(), speed = swing.Speed })
+		end
+	end)
+	local frozen, running = 0, 0
+	for _, s in swingSpeeds do
+		if s.scale == 0 then
+			expectEqual(s.speed, 0, "the swing is frozen in the hit-stop")
+			frozen += 1
+		elseif s.speed > 0 then
+			running += 1
+		end
+	end
+	expect(frozen >= 3 and running > 10, `the swing ran, froze for the hit-stop and ran on ({frozen} frozen, {running} running)`)
+	local played = {}
+	for _, entry in sim.animationLog do
+		if entry.event == "Play" then
+			played[entry.id] = true
+		end
+	end
+	expect(played[ids["Shared.Approach"]] and played[ids["Shared.Retreat"]], "the dash in and back play their clips")
+
+	-- A hit on a hero: its flinch clip.
+	playBeat(h, { actorId = "E1", abilityId = "Strike", results = { result("P2", true, false, 6) } }, nil, 2)
+	local flinch = p2.tracks["Shared.Flinch"]
+	expect(flinch ~= nil, "the flinch clip played on the struck hero")
+
+	-- Guarding: the guard loop, and a blocked hit plays the block-hit clip.
+	local bracing = function(b)
+		table.insert(participant(b, "P2").statuses, { id = "Bracing", turns = 1 })
+	end
+	playBeat(h, { actorId = "E1", abilityId = "Strike", results = { result("P2", true, false, 3) } }, bracing, 2)
+	expectEqual(p2:getStance(), "Guard", "guard stance")
+	local guardLoop = p2.tracks["Hammer.Guard"]
+	expect(guardLoop ~= nil and guardLoop.IsPlaying, "the guard loop plays")
+	expect(p2.tracks["Hammer.GuardHit"] ~= nil, "the blocked hit plays the block-hit clip")
+
+	-- Knocked out: every track stops.
+	playBeat(h, { actorId = "E1", abilityId = "Strike", results = { result("P2", true, false, 40, true) } }, function(b)
+		participant(b, "P2").hp = 0
+		participant(b, "P2").status = "KnockedOut"
+	end, 3)
+	expectEqual(p2:getStance(), "Downed", "downed")
+	for key, track in p2.tracks do
+		expect(not track.IsPlaying, `{key} stopped when downed`)
+	end
+end)
+
+test("C2: on several targets the impact lands on the first hit, never a miss; a summon's blow has no weapon effect; the server pays for a character's dash", function()
+	local h = stageView(941, function(client)
+		local dm = client.env.dm
+		local assets = dm:GetService("ReplicatedStorage"):FindFirstChild("CombatAssets")
+		local vfx = roblox.Instance.new("Folder")
+		vfx.Name = "Vfx"
+		vfx.Parent = assets
+		for _, name in { "HitClub", "HitOnHero" } do
+			local template = roblox.Instance.new("Part")
+			template.Name = name
+			template.Parent = vfx
+		end
+	end)
+	local frozenAt, popupAt = nil, {}
+	local sawClub, sawGeneric = false, false
+	playBeat(h, { actorId = "P1", abilityId = "GaleClap", results = { result("E1", false, false, 0), result("E2", true, false, 11) } }, nil, 2.5, function(t)
+		if frozenAt == nil and h.view.sequencer:timeScale() == 0 then
+			frozenAt = t
+		end
+		for _, id in { "E1", "E2" } do
+			if popupAt[id] == nil and #popupsOn(h, id) > 0 then
+				popupAt[id] = t
+			end
+		end
+		sawClub = sawClub or h.stage:FindFirstChild("HitClub") ~= nil
+		sawGeneric = sawGeneric or h.stage:FindFirstChild("HitOnHero") ~= nil
+	end)
+	expect(popupAt.E1 ~= nil and popupAt.E2 ~= nil and frozenAt ~= nil, "both outcomes show and the clock holds")
+	expect(popupAt.E2 - popupAt.E1 > 0.05, `the hit registers frames after the miss ({popupAt.E2 - popupAt.E1})`)
+	expect(math.abs(frozenAt - popupAt.E2) < 0.02, `the hit-stop lands on the hit's frame ({frozenAt} vs {popupAt.E2}), not the miss's ({popupAt.E1})`)
+	expect(not sawClub, "a summon's blow doesn't use the character's weapon effect")
+	expect(sawGeneric, "it plays the plain hit effect")
+
+	-- A critical on a later target than a plain hit: the impact (its longer freeze and the flash)
+	-- lands on the critical's frame.
+	local h2 = stageView(943)
+	local freezeAt, flashAt, critAt = nil, nil, nil
+	playBeat(h2, { actorId = "P1", abilityId = "GaleClap", results = { result("E1", true, false, 8), result("E2", true, true, 16) } }, nil, 2.5, function(t)
+		if freezeAt == nil and h2.view.sequencer:timeScale() == 0 then
+			freezeAt = t
+		end
+		if flashAt == nil and h2.client.playerGui:FindFirstChild("BattleFlash") then
+			flashAt = t
+		end
+		if critAt == nil and #popupsOn(h2, "E2") > 0 then
+			critAt = t
+		end
+	end)
+	expect(critAt ~= nil and freezeAt ~= nil and flashAt ~= nil, "the critical lands, freezes and flashes")
+	expect(math.abs(freezeAt - critAt) < 0.02 and math.abs(flashAt - critAt) < 0.02, `on the critical's frame ({critAt}), not the first hit's (freeze {freezeAt}, flash {flashAt})`)
+
+	local rs = h.sim.server.dm:GetService("ReplicatedStorage")
+	local Pacing = h.sim.server.require(rs.Combat.Pacing)
+	local Abilities = h.sim.server.require(rs.Combat.Abilities)
+	local Config = h.sim.server.require(rs.Combat.CombatConfig)
+	local hit = { result("E1", true, false, 5) }
+	local party = Pacing.resolveSeconds(Abilities.Attack, hit, false, "Party")
+	local plain = Pacing.resolveSeconds(Abilities.Attack, hit, false, nil)
+	local extra = Config.ResolveExtraSeconds
+	expectNear(party - plain, extra.Dash - extra.Lunge, "a character's own Attack pays for the dash instead of the lunge")
+end)
+
+test("C2: a guarding hero knocked out by a guarded hit still shows it guarded; an enemy going down raises dust", function()
+	local h = stageView(942, function(client)
+		local assets = client.env.dm:GetService("ReplicatedStorage"):FindFirstChild("CombatAssets")
+		local vfx = roblox.Instance.new("Folder")
+		vfx.Name = "Vfx"
+		vfx.Parent = assets
+		for _, name in { "GuardBlock", "HitOnHero", "KnockoutDust" } do
+			local template = roblox.Instance.new("Part")
+			template.Name = name
+			template.Parent = vfx
+		end
+	end)
+	-- P2 guards (the snapshot the blow comes in on); the knockout clears its Bracing.
+	local guarding = deepCopy(h.battle)
+	table.insert(participant(guarding, "P2").statuses, { id = "Bracing", turns = 1 })
+	h.view:render(guarding)
+	h.battle = guarding
+	local sawBlock, sawPlain, style = false, false, nil
+	playBeat(h, { actorId = "E1", abilityId = "Strike", results = { result("P2", true, false, 11, true) } }, function(b)
+		local p = participant(b, "P2")
+		p.statuses = {}
+		p.hp = 0
+		p.status = "KnockedOut"
+	end, 2.5, function()
+		sawBlock = sawBlock or h.stage:FindFirstChild("GuardBlock") ~= nil
+		sawPlain = sawPlain or h.stage:FindFirstChild("HitOnHero") ~= nil
+		local popup = popupsOn(h, "P2")[1]
+		style = style or (popup and popup:GetAttribute("Style"))
+	end)
+	expectEqual(style, "Guarded", "the number reads as guarded")
+	expect(sawBlock and not sawPlain, "the guard effect, not a plain hit")
+
+	local sawDust = false
+	playBeat(h, { actorId = "P1", abilityId = "Attack", results = { result("E1", true, false, 90, true) } }, function(b)
+		local e = participant(b, "E1")
+		e.hp = 0
+		e.status = "KnockedOut"
+	end, 3, function()
+		sawDust = sawDust or h.stage:FindFirstChild("KnockoutDust") ~= nil
+	end)
+	expect(sawDust, "dust as the enemy goes down")
+end)
+
+test("C2: data: every character clip names its pack source and a hit marker inside its length; weapons, effects and sounds are complete", function()
+	local sim = Sim.new(PLACE, { seed = 7 })
+	local rs = sim.server.dm:GetService("ReplicatedStorage")
+	local CharacterMoves = sim.server.require(rs.Combat.CharacterMoves)
+	local Weapons = sim.server.require(rs.Combat.Weapons)
+	local CombatFx = sim.server.require(rs.Combat.CombatFx)
+	local CombatSounds = sim.server.require(rs.Combat.CombatSounds)
+	local all = CharacterMoves.all()
+	expect(#all >= 15, `every clip listed once ({#all})`)
+	for _, clip in all do
+		expect(string.find(clip.source, "›", 1, true) ~= nil, `{clip.key} names its source`)
+		expect(clip.length > 0, `{clip.key} has a length`)
+		if clip.hit then
+			expect(clip.hit > 0 and clip.hit < clip.length, `{clip.key}'s hit marker is inside it`)
+		end
+		if clip.reset then
+			expect(clip.reset >= (clip.hit or 0) and clip.reset <= clip.length, `{clip.key}'s reset follows its hit`)
+		end
+	end
+	for _, id in Weapons.ids() do
+		local weapon = Weapons.get(id)
+		expectEqual(weapon.category, "Strike", `{id} is a Strike weapon`)
+		expect(CharacterMoves.moveset(weapon.moveset).attack.hit ~= nil, `{id}'s attack has a contact frame`)
+		expect(CombatFx[weapon.hitEffect] ~= nil, `{id}'s hit effect exists`)
+		expect(CombatSounds[weapon.sounds.swing] ~= nil and CombatSounds[weapon.sounds.hit] ~= nil, `{id}'s sounds exist`)
+	end
+	expectEqual(Weapons.get(nil).id, "Club", "the Club by default")
+	expectEqual(Weapons.get("Nonsense").id, "Club", "and for anything unknown")
+	for _, key in { "swing", "hit", "crit", "miss", "guard" } do
+		expect(CombatSounds[key] ~= nil and string.find(CombatSounds[key].id, "rbxassetid://", 1, true) == 1, `sound {key} has an id`)
+	end
+	for key, def in CombatFx do
+		expect(def.mobileCap <= def.cap and def.cap <= 120, `{key}: capped for mobile ({def.cap}/{def.mobileCap})`)
+	end
 end)
 
 print(string.format("\n%d passed, %d failed", passed, failed))

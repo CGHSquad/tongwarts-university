@@ -36,6 +36,8 @@ local Workspace = game:GetService("Workspace")
 
 local Combat = ReplicatedStorage:WaitForChild("Combat")
 local Abilities = require(Combat:WaitForChild("Abilities"))
+local CharacterMoves = require(Combat:WaitForChild("CharacterMoves"))
+local Weapons = require(Combat:WaitForChild("Weapons"))
 local BattleTypes = require(Combat:WaitForChild("BattleTypes"))
 local CombatConfig = require(Combat:WaitForChild("CombatConfig"))
 local Pacing = require(Combat:WaitForChild("Pacing"))
@@ -45,6 +47,9 @@ local BattleTheme = require(script.Parent:WaitForChild("BattleTheme"))
 local Presentation = script.Parent:WaitForChild("Presentation")
 local BattleCamera = require(Presentation:WaitForChild("BattleCamera"))
 local CameraSpec = require(Presentation:WaitForChild("CameraSpec"))
+local CharacterRig = require(Presentation:WaitForChild("CharacterRig"))
+local Fx = require(Presentation:WaitForChild("Fx"))
+local Sfx = require(Presentation:WaitForChild("Sfx"))
 local Sequencer = require(Presentation:WaitForChild("Sequencer"))
 local Shots = require(Presentation:WaitForChild("Shots"))
 local Transition = require(Presentation:WaitForChild("Transition"))
@@ -93,6 +98,18 @@ local PARTY_FACING = Vector3.xAxis
 -- long, so the shot over its shoulder is readable before the blow lands.
 local LUNGE_LEAD = 0.3
 local RESULT_SECONDS = CameraSpec.Victory.seconds
+-- A player character's own Attack (C2): it dashes in to just short of its target, swings (the
+-- clip's Hit marker lands on the contact frame), recovers, and dashes back to its formation spot.
+-- These add up to what CombatConfig.ResolveExtraSeconds.Dash pays for on the server.
+local DASH = {
+	approach = 0.35, -- in to the strike point
+	swing = 0.42, -- from the swing starting to its contact frame
+	recover = 0.25, -- after contact, before heading back
+	back = 0.4, -- back to the formation spot
+}
+local IMPACT = CameraSpec.Impact
+-- Hits on several targets register this far apart (CAMERA_SPEC 4C: staggered damage registration).
+local STAGGER_SECONDS = IMPACT.staggerFrames * IMPACT.frameSeconds
 
 -- A summon's animation tracks, loaded from its art once its model is in the DataModel. Any can be
 -- missing (see Summons.SummonAnimations).
@@ -122,6 +139,7 @@ type Figure = {
 	character: Model?, -- party members: the player's character, always on the field
 	characterRoot: BasePart?,
 	characterHome: CFrame?, -- where the character's root stands
+	rig: CharacterRig.CharacterRig?, -- party members: the character's clips, weapon and stance (C2)
 	highlight: Highlight,
 	hpLabel: TextLabel,
 	appearances: number, -- bumped each time the summon comes out, so only the latest one dismisses it
@@ -153,6 +171,8 @@ type ViewFields = {
 	camera: BattleCamera.BattleCamera,
 	sequencer: Sequencer.Sequencer,
 	transition: Transition.Transition?,
+	before: BattleState?, -- the snapshot before the latest one (what an action came in on)
+	scaledTracks: { [AnimationTrack]: number }, -- a beat's creature swings, at the speed each was asked for
 }
 
 -- What the HUD is showing while the player picks a move: the command ring, the skill list, or a
@@ -575,6 +595,7 @@ local function createFigure(participant: ParticipantState, parent: Instance, ene
 		character = nil,
 		characterRoot = nil,
 		characterHome = nil,
+		rig = nil,
 		highlight = highlight,
 		hpLabel = hpLabel,
 		appearances = 0,
@@ -596,6 +617,12 @@ local function createFigure(participant: ParticipantState, parent: Instance, ene
 		figure.character = character
 		figure.characterRoot = root
 		figure.characterHome = characterHome
+		local localPlayer = Players.LocalPlayer
+		local owner = if localPlayer and participant.ownerUserId == localPlayer.UserId
+			then localPlayer
+			elseif participant.ownerUserId then Players:GetPlayerByUserId(participant.ownerUserId)
+			else nil
+		figure.rig = CharacterRig.new(character, root, characterHome, floor.Y, CharacterRig.weaponFor(owner))
 		shown = character
 	end
 
@@ -691,9 +718,10 @@ end
 -- is the most its clip may take and `budget` the most the whole appearance may take, fade-out
 -- included (both from the beat's Pacing budget). Returns how long after it starts coming out the
 -- beat lands (for an attack, the blow), and a track to end at `clipSeconds` when its length wasn't
--- known yet.
+-- known yet. `held` is the real time the beat's hit-stop and slow-mo hold its clock (its swing
+-- freezes with them), so the dismissal waits that much longer.
 type Beat = "cast" | "attack" | "death"
-local function bringOutSummon(figure: Figure, beat: Beat, clipSeconds: number, budget: number, sequencer: Sequencer.Sequencer): (number, AnimationTrack?)
+local function bringOutSummon(figure: Figure, beat: Beat, clipSeconds: number, budget: number, sequencer: Sequencer.Sequencer, held: number?): (number, AnimationTrack?)
 	figure.appearances += 1
 	local appearance = figure.appearances
 	local summon = figure.summon
@@ -723,7 +751,7 @@ local function bringOutSummon(figure: Figure, beat: Beat, clipSeconds: number, b
 		end
 	end
 	-- Never out longer than the beat allows: the fade-out ends inside the budget.
-	outFor = math.max(SUMMON_FADE_SECONDS * 2, math.min(outFor, budget))
+	outFor = math.max(SUMMON_FADE_SECONDS * 2, math.min(outFor, budget)) + (held or 0)
 
 	task.delay(outFor - SUMMON_FADE_SECONDS, function()
 		if figure.appearances == appearance then
@@ -752,25 +780,46 @@ local POPUP_CREATURE_HEIGHT = 0.35 -- where on a creature's body a popup starts,
 local AILMENT_POPUP_HEIGHT = -0.8 -- an ailment's name, just under the number (above it, it reached the status block on a phone)
 BattleView.POPUP_RISE_STUDS = POPUP_RISE_STUDS -- (for the tests)
 BattleView.AILMENT_POPUP_HEIGHT = AILMENT_POPUP_HEIGHT
-local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: string, color: Color3, startHeight: number)
+-- How a popup reads (C2, punchier numbers): a normal number pops in; a critical is bigger, red and
+-- jolts; MISS slides off to the side in grey, EVADE the other way in white; a guarded hit is blue.
+export type PopupStyle = "Normal" | "Critical" | "Miss" | "Evade" | "Guarded"
+local POPUP_POP = { Normal = 1.6, Critical = 2.1, Miss = 1.2, Evade = 1.2, Guarded = 1.5 }
+local POPUP_SLIDE = 1.4 -- studs a MISS or EVADE slides sideways as it rises
+local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: string, color: Color3, startHeight: number, style: PopupStyle?)
 	local part, rest = body(figure)
 	-- From a creature's chest, a third of the way up its body (an imported rig's root sits at its
 	-- feet): its middle put the number under the phone's status block from over the party's shoulder.
 	local lift = if figure.character then 0 else math.max(0, (figure.home.Position.Y - BLOCK_SIZE.Y / 2 + figure.height * POPUP_CREATURE_HEIGHT) - rest.Position.Y)
+	local kind: PopupStyle = style or "Normal"
 	local popup = Instance.new("BillboardGui")
 	popup.Name = "Popup"
 	popup.Adornee = part
-	popup.Size = UDim2.fromOffset(160, 40)
+	popup.Size = if kind == "Critical" then UDim2.fromOffset(210, 54) else UDim2.fromOffset(160, 40)
 	popup.StudsOffset = Vector3.new(0, startHeight + lift, 0)
 	popup.AlwaysOnTop = true
 	popup.LightInfluence = 0
+	popup:SetAttribute("Style", kind)
 	local label = newBillboardLabel(popup, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), BattleTheme.FontHeavy)
 	label.Text = text
 	label.TextColor3 = color
+	label.TextStrokeTransparency = 0
 	popup.Parent = figure.spot
 
+	local moving = Motion.scale() > 0
+	if moving then
+		-- Pops in big and settles (the critical jolts as it does).
+		local scale = Instance.new("UIScale")
+		scale.Scale = POPUP_POP[kind]
+		scale.Parent = label
+		TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+		if kind == "Critical" then
+			label.Rotation = -9
+			TweenService:Create(label, TweenInfo.new(0.24, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out), { Rotation = 0 }):Play()
+		end
+	end
+	local slide = if kind == "Miss" then POPUP_SLIDE elseif kind == "Evade" then -POPUP_SLIDE else 0
 	local rise = TweenInfo.new(POPUP_RISE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + lift + POPUP_RISE_STUDS, 0) }):Play()
+	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(slide, startHeight + lift + POPUP_RISE_STUDS, 0) }):Play()
 	TweenService:Create(label, TweenInfo.new(POPUP_RISE_SECONDS * 0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In, 0, false, POPUP_RISE_SECONDS * 0.5), { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
 	sequencer:own(popup, POPUP_SECONDS)
 end
@@ -810,8 +859,33 @@ function BattleView.new(options: Options?): BattleView
 		camera = BattleCamera.new(),
 		sequencer = sequencer,
 		transition = nil,
+		before = nil,
+		scaledTracks = {},
 	}
-	return setmetatable(fields, BattleView)
+	local self = setmetatable(fields, BattleView)
+	-- A hit-stop or slow-mo holds the sequencer's clock: the stage's clips follow it.
+	sequencer:setOnScaleChanged(function(scale: number)
+		self:_applyTimeScale(scale)
+	end)
+	return self
+end
+
+-- Clips playing in a beat follow the sequencer's time scale (0 in a hit-stop, a fraction in a
+-- slow-mo): the characters' one-shot clips and the creatures' swings registered for the beat.
+function BattleView._applyTimeScale(self: BattleView, scale: number)
+	for _, figure in self.figures do
+		local rig = figure.rig
+		if rig then
+			rig:setTimeScale(scale)
+		end
+	end
+	for track, rate in self.scaledTracks do
+		if track.IsPlaying then
+			track:AdjustSpeed(rate * scale)
+		else
+			self.scaledTracks[track] = nil
+		end
+	end
 end
 
 -- Draws the latest battle state (nil = no battle running). Returns how long until the blow of a
@@ -819,6 +893,7 @@ end
 function BattleView.render(self: BattleView, battle: BattleState?): number
 	local previous = self.battle
 	self.battle = battle
+	self.before = previous
 	if battle == nil then
 		if previous ~= nil or self.folder ~= nil then
 			self:_leave()
@@ -885,8 +960,16 @@ function BattleView._fall(self: BattleView, figure: Figure, remaining: number, a
 	if figure.summonBlock then
 		figure.summonBlock.Color = BattleTheme.KnockedOut
 	end
-	fadeModel(figure.character or figure.summon, 0.35, 0)
 	local sequencer = self.sequencer
+	local rig = figure.rig
+	if rig then
+		-- A character crumples to the floor and dims, out of its teammates' shots (C2).
+		rig:setStance("Downed")
+	else
+		fadeModel(figure.character or figure.summon, 0.35, 0)
+	end
+	-- Dust where it goes down, a character or a creature.
+	Fx.play(sequencer, "KnockoutDust", figure.home - Vector3.new(0, BLOCK_SIZE.Y / 2, 0), self.folder)
 	local budget = math.max(0.3, remaining)
 	local untimed: AnimationTrack? = nil
 	if figure.character == nil then
@@ -1138,6 +1221,19 @@ function BattleView._build(self: BattleView, battle: BattleState)
 			end
 		end
 	end
+	-- The characters take their stance: knocked out already (joining late), guarding, or the
+	-- breathing combat idle.
+	for _, figure in self.figures do
+		local rig = figure.rig
+		if rig then
+			if figure.knockedOut then
+				rig:setStance("Downed", true)
+			else
+				rig:setStance(if self:_isBracing(figure.id) then "Guard" else "Idle")
+				rig:resumeStance()
+			end
+		end
+	end
 	-- Don't replay an action that happened before this client started watching.
 	self.lastActionSeen = if battle.lastAction then battle.lastAction.sequence else 0
 	self.turnSeen = 0
@@ -1170,12 +1266,16 @@ end
 function BattleView._clear(self: BattleView)
 	for _, figure in self.figures do
 		figure.appearances += 1 -- any pending dismissal is moot now
+		if figure.rig then
+			figure.rig:destroy()
+		end
 		figure.summon:Destroy()
 		if figure.character then
 			figure.character:Destroy()
 		end
 	end
 	table.clear(self.figures)
+	table.clear(self.scaledTracks)
 	if self.folder then
 		self.folder:Destroy()
 		self.folder = nil
@@ -1212,6 +1312,11 @@ function BattleView._refreshFigures(self: BattleView)
 			end
 			if not figure.knockedOut then
 				fadeModel(figure.character or figure.summon, 0, 0)
+				-- A character guards while Bracing (the universal Guard), else breathes.
+				local rig = figure.rig
+				if rig then
+					rig:setStance(if self:_isBracing(participant.id) then "Guard" else "Idle")
+				end
 			end
 		end
 
@@ -1231,6 +1336,35 @@ function BattleView._refreshFigures(self: BattleView)
 		end
 	end
 end
+
+local function bracingIn(battle: BattleState?, id: string): boolean
+	if battle == nil then
+		return false
+	end
+	for _, participant in battle.participants do
+		if participant.id == id then
+			for _, status in participant.statuses do
+				if status.id == "Bracing" then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+-- Whether a participant is guarding right now (the universal Guard's Bracing status).
+function BattleView._isBracing(self: BattleView, id: string): boolean
+	return bracingIn(self.battle, id)
+end
+
+-- Whether a participant was guarding as the action being played came in: in the snapshot before
+-- it, or after it (a knockout clears Bracing, so a guarding hero knocked out by a guarded hit
+-- only shows it in the snapshot before).
+function BattleView._wasBracing(self: BattleView, id: string): boolean
+	return bracingIn(self.before, id) or bracingIn(self.battle, id)
+end
+
 
 --[[ Camera shots ]]
 
@@ -1379,7 +1513,17 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	-- are compressed to fit inside it; an enemy's beat also holds on the outcome and eases back.
 	local enemyActor = actor.side == "Enemy"
 	local seconds = Pacing.resolveSeconds(ability, action.results, summoned, actor.side)
-	local duration = math.max(0, seconds - RESOLVE_SLACK)
+	-- A hit-stop and a critical's slow-mo hold the clock for some real time (C2): the beat's
+	-- sequence is that much shorter, so it still ends inside the server's wait.
+	local plannedHit, plannedCritical = false, false
+	if attacking then
+		for _, result in action.results do
+			plannedHit = plannedHit or result.hit
+			plannedCritical = plannedCritical or (result.hit and result.critical)
+		end
+	end
+	local held = BattleView.heldSeconds(plannedHit, plannedCritical)
+	local duration = math.max(0, seconds - RESOLVE_SLACK - held)
 	local holdAndReturn = if enemyActor then CombatConfig.EnemyHoldSeconds + CombatConfig.EnemyReturnSeconds else 0
 	local clipSeconds = duration - holdAndReturn - HIT_DELAY - 0.2 - (if summoned then SUMMON_FADE_SECONDS * 2 else 0)
 
@@ -1388,7 +1532,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	local untimed: AnimationTrack? = nil
 	local swings = false -- a real model playing a timed swing clip (otherwise it lunges)
 	if summoned then
-		lead, untimed = bringOutSummon(actor, if attacking then "attack" else "cast", clipSeconds, duration, self.sequencer)
+		lead, untimed = bringOutSummon(actor, if attacking then "attack" else "cast", clipSeconds, duration, self.sequencer, held)
 		performer, performerHome = actor.summonRoot, actor.summonHome
 		swings = attacking and actor.summonBlock == nil and actor.clips ~= nil and actor.clips.attack ~= nil
 		if untimed then
@@ -1407,6 +1551,32 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			swings = track ~= nil
 		end
 	end
+	-- A party member's character makes its own Attack: it dashes in to just short of its target,
+	-- swings and dashes back (C2). The blow lands DASH.approach + DASH.swing in.
+	local rig = actor.rig
+	-- The weapon's effect, sound and trauma belong to the character's own blows, not its summon's.
+	local weapon: Weapons.Weapon? = if rig and not summoned then rig.weapon else nil
+	local dashTarget: Figure? = nil
+	if attacking and not summoned and actor.character ~= nil and rig ~= nil then
+		for _, result in action.results do
+			local target = self.figures[result.targetId]
+			if target and target ~= actor then
+				dashTarget = target
+				break
+			end
+		end
+	end
+	if dashTarget then
+		lead = DASH.approach + DASH.swing - HIT_DELAY
+	end
+	-- A creature's or summon's swing follows the hit-stop and slow-mo too.
+	local swingTrack = if actor.clips then actor.clips.attack else nil
+	if swingTrack and swingTrack.IsPlaying then
+		local ok, speed = pcall(function()
+			return swingTrack.Speed
+		end)
+		self.scaledTracks[swingTrack] = if ok and type(speed) == "number" then speed else 1
+	end
 	if untimed then
 		-- The clip's length wasn't known yet (still downloading): it plays as is and stops at the
 		-- budget, so it can't outlive the beat.
@@ -1421,13 +1591,14 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 
 	local camera = self.camera
 	local sequencer = self.sequencer
-	local firstHit: Figure? = nil
 	local firstTarget: Figure? = nil
-	local anyCritical = false
+	-- Each target that's hit, on the frame its blow lands (staggered, misses included).
+	local hits: { { at: number, target: Figure, critical: boolean, toward: Vector3 } } = {}
 	local knockedSomeone = false
 	-- When the action's outcome shows: an attack as its blow lands, anything else once its
 	-- performer has materialized (a summon) and gestured.
 	local outcomeAt = if attacking then lead + HIT_DELAY else lead + (if summoned then 0.3 else 0.1)
+	local struckOrder = 0 -- the order targets register in (CAMERA_SPEC 4C: staggered)
 	local helping = ability.kind ~= "Guard" and (ability.targets == "Self" or ability.targets == "Ally" or ability.targets == "AllAllies")
 	if actor.side == "Party" and not attacking and helping then
 		-- A heal or buff: its invocation shot is seen (CameraSpec.Cast.initiationSeconds, once the
@@ -1440,6 +1611,13 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 		if target == nil then
 			continue
 		end
+		-- When this target's blow lands: the first on the contact frame, any others a few frames
+		-- apart.
+		local contact = lead + HIT_DELAY
+		if attacking and target ~= actor then
+			contact += struckOrder * STAGGER_SECONDS
+			struckOrder += 1
+		end
 
 		if result.knockedOut then
 			knockedSomeone = true
@@ -1449,7 +1627,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			-- enemy's hold (the hold is there to show it), done before the camera returns.
 			target.fall = "Cued"
 			local fallen = target
-			local fallAt = lead + HIT_DELAY
+			local fallAt = contact
 			local returnSeconds = if enemyActor then CombatConfig.EnemyReturnSeconds else 0
 			table.insert(cues, {
 				at = fallAt,
@@ -1464,36 +1642,53 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 
 		if ability.kind == "Attack" and target ~= actor then
 			local toward = (target.home.Position - actor.home.Position).Unit
-			-- A character, a block, or a model with no swing clip lunges at its target.
-			if index == 1 and not swings then
+			if target == dashTarget and rig then
+				-- A dashing character strikes from the target's side (see _strikePoint): the blow,
+				-- the recoil and any sidestep follow that line, not the one between the spots.
+				local from = self:_strikePoint(actor, target, rig.weapon.reach).Position
+				local line = standing(target).Position - from
+				line = Vector3.new(line.X, 0, line.Z)
+				if line.Magnitude > 1e-3 then
+					toward = line.Unit
+				end
+			end
+			-- A block or a model with no swing clip lunges at its target (a character dashes instead).
+			if index == 1 and not swings and dashTarget == nil then
 				nudge(performer, performerHome, toward * 4, 0.15, lead)
 			end
+			-- The target reacts as its blow lands: recoils and flinches (or blocks), or sidesteps
+			-- a miss; with its effect and sound.
+			local reacting = target
+			local guarding = self:_wasBracing(target.id)
+			table.insert(cues, {
+				at = contact,
+				run = function()
+					self:_react(reacting, actor, result, weapon, guarding, toward)
+				end,
+			})
 			if result.hit then
-				local struck, struckHome = body(target)
-				nudge(struck, struckHome, toward * 1.5, 0.1, lead + HIT_DELAY)
-				local character, characterRoot = target.character, target.characterRoot
-				if character and characterRoot then
-					flinch(character, characterRoot, lead + HIT_DELAY)
-				end
-				firstHit = firstHit or target
-				anyCritical = anyCritical or result.critical
+				table.insert(hits, { at = contact, target = target, critical = result.critical, toward = toward })
 			end
 		end
 
 		-- The outcome shows when it happens: the number as the blow lands, a cast's effect once the
 		-- summon has materialized and gestured.
 		local popups: { () -> () } = {}
+		local guardedHit = ability.kind == "Attack" and result.hit and self:_wasBracing(target.id)
 		if ability.kind == "Attack" then
 			if not result.hit then
+				-- A party member's whiff reads MISS; an enemy's blow a hero dodges reads EVADE.
+				local evaded = target.side == "Party"
 				table.insert(popups, function()
-					showPopup(sequencer, target, "MISS", BattleTheme.SubtleText, 0)
+					showPopup(sequencer, target, if evaded then "EVADE" else "MISS", if evaded then BattleTheme.Text else BattleTheme.SubtleText, 0, if evaded then "Evade" else "Miss")
 				end)
 			else
 				local strong = result.critical or result.knockedOut
 				local text = if result.critical then `CRIT -{result.damage}` else `-{result.damage}`
-				local color = if strong then BattleTheme.Danger else BattleTheme.Text
+				local color = if guardedHit then BattleTheme.ManaBar elseif strong then BattleTheme.Danger else BattleTheme.Text
+				local style: PopupStyle = if result.critical then "Critical" elseif guardedHit then "Guarded" else "Normal"
 				table.insert(popups, function()
-					showPopup(sequencer, target, text, color, 0)
+					showPopup(sequencer, target, text, color, 0, style)
 				end)
 				local inflicted = result.inflicted
 				if inflicted then
@@ -1521,8 +1716,9 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 				showPopup(sequencer, target, name, BattleTheme.Accent, 0)
 			end)
 		end
+		local showAt = if ability.kind == "Attack" then contact else outcomeAt
 		for _, show in popups do
-			table.insert(cues, { at = outcomeAt, run = show })
+			table.insert(cues, { at = showAt, run = show })
 		end
 	end
 
@@ -1648,22 +1844,260 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 		end
 		returnAt(landsAt + hold)
 	end
-	if firstHit then
-		table.insert(cues, {
-			at = lead + HIT_DELAY,
-			run = function()
-				local kicks = CameraSpec.Kicks
-				local shake = if anyCritical then kicks.criticalShake else kicks.shake
-				camera:shake(shake.amplitude, shake.seconds)
-				if anyCritical then
-					camera:punch(kicks.criticalPunch)
-				end
-			end,
-		})
+	if dashTarget and rig then
+		self:_dashCues(cues, actor, rig, dashTarget, lead + HIT_DELAY, plannedCritical)
+	end
+	if #hits > 0 then
+		-- The impact (hit-stop, punch, trauma; a critical's flash and slow-mo) lands on the frame of
+		-- the first critical hit, else the first hit; every other hit gets its own small shudder
+		-- and pulse on its own frame.
+		local main = hits[1]
+		for _, h in hits do
+			if h.critical then
+				main = h
+				break
+			end
+		end
+		for _, h in hits do
+			local hit = h
+			table.insert(cues, {
+				at = hit.at,
+				run = if hit == main
+					then function()
+						self:_impact(actor, hit.target, hit.critical, weapon, hit.toward)
+					end
+					else function()
+						camera:punch(IMPACT.tick.fovPunch, IMPACT.fovPunchSettleSeconds)
+						camera:shake(IMPACT.tick.amplitude, IMPACT.tick.seconds)
+					end,
+			})
+		end
 	end
 
 	sequencer:play(duration, cues)
 	return duration, outcomeAt
+end
+
+-- Real seconds a beat's hit-stop (and a critical's slow-mo) hold the clock for; none with reduced
+-- motion, or when nothing lands.
+function BattleView.heldSeconds(anyHit: boolean, critical: boolean): number
+	if not anyHit or Motion.scale() <= 0 then
+		return 0
+	end
+	local frames = if critical then IMPACT.criticalHitStopFrames else IMPACT.hitStopFrames
+	local seconds = frames * IMPACT.frameSeconds
+	if critical then
+		seconds += IMPACT.slowMo.seconds * (1 - IMPACT.slowMo.scale)
+	end
+	return seconds
+end
+
+-- How far a figure's body reaches out from its middle, flat (a dash stops this far plus the
+-- weapon's reach short of it).
+local function bodyRadius(figure: Figure): number
+	if figure.character then
+		return 1
+	end
+	if figure.summonBlock then
+		return BLOCK_SIZE.X / 2
+	end
+	local ok, size = pcall(function()
+		return figure.summon:GetExtentsSize()
+	end)
+	if ok and typeof(size) == "Vector3" then
+		return math.clamp(math.max(size.X, size.Z) / 2, 1, figure.height * 0.5)
+	end
+	return math.max(1, figure.height * 0.2)
+end
+
+-- Where a character stops to swing at `target`: just short of its body on the line from its own
+-- spot, facing it, at the character's own height.
+--
+-- It strikes from the target's side as the beat's camera sees it (over the attacker's shoulder),
+-- a little toward the camera: from straight in front, its own body hid the target's reaction at
+-- the moment of contact (the C2 playtest). It takes the side nearer its formation spot.
+local STRIKE_TOWARD_CAMERA = 0.35 -- how far round toward the camera from straight beside (tan of the angle)
+function BattleView._strikePoint(self: BattleView, attacker: Figure, target: Figure, reach: number): CFrame
+	local home = attacker.characterHome or attacker.home
+	local center = standing(target).Position
+	local flat = Vector3.new(home.Position.X - center.X, 0, home.Position.Z - center.Z)
+	local direction = if flat.Magnitude > 1e-3 then flat.Unit else -attacker.home.LookVector
+	local eye = self:_shotFor(attacker.id).position
+	local toEye = Vector3.new(eye.X - center.X, 0, eye.Z - center.Z)
+	if toEye.Magnitude > 1e-3 then
+		local side = toEye.Unit:Cross(Vector3.yAxis)
+		if side:Dot(direction) < 0 then
+			side = -side
+		end
+		direction = (side + toEye.Unit * STRIKE_TOWARD_CAMERA).Unit
+	end
+	local point = Vector3.new(center.X, home.Position.Y, center.Z) + direction * (bodyRadius(target) + reach)
+	return CFrame.lookAt(point, Vector3.new(center.X, point.Y, center.Z))
+end
+
+-- The cues of a character's own Attack (C2): the dash in, the swing timed to land on `contact`,
+-- the recovery and the dash back to its formation spot. Without clips (the tests, an R6 avatar)
+-- the root still dashes and lunges into the blow.
+function BattleView._dashCues(self: BattleView, cues: { Sequencer.Cue }, actor: Figure, rig: CharacterRig.CharacterRig, target: Figure, contact: number, critical: boolean)
+	local root = actor.characterRoot
+	local home = actor.characterHome
+	if root == nil or home == nil then
+		return
+	end
+	local sequencer = self.sequencer
+	local strike = self:_strikePoint(actor, target, rig.weapon.reach)
+	local floorDrop = Vector3.new(0, home.Position.Y - (actor.home.Position.Y - BLOCK_SIZE.Y / 2), 0)
+	local clip = if critical then rig.moveset.critical else rig.moveset.attack
+	local shared = CharacterMoves.Shared
+	local swing: AnimationTrack? = nil
+	table.insert(cues, {
+		at = 0,
+		run = function()
+			rig:play(shared.approach, shared.approach.length / DASH.approach, 0.05)
+			TweenService:Create(root, TweenInfo.new(DASH.approach, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { CFrame = strike }):Play()
+			Fx.play(sequencer, "DashDust", home - floorDrop, self.folder)
+		end,
+	})
+	table.insert(cues, {
+		at = contact - DASH.swing,
+		run = function()
+			swing = rig:play(clip, (clip.hit or clip.length * 0.5) / DASH.swing, 0.05)
+			rig:setTrails(true)
+			Sfx.play(sequencer, rig.weapon.sounds.swing)
+			if swing == nil then
+				-- No clip: a lunge into the blow from the strike point.
+				nudge(root, strike, strike.LookVector * 1.5, 0.12, math.max(0, DASH.swing - 0.12))
+			end
+		end,
+	})
+	table.insert(cues, {
+		at = contact + DASH.recover,
+		run = function()
+			rig:stop(swing, 0.2)
+			rig:setTrails(false)
+			rig:play(shared.retreat, shared.retreat.length / DASH.back, 0.1)
+			TweenService:Create(root, TweenInfo.new(DASH.back, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), { CFrame = home }):Play()
+			Fx.play(sequencer, "DashDust", strike - floorDrop, self.folder)
+		end,
+	})
+	table.insert(cues, {
+		at = contact + DASH.recover + DASH.back,
+		run = function()
+			if rig:getStance() ~= "Downed" then
+				root.CFrame = home
+			end
+			rig:resumeStance()
+		end,
+	})
+end
+
+-- Which way a blow shakes the camera: an overhead weapon down, a hook across, anything else back
+-- along its line (an enemy's blow pushes the camera back the way it came).
+function BattleView._blowDirection(_self: BattleView, attacker: Figure, struck: Figure, weapon: Weapons.Weapon?, line: Vector3?): Vector3
+	local flat = line or (struck.home.Position - attacker.home.Position)
+	flat = Vector3.new(flat.X, 0, flat.Z)
+	local along = if flat.Magnitude > 1e-3 then flat.Unit else Vector3.xAxis
+	if weapon and weapon.trauma == "Vertical" then
+		return -Vector3.yAxis
+	elseif weapon and weapon.trauma == "Lateral" then
+		return along:Cross(Vector3.yAxis)
+	end
+	return along
+end
+
+-- The contact frame of a blow (CAMERA_SPEC 4B): the hit-stop (a critical's longer, then its flash
+-- and slow-mo), the field of view snapping narrower and easing back, and trauma along the blow.
+-- Reduced motion: none of the holds, flash or shake (the punch scales to nothing too).
+function BattleView._impact(self: BattleView, attacker: Figure, struck: Figure, critical: boolean, weapon: Weapons.Weapon?, line: Vector3?)
+	local camera, sequencer = self.camera, self.sequencer
+	if Motion.scale() > 0 then
+		local frames = if critical then IMPACT.criticalHitStopFrames else IMPACT.hitStopFrames
+		sequencer:hold(frames * IMPACT.frameSeconds, 0)
+		if critical then
+			sequencer:hold(IMPACT.slowMo.seconds, IMPACT.slowMo.scale)
+			self:_flash()
+		end
+	end
+	camera:punch(IMPACT.fovPunch, IMPACT.fovPunchSettleSeconds)
+	local trauma = if critical then IMPACT.criticalTrauma else IMPACT.trauma
+	camera:shake(trauma.amplitude, trauma.seconds, self:_blowDirection(attacker, struck, weapon, line))
+end
+
+-- A critical's white flash over the whole screen.
+function BattleView._flash(self: BattleView)
+	local playerGui = self.playerGui
+	if playerGui == nil then
+		local localPlayer = Players.LocalPlayer
+		local found = if localPlayer then localPlayer:FindFirstChild("PlayerGui") else nil
+		playerGui = if found and found:IsA("PlayerGui") then found else nil
+	end
+	if playerGui == nil then
+		return
+	end
+	local screen = Instance.new("ScreenGui")
+	screen.Name = "BattleFlash"
+	screen.IgnoreGuiInset = true
+	screen.ResetOnSpawn = false
+	screen.DisplayOrder = 50
+	local frame = Instance.new("Frame")
+	frame.Name = "Flash"
+	frame.Size = UDim2.fromScale(1, 1)
+	frame.BackgroundColor3 = Color3.new(1, 1, 1)
+	frame.BackgroundTransparency = IMPACT.flash.startTransparency
+	frame.BorderSizePixel = 0
+	frame.Parent = screen
+	screen.Parent = playerGui
+	TweenService:Create(frame, TweenInfo.new(IMPACT.flash.seconds), { BackgroundTransparency = 1 }):Play()
+	self.sequencer:own(screen, IMPACT.flash.seconds + 0.1)
+end
+
+-- A target as its blow lands. A hit: it recoils; a character flinches (its flinch clip, or the
+-- procedural flinch) or, guarding, plays its blocked hit behind a shield effect; with the hit's
+-- effect and sound. A miss: it sidesteps (a character's evade clip), with a whiff and a whoosh.
+function BattleView._react(self: BattleView, target: Figure, attacker: Figure, result: BattleTypes.ActionResult, weapon: Weapons.Weapon?, guarding: boolean, toward: Vector3)
+	local sequencer = self.sequencer
+	local struck, struckHome = body(target)
+	local middle = standing(target).Position + Vector3.new(0, bodyHeight(target) * 0.15, 0)
+	local rig = target.rig
+	if result.hit then
+		-- It recoils and flinches (or blocks) once the hit-stop lets go: the cue runs just after
+		-- this one, and the sequencer's clock stands still through any hold the impact starts.
+		-- (Not one the blow knocks out: its fall has started and owns the body from here.)
+		sequencer:addCue(sequencer:elapsed() + 1e-3, function()
+			if result.knockedOut then
+				return
+			end
+			nudge(struck, struckHome, toward * 1.5, 0.1, 0)
+			local played = false
+			if rig then
+				local clip = if guarding then rig.moveset.guardHit else CharacterMoves.Shared.flinch
+				played = rig:play(clip, 1, 0.05) ~= nil
+			end
+			if not played and target.character and target.characterRoot then
+				flinch(target.character, target.characterRoot, 0)
+			end
+		end)
+		local effect = if guarding then "GuardBlock"
+			elseif result.critical then "HitCritical"
+			elseif weapon then weapon.hitEffect
+			else "HitOnHero"
+		Fx.play(sequencer, effect, CFrame.lookAt(middle, middle - toward), self.folder)
+		Sfx.play(sequencer, if guarding then "guard" elseif result.critical then "crit" elseif weapon then weapon.sounds.hit else "hit")
+	else
+		-- Sidestep: a character dashes aside (alternating sides), a creature shuffles.
+		-- Across the blow's line, so it never steps into its attacker.
+		local leftward = (result.targetId:byte(-1) or 0) % 2 == 0
+		local across = toward:Cross(Vector3.yAxis)
+		local side = (if across.Magnitude > 1e-3 then across.Unit else struckHome.RightVector) * (if leftward then -1 else 1)
+		if rig then
+			rig:play(if leftward then CharacterMoves.Shared.evadeLeft else CharacterMoves.Shared.evadeRight, 1.4, 0.05)
+		end
+		nudge(struck, struckHome, side * 2.5, 0.18, 0)
+		local feet = Vector3.new(middle.X, target.home.Position.Y - BLOCK_SIZE.Y / 2, middle.Z)
+		Fx.play(sequencer, "EvadeDust", CFrame.new(feet), self.folder)
+		Fx.play(sequencer, "Whiff", CFrame.lookAt(middle, middle + toward), self.folder)
+		Sfx.play(sequencer, "miss")
+	end
 end
 
 -- The fight is decided: a slow orbit of the party for a win, a tilt down to the floor for a loss.

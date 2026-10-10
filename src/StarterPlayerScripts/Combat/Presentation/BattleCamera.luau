@@ -40,6 +40,9 @@ BattleCamera.FOCUS_EFFECT_NAME = "BattleCameraFocus"
 -- way there at omega * t = 8, so a 0.25 s sweep is done in 0.25 s rather than creeping on after it
 -- (at 6.6 the live trace still showed 0.1-0.4 studs settling over another 0.1 s).
 BattleCamera.SETTLE = 8
+-- The C1 field-of-view kick's spring (confirming a move): softer than SETTLE, it rings out past
+-- Kicks.punchSettleSeconds.
+BattleCamera.PUNCH_OMEGA = 4 / CameraSpec.Kicks.punchSettleSeconds
 
 type Fields = {
 	active: boolean,
@@ -72,6 +75,8 @@ type Fields = {
 	shakeLeft: number,
 	shakeLength: number,
 	shakeSeed: number,
+	shakeDirection: Vector3?, -- the blow's direction in the world (nil: an all-round shake)
+	kickOmega: number, -- the field-of-view kick's spring: SETTLE / its settle time
 	swayWeight: number, -- eases back in after a track, so the sway never jumps
 	motionScale: number,
 	time: number,
@@ -188,6 +193,8 @@ function BattleCamera.new(): BattleCamera
 		shakeLeft = 0,
 		shakeLength = 1,
 		shakeSeed = 0,
+		shakeDirection = nil,
+		kickOmega = BattleCamera.PUNCH_OMEGA,
 		swayWeight = 1,
 		motionScale = 1,
 		time = 0,
@@ -363,13 +370,25 @@ function BattleCamera.follow(self: BattleCamera, track: Track, seconds: number)
 	self.track = track
 end
 
--- A quick field-of-view kick that springs back: confirming a move, a critical hit.
-function BattleCamera.punch(self: BattleCamera, degrees: number)
+-- A quick field-of-view kick that springs back: confirming a move (wider), the contact frame of a
+-- blow (narrower, CameraSpec.Impact). With `settleSeconds` it snaps there and settles back in that
+-- time; without, it eases back on the C1 kick's softer spring.
+function BattleCamera.punch(self: BattleCamera, degrees: number, settleSeconds: number?)
 	self.fovKick += degrees * self.motionScale
+	if settleSeconds then
+		-- An impact: snaps and settles back in exactly that time.
+		self.fovKickVelocity = 0
+		self.kickOmega = BattleCamera.SETTLE / math.max(0.05, settleSeconds)
+	else
+		-- The C1 kicks (confirming a move): their softer spring, as before.
+		self.kickOmega = BattleCamera.PUNCH_OMEGA
+	end
 end
 
--- A decaying shake of up to `amplitude` studs over `seconds`.
-function BattleCamera.shake(self: BattleCamera, amplitude: number, seconds: number)
+-- A decaying shake of up to `amplitude` studs over `seconds`. With `direction` (the blow's, in the
+-- world) it runs along that line on screen, mostly: directional trauma, vertical for an overhead
+-- swing, sideways for a hook, back along an incoming blow.
+function BattleCamera.shake(self: BattleCamera, amplitude: number, seconds: number, direction: Vector3?)
 	local amount = amplitude * self.motionScale
 	if amount <= 0 then
 		return
@@ -378,6 +397,7 @@ function BattleCamera.shake(self: BattleCamera, amplitude: number, seconds: numb
 	self.shakeLength = math.max(0.05, seconds)
 	self.shakeLeft = self.shakeLength
 	self.shakeSeed += 1
+	self.shakeDirection = if direction and direction.Magnitude > 1e-3 then direction.Unit else nil
 end
 
 -- Where the camera is heading (the pose, before sway and shake).
@@ -459,7 +479,7 @@ function BattleCamera.update(self: BattleCamera, dt: number)
 		self.tilt, self.tiltVelocity = springNumber(self.tilt, self.tiltVelocity, self.targetTilt, self.omega, dt)
 		self.swayWeight = math.min(1, self.swayWeight + dt / BattleCamera.SWAY_BLEND_SECONDS)
 	end
-	self.fovKick, self.fovKickVelocity = springNumber(self.fovKick, self.fovKickVelocity, 0, 4 / CameraSpec.Kicks.punchSettleSeconds, dt)
+	self.fovKick, self.fovKickVelocity = springNumber(self.fovKick, self.fovKickVelocity, 0, self.kickOmega, dt)
 	self.roll, self.rollVelocity = springNumber(self.roll, self.rollVelocity, 0, BattleCamera.ROLL_OMEGA, dt)
 	if self.shakeLeft > 0 then
 		self.shakeLeft = math.max(0, self.shakeLeft - dt)
@@ -489,7 +509,20 @@ function BattleCamera._apply(self: BattleCamera)
 		local progress = 1 - self.shakeLeft / self.shakeLength
 		local strength = self.shakeAmplitude * (1 - progress) * (1 - progress)
 		local phase = self.time * CameraSpec.Kicks.shakeFrequency + self.shakeSeed
-		offset += (right * math.sin(phase) + Vector3.yAxis * math.cos(phase * 1.3)) * strength
+		local direction = self.shakeDirection
+		local along, across = right, Vector3.yAxis
+		if direction then
+			-- The blow's direction as the camera sees it (its part along the view doesn't shake).
+			local up = Vector3.yAxis
+			local onScreen = right * direction:Dot(right) + up * direction:Dot(up)
+			if onScreen.Magnitude > 0.2 then
+				along = onScreen.Unit
+				across = along:Cross(directionOf(self.yaw, self.pitch)).Unit
+			end
+			offset += (along * math.sin(phase) + across * (0.25 * math.cos(phase * 1.3))) * strength
+		else
+			offset += (along * math.sin(phase) + across * math.cos(phase * 1.3)) * strength
+		end
 	end
 	local position = self.position + offset
 	local cframe = CFrame.lookAt(position, position + directionOf(self.yaw, self.pitch))
