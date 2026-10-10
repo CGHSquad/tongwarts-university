@@ -3484,6 +3484,7 @@ test("M2: a real fight on the new HUD: Attack, Spell and Guard through the ring,
 	played = waitPlayed(sim, client, before, "Guard")
 	expectEqual(played.abilityId, "Guard")
 	expectEqual(played.actorId, actor.id)
+	sim:run(0.3) -- the HUD shows the outcome as the beat shows it (a moment after the snapshot)
 	expect(string.find(safeArea.Party["Card_" .. actor.id].Content.Statuses.Text, "Bracing", 1, true) ~= nil, "its card shows it's bracing")
 
 	-- A reset mid-fight: the fresh character stays without controls, and the plates (which the
@@ -4156,13 +4157,26 @@ test("C1: an enemy's action holds on its outcome, then eases back to whoever's n
 	local Config = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.CombatConfig)
 	sim:run(1)
 	touch(sim, observer, -1, "NorthLookout", "side")
-	-- An enemy attacks.
+	-- An enemy attacks. The camera is sampled every heartbeat to count its hard cuts.
+	local samples = {}
+	local sampling = client.env.heartbeat:Connect(function()
+		table.insert(samples, { t = sim.now, position = camera.CFrame.Position })
+	end)
 	runToPhase(sim, observer, function(b)
 		local actor = currentActor(b)
 		return b.phase == "resolve" and actor ~= nil and actor.side == "Enemy" and b.lastAction ~= nil and b.lastAction.abilityId ~= "Guard"
 	end, "an enemy's action")
 	local resolveAt = sim.now
-	sim:run(0.3) -- the client has it, the blow has landed (lead 0 for an untimed clip), the reaction cut is in
+	sim:run(0.7) -- the client has it; a creature with no timed clip lunges (0.3 s) and the blow lands at 0.42; the reaction cut is in
+	local cuts = 0
+	for index = 2, #samples do
+		local sample, before = samples[index], samples[index - 1]
+		if sample.t > resolveAt and (sample.position - before.position).Magnitude > 8 then
+			cuts += 1
+		end
+	end
+	sampling:Disconnect()
+	expectEqual(cuts, 2, "two hard cuts: over the creature's shoulder for its lunge, then to the target as the blow lands")
 	local held = camera.CFrame.Position
 	sim:run(0.5) -- still inside the hold
 	local drift = (camera.CFrame.Position - held).Magnitude

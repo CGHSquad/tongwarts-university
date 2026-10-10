@@ -27,9 +27,9 @@ export type Pose = {
 }
 
 Shots.FOV = 60
--- Over the shoulder: measured against the HUD's columns on a phone (844x390) and a 16:9 desktop,
--- the acting character's head lands around a quarter of the way across, the enemies between 0.4
--- and 0.6, their plates clear of each other and (just) of the party cards' column.
+-- Over the shoulder: pulled back so the character shows from head to knees with the field beyond;
+-- the aim leans toward the enemies (focusBlend) and a little right (aimRight), so the character
+-- sits left of centre from either party slot and the enemies around the middle.
 Shots.OTS = { back = 8.5, up = 3, side = 2.8, focusUp = 2, focusBlend = 0.65, aimRight = 2.5 }
 Shots.ENEMY = { front = 5, side = 3, up = 0.15, focusUp = 0.1, offset = 1.5, fov = 58 }
 Shots.WIDE = { back = 40, up = 20, focusUp = 3 }
@@ -55,17 +55,23 @@ function Shots.focusOf(points: { Vector3 }, fallback: Vector3): Vector3
 	return sum / #points
 end
 
--- Behind a party member's right shoulder (`root` is where its character stands, facing the
--- enemies), looking between its head and `focus` (the enemies). `pullBack` > 1 stands further
--- off: a teammate's turn, or the summon beat.
-function Shots.overShoulder(root: CFrame, focus: Vector3, pullBack: number?): Pose
+-- Behind a party member's right shoulder (`root` is where its character stands), looking between
+-- its head and `focus` (the enemies). The shot is built on the line from the character to the
+-- focus, not on the character's facing: the two party slots stand at different angles to the
+-- enemies, and this way both frame the same, the character left of centre and the enemies around
+-- the middle. `pullBack` > 1 stands further off: a teammate's turn, or an enemy's shoulder.
+-- `aimRight` (default OTS.aimRight) moves the aim to the right of that line; 0 for an enemy's.
+function Shots.overShoulder(root: CFrame, focus: Vector3, pullBack: number?, aimRight: number?): Pose
 	local pull = pullBack or 1
 	local ots = Shots.OTS
-	local position = root.Position - root.LookVector * (ots.back * pull) + Vector3.new(0, ots.up * pull, 0) + root.RightVector * (ots.side * pull)
+	local toward = focus - root.Position
+	local flat = Vector3.new(toward.X, 0, toward.Z)
+	local axis = if flat.Magnitude > 1e-3 then flat.Unit else root.LookVector
+	local right = axis:Cross(Vector3.yAxis)
+	local position = root.Position - axis * (ots.back * pull) + Vector3.new(0, ots.up * pull, 0) + right * (ots.side * pull)
 	local head = root.Position + Vector3.new(0, ots.focusUp, 0)
-	-- Aimed a little to the right of the line to the enemies, so the character sits left of
-	-- centre from either party slot (the slot nearer the enemies would otherwise be centred).
-	return pose(position, head:Lerp(focus, ots.focusBlend) + root.RightVector * ots.aimRight, Shots.FOV)
+	local bias = if aimRight ~= nil then aimRight else ots.aimRight
+	return pose(position, head:Lerp(focus, ots.focusBlend) + right * bias, Shots.FOV)
 end
 
 -- The summon beat: well back, up and out to the character's right, clear of the socket where the

@@ -80,6 +80,7 @@ end
 local lastSnapshot: BattleTypes.Snapshot? = nil
 
 local hudRenders = 0
+local lastRendered: BattleTypes.Snapshot? = nil -- what the HUD was last given (for the masked render)
 local function render(snapshot: BattleTypes.Snapshot)
 	lastSnapshot = snapshot
 	local mine = myBattle(snapshot)
@@ -89,7 +90,18 @@ local function render(snapshot: BattleTypes.Snapshot)
 	-- the wait. HudPendingUntil (server clock) tells the tests when the HUD will have caught up.
 	hudRenders += 1
 	local serial = hudRenders
-	if impactIn > 0.05 then
+	local previous = lastRendered
+	lastRendered = snapshot
+	if impactIn > 0.05 and previous and previous.battle and snapshot.battle then
+		-- Meanwhile the HUD shows the new phase (the ring folds, the status says what's resolving)
+		-- with the previous snapshot's numbers, statuses and log: nothing is given away early.
+		local masked = table.clone(snapshot)
+		local battle = table.clone(snapshot.battle :: BattleTypes.BattleState)
+		battle.participants = previous.battle.participants
+		battle.log = previous.battle.log
+		battle.lastAction = previous.battle.lastAction
+		masked.battle = battle
+		ui:render(masked)
 		playerGui:SetAttribute("HudPendingUntil", Workspace:GetServerTimeNow() + impactIn)
 		task.delay(impactIn, function()
 			if hudRenders == serial then

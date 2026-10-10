@@ -736,12 +736,14 @@ end
 local POPUP_SECONDS = 1.6 -- long enough to be read through an enemy beat's hold
 local POPUP_RISE_SECONDS = 1.4
 local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: string, color: Color3, startHeight: number)
-	local part = body(figure)
+	local part, rest = body(figure)
+	-- From the body's middle up (an imported rig's root sits at its feet).
+	local lift = if figure.character then 0 else math.max(0, (figure.home.Position.Y - BLOCK_SIZE.Y / 2 + figure.height / 2) - rest.Position.Y)
 	local popup = Instance.new("BillboardGui")
 	popup.Name = "Popup"
 	popup.Adornee = part
 	popup.Size = UDim2.fromOffset(160, 40)
-	popup.StudsOffset = Vector3.new(0, startHeight, 0)
+	popup.StudsOffset = Vector3.new(0, startHeight + lift, 0)
 	popup.AlwaysOnTop = true
 	popup.LightInfluence = 0
 	local label = newBillboardLabel(popup, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), BattleTheme.FontHeavy)
@@ -750,7 +752,7 @@ local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: s
 	popup.Parent = figure.spot
 
 	local rise = TweenInfo.new(POPUP_RISE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + 3.5, 0) }):Play()
+	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + lift + 3.5, 0) }):Play()
 	TweenService:Create(label, TweenInfo.new(POPUP_RISE_SECONDS * 0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In, 0, false, POPUP_RISE_SECONDS * 0.5), { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
 	sequencer:own(popup, POPUP_SECONDS)
 end
@@ -849,6 +851,12 @@ function BattleView._fall(self: BattleView, figure: Figure, remaining: number, a
 		return
 	end
 	figure.fall = "None"
+	-- The knocked-out look: faded, and a block goes grey. (A party member's summon fades itself
+	-- in and out when it comes out to fall; this is what stays on the field.)
+	if figure.summonBlock then
+		figure.summonBlock.Color = BattleTheme.KnockedOut
+	end
+	fadeModel(figure.character or figure.summon, 0.35, 0)
 	local sequencer = self.sequencer
 	local budget = math.max(0.3, remaining)
 	local untimed: AnimationTrack? = nil
@@ -1011,6 +1019,7 @@ function BattleView._build(self: BattleView, battle: BattleState)
 				figure.summon.Parent = nil
 			elseif figure.knockedOut then
 				playDeathClip(figure, self.sequencer, DEATH_MAX_SECONDS)
+				fadeModel(figure.summon, 0.35, 0)
 			else
 				startIdle(figure)
 			end
@@ -1072,29 +1081,26 @@ function BattleView._refreshFigures(self: BattleView)
 			continue
 		end
 
-		local fade = 0
-		local tint = BattleTheme.colorFor(participant.side, participant.slot)
 		if participant.status == "KnockedOut" then
-			tint = BattleTheme.KnockedOut
-			fade = 0.35
 			figure.hpLabel.Text = "Knocked out"
 			if not figure.knockedOut then
+				-- Its knocked-out look (the fade, a block's grey) comes with its fall, when the blow
+				-- lands (_playAction), or at once if nothing is coming.
 				figure.knockedOut = true
-				figure.fall = "Pending" -- it falls when the blow lands (_playAction), or at once if nothing is coming
+				figure.fall = "Pending"
 			end
 		elseif participant.status == "Left" then
-			fade = 0.75
 			figure.hpLabel.Text = "Left the battle"
+			fadeModel(figure.character or figure.summon, 0.75, 0)
 		else
 			figure.hpLabel.Text = `HP {participant.hp}/{participant.maxHp}`
+			if figure.summonBlock then
+				figure.summonBlock.Color = BattleTheme.colorFor(participant.side, participant.slot)
+			end
+			if not figure.knockedOut then
+				fadeModel(figure.character or figure.summon, 0, 0)
+			end
 		end
-		-- Only a block takes its slot's color; a real model keeps its own look.
-		if figure.summonBlock then
-			figure.summonBlock.Color = tint
-		end
-		-- A party member's summon fades itself in and out (bringOutSummon); this fades what stays
-		-- on the field: a party member's character, or an enemy's creature.
-		fadeModel(figure.character or figure.summon, fade, 0)
 
 		local acting = battle.phase == "input" and battle.currentActorId == participant.id
 		if acting then
@@ -1270,9 +1276,12 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 		lead, untimed = bringOutSummon(actor, if attacking then "attack" else "cast", clipSeconds, duration, self.sequencer)
 		performer, performerHome = actor.summonRoot, actor.summonHome
 		swings = attacking and actor.summonBlock == nil and actor.clips ~= nil and actor.clips.attack ~= nil
+		if untimed then
+			lead = math.max(lead, LUNGE_LEAD) -- a swing whose timing isn't known yet still gets a readable lead
+		end
 	elseif attacking and actor.character == nil then
-		-- An enemy's creature swings its attack clip, if it has one; without one (or while it's
-		-- still downloading) it lunges after a readable lead instead.
+		-- An enemy's creature swings its attack clip, if it has one (a clip still downloading plays
+		-- too, with a readable lead); without one it lunges after that lead instead.
 		local _, impact, track = playAttackClip(actor, clipSeconds)
 		untimed = track
 		if impact then
@@ -1280,6 +1289,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			swings = true
 		else
 			lead = LUNGE_LEAD
+			swings = track ~= nil
 		end
 	end
 	if untimed then
@@ -1299,6 +1309,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	local firstHit: Figure? = nil
 	local firstTarget: Figure? = nil
 	local anyCritical = false
+	local knockedSomeone = false
 	-- When the action's outcome shows: an attack as its blow lands, anything else once its
 	-- performer has materialized (a summon) and gestured.
 	local outcomeAt = if attacking then lead + HIT_DELAY else lead + (if summoned then 0.3 else 0.1)
@@ -1308,6 +1319,9 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			continue
 		end
 
+		if result.knockedOut then
+			knockedSomeone = true
+		end
 		if result.knockedOut and target.fall == "Pending" then
 			-- It falls as the blow lands, not before, within what's left of the beat: through an
 			-- enemy's hold (the hold is there to show it), done before the camera returns.
@@ -1419,7 +1433,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 				-- Over the creature's shoulder for the swing (further off the bigger it is: an Elder
 				-- is thirteen studs), then the target's reaction as the blow lands.
 				local pull = 1.2 * math.max(1, bodyHeight(actor) / 6)
-				camera:cut(Shots.overShoulder(standing(actor), struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), pull))
+				camera:cut(Shots.overShoulder(standing(actor), struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), pull, 0))
 				table.insert(cues, {
 					at = landsAt - 0.05,
 					run = function()
@@ -1432,11 +1446,16 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			end
 		end
 		-- Then back to whoever's next; unless this blow decided the fight, when the result camera
-		-- takes over from the hold.
+		-- takes over from the hold. A knockout holds longer, through the fall (the server's wait
+		-- has the Knockout extra for exactly that).
 		local nextId = nextActorId(battle)
 		if nextId then
+			local hold = CombatConfig.EnemyHoldSeconds
+			if knockedSomeone then
+				hold += CombatConfig.ResolveExtraSeconds.Knockout
+			end
 			table.insert(cues, {
-				at = landsAt + CombatConfig.EnemyHoldSeconds,
+				at = landsAt + hold,
 				run = function()
 					camera:moveTo(self:_shotFor(nextId), CombatConfig.EnemyReturnSeconds)
 				end,
@@ -1456,9 +1475,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	end
 
 	sequencer:play(duration, cues)
-	-- Only an attack's outcome is held back from the HUD (until the blow lands); a guard, heal or
-	-- buff reads at once.
-	return duration, if attacking then outcomeAt else 0
+	return duration, outcomeAt
 end
 
 -- The fight is decided: a slow orbit of the party for a win, a tilt down to the floor for a loss.

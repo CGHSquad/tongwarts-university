@@ -416,7 +416,7 @@ export type LogFeed = {
 
 function Widgets.logFeed(parent: Instance): LogFeed
 	local frame = Gui.frame(parent, "Log")
-	local lines = Gui.label(frame, "Lines", { size = Theme.Sizes.TextLabel, font = Theme.Fonts.Bold, color = Theme.Colors.TextDim, align = Enum.TextXAlignment.Left, stroke = 1 })
+	local lines = Gui.label(frame, "Lines", { size = Theme.Sizes.TextLabel, font = Theme.Fonts.Bold, color = Theme.Colors.TextDim, align = Enum.TextXAlignment.Left, stroke = 1, wrap = true })
 	lines.TextYAlignment = Enum.TextYAlignment.Bottom
 	return {
 		frame = frame,

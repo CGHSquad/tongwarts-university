@@ -469,7 +469,7 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 
 	-- The party column: the cards, with the recent-actions feed under them (out of the middle,
 	-- where the battle camera frames the acting character and the enemies).
-	local feedHeight = 48
+	local feedHeight = 66 -- three wrapped rows of the feed's text
 	local cardsHeight = math.max(0, right.h - feedHeight - gap)
 	self.party.frame.Position = UDim2.fromOffset(right.x, right.y)
 	self.party.frame.Size = UDim2.fromOffset(right.w, cardsHeight)
@@ -598,7 +598,11 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 		self.reveal.update(hud)
 	end
 	self.log.frame.Visible = (phase == "Input" or phase == "Resolve") and #hud.recentLog > 0 and self.mode ~= "List" -- the list covers its spot
-	self.log.update(hud.recentLog)
+	-- The feed shows the last two lines, wrapped (it sits under the party cards now, where a long
+	-- line needs two rows).
+	local recent = hud.recentLog
+	local shown = if #recent > 2 then { recent[#recent - 1], recent[#recent] } else recent
+	self.log.update(shown)
 	-- The results screen (S6) takes over once the fight is decided and the stage has played the
 	-- final blow (it waits while the stage is busy, at most RESULTS_WAIT_CAP); the countdown
 	-- follows the snapshot.
