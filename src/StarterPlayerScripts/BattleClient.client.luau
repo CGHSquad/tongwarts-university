@@ -79,11 +79,28 @@ end
 -- The latest snapshot, kept so a respawn can be drawn again without a round trip.
 local lastSnapshot: BattleTypes.Snapshot? = nil
 
+local hudRenders = 0
 local function render(snapshot: BattleTypes.Snapshot)
 	lastSnapshot = snapshot
 	local mine = myBattle(snapshot)
-	view:render(mine)
-	ui:render(snapshot)
+	local impactIn = view:render(mine)
+	-- The HUD's numbers (HP bars, the status line, the plates) show an action's outcome when its
+	-- blow lands on the stage, not when the server's snapshot arrives; a newer snapshot cancels
+	-- the wait. HudPendingUntil (server clock) tells the tests when the HUD will have caught up.
+	hudRenders += 1
+	local serial = hudRenders
+	if impactIn > 0.05 then
+		playerGui:SetAttribute("HudPendingUntil", Workspace:GetServerTimeNow() + impactIn)
+		task.delay(impactIn, function()
+			if hudRenders == serial then
+				playerGui:SetAttribute("HudPendingUntil", nil)
+				ui:render(snapshot)
+			end
+		end)
+	else
+		playerGui:SetAttribute("HudPendingUntil", nil)
+		ui:render(snapshot)
+	end
 	-- Touch controls off while in a fight, keyed off every snapshot (M0 report R21). (BattleView
 	-- marks the player InBattle for the world's other client scripts, once the wipe covers the screen.)
 	Controls.setEnabled(mine == nil)

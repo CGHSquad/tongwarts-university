@@ -30,7 +30,7 @@ Shots.FOV = 60
 -- Over the shoulder: measured against the HUD's columns on a phone (844x390) and a 16:9 desktop,
 -- the acting character's head lands around a quarter of the way across, the enemies between 0.4
 -- and 0.6, their plates clear of each other and (just) of the party cards' column.
-Shots.OTS = { back = 8.5, up = 3, side = 2.8, focusUp = 2, focusBlend = 0.65 }
+Shots.OTS = { back = 8.5, up = 3, side = 2.8, focusUp = 2, focusBlend = 0.65, aimRight = 2.5 }
 Shots.ENEMY = { front = 5, side = 3, up = 0.15, focusUp = 0.1, offset = 1.5, fov = 58 }
 Shots.WIDE = { back = 40, up = 20, focusUp = 3 }
 
@@ -63,7 +63,9 @@ function Shots.overShoulder(root: CFrame, focus: Vector3, pullBack: number?): Po
 	local ots = Shots.OTS
 	local position = root.Position - root.LookVector * (ots.back * pull) + Vector3.new(0, ots.up * pull, 0) + root.RightVector * (ots.side * pull)
 	local head = root.Position + Vector3.new(0, ots.focusUp, 0)
-	return pose(position, head:Lerp(focus, ots.focusBlend), Shots.FOV)
+	-- Aimed a little to the right of the line to the enemies, so the character sits left of
+	-- centre from either party slot (the slot nearer the enemies would otherwise be centred).
+	return pose(position, head:Lerp(focus, ots.focusBlend) + root.RightVector * ots.aimRight, Shots.FOV)
 end
 
 -- The summon beat: well back, up and out to the character's right, clear of the socket where the

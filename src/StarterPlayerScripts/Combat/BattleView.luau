@@ -611,11 +611,16 @@ local function bodyHeight(figure: Figure): number
 	return if figure.character then 5 else figure.height
 end
 
--- Where a figure's body stands, facing the way its spot faces (an imported rig's root may be
--- turned any way; the spot is what the stage laid out).
+-- Where a figure's body is, at its middle, facing the way its spot faces (an imported rig's root
+-- may be turned any way and sit at its feet; the spot is what the stage laid out, and a creature's
+-- middle is half its height above the floor). A party character's root is its hips, which serves.
 local function standing(figure: Figure): CFrame
 	local _, rest = body(figure)
-	return figure.home.Rotation + rest.Position
+	if figure.character then
+		return figure.home.Rotation + rest.Position
+	end
+	local floor = figure.home.Position.Y - BLOCK_SIZE.Y / 2
+	return figure.home.Rotation + Vector3.new(rest.Position.X, floor + figure.height / 2, rest.Position.Z)
 end
 
 -- Moves a part a little way from where it stands and straight back: a lunge or a recoil.
@@ -728,7 +733,8 @@ end
 -- A word or number that floats up off whoever stands in a spot and fades: damage, MISS, healing,
 -- a status. It follows the body (which lunges and recoils), not the spot, and the sequencer owns
 -- it: gone after a second, or at once if the fight is left.
-local POPUP_SECONDS = 1
+local POPUP_SECONDS = 1.6 -- long enough to be read through an enemy beat's hold
+local POPUP_RISE_SECONDS = 1.4
 local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: string, color: Color3, startHeight: number)
 	local part = body(figure)
 	local popup = Instance.new("BillboardGui")
@@ -743,9 +749,9 @@ local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: s
 	label.TextColor3 = color
 	popup.Parent = figure.spot
 
-	local rise = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local rise = TweenInfo.new(POPUP_RISE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + 3.5, 0) }):Play()
-	TweenService:Create(label, rise, { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
+	TweenService:Create(label, TweenInfo.new(POPUP_RISE_SECONDS * 0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In, 0, false, POPUP_RISE_SECONDS * 0.5), { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
 	sequencer:own(popup, POPUP_SECONDS)
 end
 
@@ -783,15 +789,16 @@ function BattleView.new(options: Options?): BattleView
 	return setmetatable(fields, BattleView)
 end
 
--- Draws the latest battle state (nil = no battle running).
-function BattleView.render(self: BattleView, battle: BattleState?)
+-- Draws the latest battle state (nil = no battle running). Returns how long until the blow of a
+-- newly shown action lands (0 when nothing is landing), so the HUD can show the outcome then.
+function BattleView.render(self: BattleView, battle: BattleState?): number
 	local previous = self.battle
 	self.battle = battle
 	if battle == nil then
 		if previous ~= nil or self.folder ~= nil then
 			self:_leave()
 		end
-		return
+		return 0
 	end
 
 	local fresh = previous == nil or previous.battleId ~= battle.battleId or self.folder == nil
@@ -805,10 +812,10 @@ function BattleView.render(self: BattleView, battle: BattleState?)
 		self:_openTurn(battle)
 	end
 	local action = battle.lastAction
-	local actionSeconds = 0
+	local actionSeconds, impactIn = 0, 0
 	if action ~= nil and action.sequence > self.lastActionSeen then
 		self.lastActionSeen = action.sequence
-		actionSeconds = self:_playAction(battle, action)
+		actionSeconds, impactIn = self:_playAction(battle, action)
 	end
 	for _, figure in self.figures do
 		if figure.fall == "Pending" then
@@ -828,6 +835,7 @@ function BattleView.render(self: BattleView, battle: BattleState?)
 			self:_playResult(battle)
 		end
 	end
+	return impactIn
 end
 
 -- A knocked-out figure falls: an enemy's creature plays its death clip where it stands; a party
@@ -1219,12 +1227,13 @@ end
 -- every target gets a popup (damage, CRIT, MISS, an ailment, healing, GUARD, or the status gained).
 -- The camera: it holds over a party member's shoulder (pulling back for its summon) and shakes as
 -- a blow lands; for an enemy's attack it cuts over the enemy's shoulder, then to whoever it hit.
--- Returns how long the beat plays (the sequence's length), so what follows can wait for it.
-function BattleView._playAction(self: BattleView, battle: BattleState, action: ActionRecord): number
+-- Returns how long the beat plays (the sequence's length), so what follows can wait for it, and
+-- how long until its outcome shows (the blow landing; the cast taking effect).
+function BattleView._playAction(self: BattleView, battle: BattleState, action: ActionRecord): (number, number)
 	local actor = self.figures[action.actorId]
 	local ability = Abilities[action.abilityId]
 	if actor == nil or ability == nil then
-		return 0
+		return 0, 0
 	end
 
 	-- Attack and Guard are the character's own moves. Anything in the summon's list brings the
@@ -1290,6 +1299,9 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	local firstHit: Figure? = nil
 	local firstTarget: Figure? = nil
 	local anyCritical = false
+	-- When the action's outcome shows: an attack as its blow lands, anything else once its
+	-- performer has materialized (a summon) and gestured.
+	local outcomeAt = if attacking then lead + HIT_DELAY else lead + (if summoned then 0.3 else 0.1)
 	for index, result in action.results do
 		local target = self.figures[result.targetId]
 		if target == nil then
@@ -1332,32 +1344,49 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			end
 		end
 
+		-- The outcome shows when it happens: the number as the blow lands, a cast's effect once the
+		-- summon has materialized and gestured.
+		local popups: { () -> () } = {}
 		if ability.kind == "Attack" then
 			if not result.hit then
-				showPopup(sequencer, target, "MISS", BattleTheme.SubtleText, 0)
+				table.insert(popups, function()
+					showPopup(sequencer, target, "MISS", BattleTheme.SubtleText, 0)
+				end)
 			else
 				local strong = result.critical or result.knockedOut
-				showPopup(
-					sequencer,
-					target,
-					if result.critical then `CRIT -{result.damage}` else `-{result.damage}`,
-					if strong then BattleTheme.Danger else BattleTheme.Text,
-					0
-				)
+				local text = if result.critical then `CRIT -{result.damage}` else `-{result.damage}`
+				local color = if strong then BattleTheme.Danger else BattleTheme.Text
+				table.insert(popups, function()
+					showPopup(sequencer, target, text, color, 0)
+				end)
 				local inflicted = result.inflicted
 				if inflicted then
 					local def = StatusEffects[inflicted]
-					showPopup(sequencer, target, `{if def then def.name else inflicted}!`, BattleTheme.Danger, 1.5)
+					local name = `{if def then def.name else inflicted}!`
+					table.insert(popups, function()
+						showPopup(sequencer, target, name, BattleTheme.Danger, 1.5)
+					end)
 				end
 			end
 		elseif ability.kind == "Heal" then
-			showPopup(sequencer, target, `+{result.healed}`, BattleTheme.HealthBar, 0)
+			local healed = result.healed
+			table.insert(popups, function()
+				showPopup(sequencer, target, `+{healed}`, BattleTheme.HealthBar, 0)
+			end)
 		elseif ability.kind == "Guard" then
-			showPopup(sequencer, target, "GUARD", BattleTheme.ManaBar, 0)
+			table.insert(popups, function()
+				showPopup(sequencer, target, "GUARD", BattleTheme.ManaBar, 0)
+			end)
 		else
 			local applied = result.applied
 			local def = if applied then StatusEffects[applied] else nil
-			showPopup(sequencer, target, if def then def.name else ability.name, BattleTheme.Accent, 0)
+			local name = if def then def.name else ability.name
+			table.insert(popups, function()
+				showPopup(sequencer, target, name, BattleTheme.Accent, 0)
+			end)
+		end
+		for _, show in popups do
+			table.insert(cues, { at = outcomeAt, run = show })
 		end
 	end
 
@@ -1427,7 +1456,9 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	end
 
 	sequencer:play(duration, cues)
-	return duration
+	-- Only an attack's outcome is held back from the HUD (until the blow lands); a guard, heal or
+	-- buff reads at once.
+	return duration, if attacking then outcomeAt else 0
 end
 
 -- The fight is decided: a slow orbit of the party for a win, a tilt down to the floor for a loss.

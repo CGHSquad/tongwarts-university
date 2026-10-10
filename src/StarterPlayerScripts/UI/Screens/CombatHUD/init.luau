@@ -467,9 +467,15 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 	panel.confirm.button.Size = UDim2.fromOffset(left.w, Theme.Sizes.TapComfortable)
 	panel.back.button.Size = UDim2.fromOffset(left.w, Theme.Sizes.TapMin)
 
+	-- The party column: the cards, with the recent-actions feed under them (out of the middle,
+	-- where the battle camera frames the acting character and the enemies).
+	local feedHeight = 48
+	local cardsHeight = math.max(0, right.h - feedHeight - gap)
 	self.party.frame.Position = UDim2.fromOffset(right.x, right.y)
-	self.party.frame.Size = UDim2.fromOffset(right.w, right.h)
-	self.party.layout(right.w, right.h)
+	self.party.frame.Size = UDim2.fromOffset(right.w, cardsHeight)
+	self.party.layout(right.w, cardsHeight)
+	self.log.frame.Position = UDim2.fromOffset(right.x, right.y + right.h - feedHeight)
+	self.log.frame.Size = UDim2.fromOffset(right.w, feedHeight)
 
 	local plateWidth = math.min(bottom.w, 360)
 	self.manaPlate.frame.Position = UDim2.fromOffset(bottom.x + math.floor((bottom.w - plateWidth) / 2), bottom.y + 4)
@@ -477,12 +483,6 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 
 	self.reveal.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.reveal.frame.Size = UDim2.fromOffset(center.w, center.h)
-	-- The feed sits at the bottom of the middle's right half: under the enemies' plates, clear of
-	-- the ring and of the acting character, which the battle camera frames left of centre.
-	local feedHeight = 48
-	local feedLeft = center.x + math.floor(center.w * 0.4)
-	self.log.frame.Position = UDim2.fromOffset(feedLeft, center.y + center.h - feedHeight)
-	self.log.frame.Size = UDim2.fromOffset(center.x + center.w - feedLeft, feedHeight)
 	self.stamps.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.stamps.frame.Size = UDim2.fromOffset(center.w, center.h)
 
@@ -490,7 +490,7 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 	self.overworld.frame.Size = UDim2.fromOffset(math.min(top.w, 520), 130)
 
 	-- The enemy plates (BillboardGuis, in viewport pixels) keep to the box between the status line
-	-- and the feed, the ring's column and the party's column.
+	-- and the bottom of the middle, the ring's column and the party's column.
 	local measured = ScreenManager.measure(self.gui)
 	local scale = Layout.scaleFor(measured)
 	self.enemies.setScale(scale)
@@ -505,7 +505,7 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 	end
 	local statusBottom = top.y + barHeight + 4 + 74
 	local boxLeft, boxTop = toViewport(left.x + left.w + gap, statusBottom + gap)
-	local boxRight, boxBottom = toViewport(right.x - gap, center.y + center.h - feedHeight - gap)
+	local boxRight, boxBottom = toViewport(right.x - gap, center.y + center.h - gap)
 	self.enemies.setBounds({ left = boxLeft, top = boxTop, right = boxRight, bottom = boxBottom })
 end
 

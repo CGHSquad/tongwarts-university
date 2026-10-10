@@ -36,8 +36,15 @@ type Fields = {
 	active: boolean,
 	position: Vector3,
 	velocity: Vector3,
-	lookAt: Vector3,
-	lookVelocity: Vector3,
+	-- The look direction as angles, sprung separately: yaw always turns the short way round and
+	-- pitch stays near the horizon, so a move from facing one side to facing the other never
+	-- swings the view through the floor (as interpolating a look-at point would).
+	yaw: number,
+	yawVelocity: number,
+	pitch: number,
+	pitchVelocity: number,
+	targetYaw: number, -- unwrapped next to the current yaw
+	targetPitch: number,
 	fov: number,
 	fovVelocity: number,
 	fovKick: number,
@@ -92,14 +99,39 @@ local function clampSeconds(seconds: number): number
 	return math.max(0.05, seconds)
 end
 
+-- A look direction from yaw (0 faces -Z, positive turns toward -X) and pitch (positive looks up).
+local function directionOf(yaw: number, pitch: number): Vector3
+	local flat = math.cos(pitch)
+	return Vector3.new(-math.sin(yaw) * flat, math.sin(pitch), -math.cos(yaw) * flat)
+end
+
+-- The yaw and pitch of a pose's look direction.
+local function anglesOf(pose: Pose): (number, number)
+	local look = pose.lookAt - pose.position
+	if look.Magnitude < 1e-3 then
+		return 0, 0
+	end
+	local direction = look.Unit
+	return math.atan2(-direction.X, -direction.Z), math.asin(math.clamp(direction.Y, -1, 1))
+end
+
+-- `target` moved next to `current` on the circle, so the spring turns the short way round.
+local function unwrap(target: number, current: number): number
+	return current + (target - current + math.pi) % (2 * math.pi) - math.pi
+end
+
 function BattleCamera.new(): BattleCamera
 	local start = Shots.wide(Vector3.zero)
 	local fields: Fields = {
 		active = false,
 		position = start.position,
 		velocity = Vector3.zero,
-		lookAt = start.lookAt,
-		lookVelocity = Vector3.zero,
+		yaw = 0,
+		yawVelocity = 0,
+		pitch = 0,
+		pitchVelocity = 0,
+		targetYaw = 0,
+		targetPitch = 0,
 		fov = start.fov,
 		fovVelocity = 0,
 		fovKick = 0,
@@ -138,10 +170,7 @@ function BattleCamera.activate(self: BattleCamera)
 		self.fovBefore = camera.FieldOfView
 		local held = camera.CFrame
 		local pose: Pose = { position = held.Position, lookAt = held.Position + held.LookVector * 10, fov = camera.FieldOfView }
-		self.target = pose
-		self.position, self.velocity = pose.position, Vector3.zero
-		self.lookAt, self.lookVelocity = pose.lookAt, Vector3.zero
-		self.fov, self.fovVelocity = pose.fov, 0
+		self:_snapTo(pose)
 		camera.CameraType = Enum.CameraType.Scriptable
 	end
 	local dof = Lighting:FindFirstChildOfClass("DepthOfFieldEffect")
@@ -181,13 +210,21 @@ function BattleCamera.setMotionScale(self: BattleCamera, scale: number)
 	self.motionScale = math.clamp(scale, 0, 1)
 end
 
+-- Puts the springs at a pose, at rest.
+function BattleCamera._snapTo(self: BattleCamera, target: Pose)
+	self.target = target
+	self.position, self.velocity = target.position, Vector3.zero
+	local yaw, pitch = anglesOf(target)
+	self.yaw, self.yawVelocity = yaw, 0
+	self.pitch, self.pitchVelocity = pitch, 0
+	self.targetYaw, self.targetPitch = yaw, pitch
+	self.fov, self.fovVelocity = target.fov, 0
+end
+
 -- Jumps straight to a pose.
 function BattleCamera.cut(self: BattleCamera, target: Pose)
 	self.track = nil
-	self.target = target
-	self.position, self.velocity = target.position, Vector3.zero
-	self.lookAt, self.lookVelocity = target.lookAt, Vector3.zero
-	self.fov, self.fovVelocity = target.fov, 0
+	self:_snapTo(target)
 	self:_apply()
 end
 
@@ -205,6 +242,9 @@ function BattleCamera.moveTo(self: BattleCamera, target: Pose, seconds: number?)
 		self.rollVelocity += (if side >= 0 then -1 else 1) * kick * self.motionScale
 	end
 	self.target = target
+	local yaw, pitch = anglesOf(target)
+	self.targetYaw = unwrap(yaw, self.yaw)
+	self.targetPitch = pitch
 end
 
 -- Follows `track` for `seconds` (cutting to it), then holds where it ended.
@@ -241,15 +281,18 @@ end
 -- Whether the camera is already heading to (or holding) this pose, so a second move there would
 -- only add a kick.
 function BattleCamera.isHeadingTo(self: BattleCamera, pose: Pose): boolean
-	return self.track == nil
-		and (self.target.position - pose.position).Magnitude < 0.5
-		and (self.target.lookAt - pose.lookAt).Magnitude < 0.5
+	if self.track ~= nil or (self.target.position - pose.position).Magnitude >= 0.5 then
+		return false
+	end
+	local yaw, pitch = anglesOf(pose)
+	return directionOf(yaw, pitch):Dot(directionOf(self.targetYaw, self.targetPitch)) > math.cos(math.rad(2))
 end
 
 function BattleCamera.isSettled(self: BattleCamera): boolean
 	return self.track == nil
 		and (self.position - self.target.position).Magnitude < 0.05
-		and (self.lookAt - self.target.lookAt).Magnitude < 0.05
+		and math.abs(self.yaw - self.targetYaw) < 0.002
+		and math.abs(self.pitch - self.targetPitch) < 0.002
 end
 
 function BattleCamera.update(self: BattleCamera, dt: number)
@@ -275,10 +318,7 @@ function BattleCamera.update(self: BattleCamera, dt: number)
 		self.trackTime += dt
 		local t = math.min(self.trackTime, self.trackLength)
 		local target = track(t)
-		self.target = target
-		self.position, self.velocity = target.position, Vector3.zero
-		self.lookAt, self.lookVelocity = target.lookAt, Vector3.zero
-		self.fov, self.fovVelocity = target.fov, 0
+		self:_snapTo(target)
 		if self.trackTime >= self.trackLength then
 			self.track = nil
 		end
@@ -286,7 +326,8 @@ function BattleCamera.update(self: BattleCamera, dt: number)
 	else
 		local target = self.target
 		self.position, self.velocity = springVector(self.position, self.velocity, target.position, self.omega, dt)
-		self.lookAt, self.lookVelocity = springVector(self.lookAt, self.lookVelocity, target.lookAt, self.omega, dt)
+		self.yaw, self.yawVelocity = springNumber(self.yaw, self.yawVelocity, self.targetYaw, self.omega, dt)
+		self.pitch, self.pitchVelocity = springNumber(self.pitch, self.pitchVelocity, self.targetPitch, self.omega, dt)
 		self.fov, self.fovVelocity = springNumber(self.fov, self.fovVelocity, target.fov, self.omega, dt)
 		self.swayWeight = math.min(1, self.swayWeight + dt / BattleCamera.SWAY_BLEND_SECONDS)
 	end
@@ -299,12 +340,7 @@ function BattleCamera.update(self: BattleCamera, dt: number)
 end
 
 function BattleCamera._right(self: BattleCamera): Vector3
-	local look = self.lookAt - self.position
-	if look.Magnitude < 1e-3 then
-		return Vector3.xAxis
-	end
-	local right = look.Unit:Cross(Vector3.yAxis)
-	return if right.Magnitude < 1e-3 then Vector3.xAxis else right.Unit
+	return Vector3.new(math.cos(self.yaw), 0, -math.sin(self.yaw))
 end
 
 -- Writes the pose, with sway and shake on top, to the real camera.
@@ -328,11 +364,7 @@ function BattleCamera._apply(self: BattleCamera)
 		offset += (right * math.sin(phase) + Vector3.yAxis * math.cos(phase * 1.3)) * strength
 	end
 	local position = self.position + offset
-	local lookAt = self.lookAt
-	if (lookAt - position).Magnitude < 1e-3 then
-		lookAt = position + Vector3.new(0, 0, -1)
-	end
-	local cframe = CFrame.lookAt(position, lookAt)
+	local cframe = CFrame.lookAt(position, position + directionOf(self.yaw, self.pitch))
 	if self.roll ~= 0 then
 		cframe *= CFrame.Angles(0, 0, self.roll)
 	end

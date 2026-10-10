@@ -763,8 +763,23 @@ local function attachClientChecker(sim, observer, client)
 	local Strings = client.env.require(dm:GetService("ReplicatedStorage").UI.Strings)
 	local Controls = client.env.require(dm:GetService("StarterPlayer").StarterPlayerScripts.UI.Core.Controls)
 	local signal = sim:clientSignal(STATE_UPDATE, client.userId)
+	local check
 	signal:Connect(function(snapshot)
 		client.lastSnapshot = snapshot
+		-- The HUD shows an action's outcome when the blow lands (HudPendingUntil, server clock):
+		-- check it then, as long as no newer snapshot has arrived.
+		local pendingUntil = client.playerGui:GetAttribute("HudPendingUntil")
+		if type(pendingUntil) == "number" and pendingUntil > sim.now then
+			sim:delay(pendingUntil - sim.now + 0.01, function()
+				if client.lastSnapshot == snapshot then
+					check(snapshot)
+				end
+			end, client.name .. " deferred HUD check")
+		else
+			check(snapshot)
+		end
+	end)
+	check = function(snapshot)
 		local gui = client.playerGui:FindFirstChild("CombatHUD")
 		if gui == nil then
 			observer:fail(client.name .. ": no CombatHUD")
@@ -914,7 +929,7 @@ local function attachClientChecker(sim, observer, client)
 		elseif battle.phase == "reward" and not results.Enabled and client.playerGui:GetAttribute("StageBusy") ~= true then
 			observer:fail(client.name .. ": the results screen isn't up although the stage is idle")
 		end
-	end)
+	end
 end
 
 --[[ Bots: play through the real UI, clicking only what a player could click ]]
@@ -3854,7 +3869,7 @@ test("C1: the camera sweeps the stage under the start swirl, sits over the actin
 	expect(sim:runUntil(function()
 		return lastSequence(client) > before
 	end, 60), "no action played")
-	sim:run(0.2)
+	sim:run(0.6) -- the popups appear as the blow lands, and the attribute follows on the next heartbeat
 	expect((client.playerGui:GetAttribute("StageOwned") or 0) > 0, "the presentation owns the beat's popups")
 
 	-- Afterwards: the camera is the player's again and nothing of the fight is left.
@@ -3994,7 +4009,7 @@ local function checkPlatesAt(seed, size, label)
 		left = inset.X + (regions.left.x + regions.left.w + gap) * scale,
 		top = inset.Y + (statusBottom + gap) * scale,
 		right = inset.X + (regions.right.x - gap) * scale,
-		bottom = inset.Y + (regions.center.y + regions.center.h - 48 - gap) * scale,
+		bottom = inset.Y + (regions.center.y + regions.center.h - gap) * scale,
 	}
 	local plateW, plateH = 190 * scale, 60 * scale
 	local function checkPlates(shot)
