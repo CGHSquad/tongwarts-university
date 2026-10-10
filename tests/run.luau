@@ -3814,6 +3814,36 @@ end
 -- A slow bot: it takes two to three seconds over each move, so the camera can be measured holding.
 local SLOW = { thinkMin = 2, thinkMax = 3, policy = "attack" }
 
+local function cameraSpecOf(client)
+	return client.env.require(client.env.dm:GetService("StarterPlayer").StarterPlayerScripts.Combat.Presentation.CameraSpec)
+end
+
+-- The camera's Dutch tilt in degrees: a roll about the look axis lifts one end of its right vector.
+local function tiltOf(camera)
+	local cframe = camera.CFrame
+	local flatRight = roblox.Vector3.new(cframe.RightVector.X, 0, cframe.RightVector.Z)
+	return math.deg(math.atan2(cframe.RightVector.Y, flatRight.Magnitude))
+end
+
+-- The battle camera's own depth of field effect, in Lighting while a fight is on.
+local function focusEffectOf(client)
+	return client.env.dm:GetService("Lighting"):FindFirstChild("BattleCameraFocus")
+end
+
+-- Picks `abilityId` from the skill list through the HUD (opens the list, taps the row, taps it
+-- again when the first tap only selected it).
+local function chooseSkill(sim, client, abilityId)
+	local ring = client.playerGui.CombatHUD.SafeArea.Ring
+	local list = client.playerGui.SkillList
+	sim:click(client, ring.Spell)
+	local row = list.SafeArea.List.Rows:FindFirstChild(abilityId)
+	assert(row, "no row for " .. abilityId)
+	sim:click(client, row)
+	if list.Enabled then
+		sim:click(client, row)
+	end
+end
+
 test("C1: the camera sweeps the stage under the start swirl, sits over the acting party member's shoulder, faces an acting enemy, and lets go afterwards", function()
 	local sim, observer = newWorld(901)
 	local client = join(sim, observer, -1, "Ann", SLOW)
@@ -3848,12 +3878,26 @@ test("C1: the camera sweeps the stage under the start swirl, sits over the actin
 	expect(cam.Position.Y > root.Position.Y, "and above its hips")
 	local enemyAt = summonRoot(stage.E1.Summon).CFrame.Position
 	expect(cam.LookVector:Dot((enemyAt - cam.Position).Unit) > 0.75, "looking toward the enemies")
-	expect(math.abs(camera.FieldOfView - 60) < 2, `a 60 degree field of view ({camera.FieldOfView})`)
+	local CameraSpec = cameraSpecOf(client)
+	expect(math.abs(camera.FieldOfView - CameraSpec.Idle.fov) < 2, `the spec's idle field of view ({camera.FieldOfView} vs {CameraSpec.Idle.fov})`)
+	expect(CameraSpec.Idle.fov >= 50 and CameraSpec.Idle.fov <= 55, "an idle field of view of 50 to 55 (CAMERA_SPEC section 7)")
+	expect(math.abs(tiltOf(camera) - CameraSpec.Idle.roll) < 1.5, `the idle Dutch tilt ({tiltOf(camera)} vs {CameraSpec.Idle.roll})`)
+	expect(CameraSpec.Idle.roll <= -3 and CameraSpec.Idle.roll >= -6, "a tilt of -3 to -6 degrees (CAMERA_SPEC section 7)")
 	-- A subtle sway while it holds.
 	local held = camera.CFrame.Position
 	sim:run(0.4)
 	local drift = (camera.CFrame.Position - held).Magnitude
 	expect(drift > 0.001 and drift < 0.6, `a subtle sway while holding ({drift})`)
+
+	-- Her character's own Attack (picked on the tight target shot): the swing is seen from over her
+	-- shoulder, not from the target shot, where she'd be out of frame.
+	expect(sim:runUntil(function()
+		local b = client.lastSnapshot.battle
+		return b ~= nil and b.lastAction ~= nil and b.lastAction.actorId == actor.id and b.lastAction.abilityId == "Attack"
+	end, 10), "Ann's Attack never resolved")
+	sim:run(0.2)
+	local behindNow = (camera.CFrame.Position - root.Position):Dot(root.LookVector)
+	expect(behindNow < -3, `her Attack plays from behind her ({behindNow})`)
 
 	-- An enemy's turn: an offset frontal shot, from the party's side.
 	runToPhase(sim, observer, enemyInputTurn, "an enemy's turn")
@@ -3880,6 +3924,7 @@ test("C1: the camera sweeps the stage under the start swirl, sits over the actin
 	sim:run(0.5)
 	expect(camera.CameraType.Name ~= "Scriptable", "the camera is given back")
 	expect(stageOf(client) == nil, "no stage")
+	expect(focusEffectOf(client) == nil, "the camera's depth of field effect is gone")
 	expect(client.playerGui:FindFirstChild("BattleTransition") == nil, "no transition left")
 	expectEqual(client.playerGui:GetAttribute("StageOwned"), 0, "the presentation holds nothing")
 	expect(client.playerGui:GetAttribute("StageBusy") ~= true, "and isn't busy")
@@ -3887,7 +3932,7 @@ test("C1: the camera sweeps the stage under the start swirl, sits over the actin
 	assertClean(sim, observer)
 end)
 
-test("C1: reduced motion: a plain fade instead of the swirl, no sway while holding; the camera still cuts and moves", function()
+test("C1: reduced motion: a plain fade instead of the swirl, no sway while holding, every move a cut; the Dutch tilt stays", function()
 	local sim, observer = newWorld(902)
 	local client = join(sim, observer, -1, "Ann", SLOW)
 	localPlayer(client):SetAttribute("ReducedMotion", true)
@@ -3907,6 +3952,17 @@ test("C1: reduced motion: a plain fade instead of the swirl, no sway while holdi
 	local held = camera.CFrame.Position
 	sim:run(0.4)
 	expect((camera.CFrame.Position - held).Magnitude < 1e-4, `no sway with reduced motion ({(camera.CFrame.Position - held).Magnitude})`)
+	local CameraSpec = cameraSpecOf(client)
+	expect(math.abs(tiltOf(camera) - CameraSpec.Idle.roll) < 1.5, `the Dutch tilt is kept ({tiltOf(camera)})`)
+	-- An enemy's turn opens with a cut, not a sweep: the camera is in front of it on the first
+	-- heartbeat and doesn't move after.
+	runToPhase(sim, observer, enemyInputTurn, "an enemy's turn")
+	sim:run(0.2)
+	local enemy = summonRoot(stage[currentActor(observer.last.battle).id].Summon).CFrame
+	expect((camera.CFrame.Position - enemy.Position):Dot(enemy.LookVector) > 3, "already in front of the acting enemy one heartbeat in")
+	local arrived = camera.CFrame.Position
+	sim:run(0.4)
+	expect((camera.CFrame.Position - arrived).Magnitude < 1e-4, `a cut: nothing left to settle ({(camera.CFrame.Position - arrived).Magnitude})`)
 	localPlayer(client):SetAttribute("ReducedMotion", nil)
 	expect(Theme.Motion.reduced == false, "back to normal when the override is cleared")
 	expect(sim:runUntil(function()
@@ -3982,24 +4038,13 @@ test("C1: the ring waits for the stage to finish its beat, but never longer than
 	assertClean(sim, observer)
 end)
 
--- Plays a fight at `size` and checks the enemy plates against the HUD's box under the battle
--- camera, and that a long attack clip is compressed to its beat.
-local function checkPlatesAt(seed, size, label)
-	local sim, observer = newWorld(seed)
-	local client = joinHud(sim, observer, -1, "Ann", size)
-	local ui = m2Modules(client)
-	local Layout = ui.Layout
-	local Summons = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.Summons)
-	local attackClip = Summons.WildSapling.art.animations.attack
-	sim.clipLengths[attackClip] = 2.4 -- a slow swing: longer than any beat's budget
-	local bot = Bot.new(sim, client, SLOW, observer)
-	sim:run(1)
-	touch(sim, observer, -1, "NorthLookout", "side") -- two Wild Saplings
+-- Checks every shown enemy plate against the HUD's box for them under the battle camera, as
+-- CombatHUD lays it out (the GUI inset, then the regions in design pixels scaled up to the
+-- screen), and that two plates never overlap. Returns how many plates are shown.
+local function platesInBox(client, size, label, shot)
+	local Layout = m2Modules(client).Layout
 	local camera = cameraOf(client)
 	local plates = client.playerGui.CombatHUDEnemies
-
-	-- The HUD's box for the plates, as CombatHUD lays it out: the GUI inset, then the regions in
-	-- design pixels scaled up to the screen.
 	local scale = Layout.scaleFor(size)
 	local virtual = roblox.Vector2.new(math.round(size.X / scale), math.round(size.Y / scale))
 	local regions = Layout.regions(virtual)
@@ -4012,13 +4057,29 @@ local function checkPlatesAt(seed, size, label)
 		right = inset.X + (regions.right.x - gap) * scale,
 		bottom = inset.Y + (regions.center.y + regions.center.h - gap) * scale,
 	}
+	-- The HUD's own box (the overlay writes it on its folder). At the design phone and desktop
+	-- sizes it must match the layout above; below the design size the HUD lays out its own way,
+	-- and its box is the one the plates are placed in.
+	local hudBox = plates:GetAttribute("BoxLeft") and {
+		left = plates:GetAttribute("BoxLeft"),
+		top = plates:GetAttribute("BoxTop"),
+		right = plates:GetAttribute("BoxRight"),
+		bottom = plates:GetAttribute("BoxBottom"),
+	}
+	expect(hudBox ~= nil, `{label}: the overlay publishes its box`)
+	if size == PHONE or (size.X == 1920 and size.Y == 1080) then
+		for _, side in { "left", "top", "right", "bottom" } do
+			expect(math.abs(hudBox[side] - box[side]) < 2, `{label}: the HUD's box {side} {hudBox[side]} matches the layout's {box[side]}`)
+		end
+	end
+	box = hudBox
 	local plateW, plateH = 190 * scale, 60 * scale
-	local function checkPlates(shot)
+	do
 		local rects = {}
 		for _, gui in plates:GetChildren() do
 			if gui:IsA("BillboardGui") and gui.Enabled and gui.Root.Visible then
 				local spot = gui.Adornee
-				local center = spot.CFrame.Position + gui.StudsOffsetWorldSpace
+				local center = spot.CFrame:PointToWorldSpace(gui.StudsOffsetWorldSpace) -- (in the spot's frame, as the engine applies it)
 				local screen = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, size, center)
 				local rect = Layout.rect(screen.X - plateW / 2, screen.Y - plateH / 2, plateW, plateH)
 				-- (12 design px of slack: plates are placed again only once the camera has moved 0.3
@@ -4037,13 +4098,26 @@ local function checkPlatesAt(seed, size, label)
 		end
 		return #rects
 	end
+end
+
+-- Plays a fight at `size` and checks the enemy plates against the HUD's box under the battle
+-- camera, and that a long attack clip is compressed to its beat.
+local function checkPlatesAt(seed, size, label)
+	local sim, observer = newWorld(seed)
+	local client = joinHud(sim, observer, -1, "Ann", size)
+	local Summons = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.Summons)
+	local attackClip = Summons.WildSapling.art.animations.attack
+	sim.clipLengths[attackClip] = 2.4 -- a slow swing: longer than any beat's budget
+	local bot = Bot.new(sim, client, SLOW, observer)
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side") -- two Wild Saplings
 
 	runToPhase(sim, observer, myInputTurn(-1), "Ann's turn")
 	sim:run(0.8)
-	expectEqual(checkPlates("over the shoulder"), 2, `{label}: both enemies in frame from behind the party`)
+	expectEqual(platesInBox(client, size, label, "over the shoulder"), 2, `{label}: both enemies in frame from behind the party`)
 	runToPhase(sim, observer, enemyInputTurn, "an enemy's turn")
 	sim:run(0.8)
-	checkPlates("enemy frontal")
+	platesInBox(client, size, label, "enemy frontal")
 
 	-- The sapling's 2.4 s swing is played faster than real time, so it fits the beat.
 	expect(sim:runUntil(function()
@@ -4160,7 +4234,7 @@ test("C1: an enemy's action holds on its outcome, then eases back to whoever's n
 	-- An enemy attacks. The camera is sampled every heartbeat to count its hard cuts.
 	local samples = {}
 	local sampling = client.env.heartbeat:Connect(function()
-		table.insert(samples, { t = sim.now, position = camera.CFrame.Position })
+		table.insert(samples, { t = sim.now, position = camera.CFrame.Position, look = camera.CFrame.LookVector })
 	end)
 	runToPhase(sim, observer, function(b)
 		local actor = currentActor(b)
@@ -4169,14 +4243,26 @@ test("C1: an enemy's action holds on its outcome, then eases back to whoever's n
 	local resolveAt = sim.now
 	sim:run(0.7) -- the client has it; a creature with no timed clip lunges (0.3 s) and the blow lands at 0.42; the reaction cut is in
 	local cuts = 0
+	local firstCut = nil
 	for index = 2, #samples do
 		local sample, before = samples[index], samples[index - 1]
 		if sample.t > resolveAt and (sample.position - before.position).Magnitude > 8 then
 			cuts += 1
+			firstCut = firstCut or sample
 		end
 	end
 	sampling:Disconnect()
-	expectEqual(cuts, 2, "two hard cuts: over the creature's shoulder for its lunge, then to the target as the blow lands")
+	expectEqual(cuts, 2, "two hard cuts: over the targeted hero's shoulder for the incoming swing, then to the hero as the blow lands")
+	-- The first cut: behind the hero the blow is aimed at, looking out at the enemy.
+	local battle = client.lastSnapshot.battle
+	local struckId = battle.lastAction.results[1].targetId
+	local stage = stageOf(client)
+	local heroRoot = stage[struckId].Character.HumanoidRootPart.CFrame
+	local enemyRoot = summonRoot(stage[battle.lastAction.actorId].Summon).CFrame
+	expect((firstCut.position - heroRoot.Position):Dot(heroRoot.LookVector) < -3, `the incoming shot stands behind the targeted hero ({(firstCut.position - heroRoot.Position):Dot(heroRoot.LookVector)})`)
+	expect(firstCut.look:Dot((enemyRoot.Position - firstCut.position).Unit) > 0.8, "looking out at the attacking enemy")
+	local CameraSpec = cameraSpecOf(client)
+	expect(CameraSpec.Transition.returnSeconds <= 0.25 and CameraSpec.Transition.enemyTurnSeconds <= 0.25 and CameraSpec.Transition.maxSweepSeconds <= 0.25, "every sweep is 0.25 s or shorter (the owner's feedback: snappy moves, long holds)")
 	local held = camera.CFrame.Position
 	sim:run(0.5) -- still inside the hold
 	local drift = (camera.CFrame.Position - held).Magnitude
@@ -4187,6 +4273,401 @@ test("C1: an enemy's action holds on its outcome, then eases back to whoever's n
 	expect(moved > 2, `the camera has moved on by the end of the beat ({moved} studs)`)
 	expect(client.lastSnapshot.battle.phase == "resolve" or sim.now - resolveAt >= Config.EnemyHoldSeconds + Config.EnemyReturnSeconds, "the next turn waited for the hold and the return")
 	assertClean(sim, observer)
+end)
+
+-- At `size`: the skill list pushes the camera in with depth of field, picking an enemy frames it
+-- tight and low, switching targets trucks across, and a plate can be tapped mid-truck; the plates
+-- stay inside the HUD's box under every shot.
+local function checkFramingAt(seed, size, label)
+	local sim, observer = newWorld(seed)
+	local client = joinHud(sim, observer, -1, "Ann", size)
+	local CameraSpec = cameraSpecOf(client)
+	local camera = cameraOf(client)
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side") -- two Wild Saplings
+	runToPhase(sim, observer, myInputTurn(-1), "Ann's turn")
+	sim:run(0.8)
+	local safeArea = client.playerGui.CombatHUD.SafeArea
+	local ring, target = safeArea.Ring, safeArea.TargetPanel
+	expect(ring.Visible and Sim.isClickable(ring.Spell), `{label}: the ring is up`)
+	local idle = camera.CFrame.Position
+	local idleFov = camera.FieldOfView
+
+	-- The skill list: a micro-push forward, a tighter tilt, the background softened.
+	sim:click(client, ring.Spell)
+	sim:run(0.6)
+	expect(client.playerGui.SkillList.Enabled, `{label}: the list is open`)
+	local pushed = (camera.CFrame.Position - idle).Magnitude
+	expect(pushed > 1 and pushed < 1.9, `{label}: a micro-push of 0.3 to 0.5 m, 1.1 to 1.8 studs ({pushed})`)
+	expect(math.abs(camera.FieldOfView - CameraSpec.Menu.fov) < 1 and camera.FieldOfView < idleFov, `{label}: the sub-menu field of view ({camera.FieldOfView})`)
+	expect(CameraSpec.Menu.fov >= 48 and CameraSpec.Menu.fov <= 52 and CameraSpec.Menu.roll <= -5 and CameraSpec.Menu.roll >= -8, "sub-menu: FOV 48-52, tilt -5 to -8 (CAMERA_SPEC section 7)")
+	expect(math.abs(tiltOf(camera) - CameraSpec.Menu.roll) < 1.5, `{label}: the sub-menu tilt ({tiltOf(camera)})`)
+	local focus = focusEffectOf(client)
+	expect(focus ~= nil and focus.Enabled, `{label}: depth of field while the list is open`)
+	do
+		local hero = stageOf(client)[currentActor(client.lastSnapshot.battle).id].Character.HumanoidRootPart.CFrame.Position
+		local toHero = (hero - camera.CFrame.Position).Magnitude
+		expect(math.abs(focus.FocusDistance - toHero) < 3, `{label}: focused on the acting hero ({focus.FocusDistance} vs {toHero} studs)`)
+		for _, id in { "E1", "E2" } do
+			local toEnemy = (summonRoot(stageOf(client)[id].Summon).CFrame.Position - camera.CFrame.Position).Magnitude
+			expect(toEnemy > focus.FocusDistance + focus.InFocusRadius, `{label}: {id} outside the sharp band ({toEnemy} studs)`)
+		end
+	end
+
+	-- Picking an enemy: tight, low, from the hero's side, looking up at it. Depth of field off.
+	local row = client.playerGui.SkillList.SafeArea.List.Rows:FindFirstChild("Strike")
+	sim:click(client, row)
+	if client.playerGui.SkillList.Enabled then
+		sim:click(client, row)
+	end
+	sim:run(0.6)
+	expect(target.Visible, `{label}: picking a target`)
+	expect(not focus.Enabled, `{label}: depth of field off again`)
+	expect(math.abs(camera.FieldOfView - CameraSpec.TargetSingle.fov) < 1, `{label}: the target field of view ({camera.FieldOfView})`)
+	expect(CameraSpec.TargetSingle.fov >= 40 and CameraSpec.TargetSingle.fov <= 45, "target select: FOV 40-45 (CAMERA_SPEC section 7)")
+	local stage = stageOf(client)
+	local function pickedEnemy()
+		local best, bestDistance = nil, math.huge
+		for _, id in { "E1", "E2" } do
+			local distance = (summonRoot(stage[id].Summon).CFrame.Position - camera.CFrame.Position).Magnitude
+			if distance < bestDistance then
+				best, bestDistance = id, distance
+			end
+		end
+		return best, bestDistance
+	end
+	local picked, distance = pickedEnemy()
+	local enemy = summonRoot(stage[picked].Summon).CFrame
+	expect(distance < 26, `{label}: close on the picked enemy ({distance} studs)`)
+	expect(camera.CFrame.LookVector:Dot((enemy.Position + roblox.Vector3.new(0, 2, 0) - camera.CFrame.Position).Unit) > 0.9, `{label}: looking at it`)
+	expect(camera.CFrame.Position.Y < stage[picked].Spot.CFrame.Position.Y + 2, `{label}: from low`)
+	expect(camera.CFrame.LookVector.Y > 0, `{label}: looking up`)
+	expect(platesInBox(client, size, label, "target select") == 2, `{label}: both plates still on screen, the other one pinned to the box's edge`)
+	-- The picked enemy's plate never covers its head (above it, or beside it when the HUD box's
+	-- top is too close), and the head is in the middle band of the frame.
+	do
+		local Layout = m2Modules(client).Layout
+		local scale = Layout.scaleFor(size)
+		local Summons = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.Summons)
+		local height = Summons.WildSapling.art.height
+		local spot = stage[picked].Spot.CFrame.Position
+		local floorY = spot.Y - 2.5 -- (the spot stands half a stage block up: BattleView.standing)
+		local head = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, size, roblox.Vector3.new(spot.X, floorY + height - 0.4, spot.Z))
+		for _, id in { "E1", "E2" } do
+			local gui = client.playerGui.CombatHUDEnemies["Enemy_" .. id]
+			local center = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, size, gui.Adornee.CFrame:PointToWorldSpace(gui.StudsOffsetWorldSpace))
+			local rect = Layout.rect(center.X - 95 * scale, center.Y - 30 * scale, 190 * scale, 60 * scale)
+			local covers = head.X > rect.x and head.X < rect.x + rect.w and head.Y > rect.y and head.Y < rect.y + rect.h
+			expect(not covers, `{label}: {id}'s plate doesn't cover the picked enemy's head (plate {math.round(rect.x)},{math.round(rect.y)} {math.round(rect.w)}x{math.round(rect.h)}, head {math.round(head.X)},{math.round(head.Y)})`)
+		end
+		expect(head.Y > size.Y * 0.25 and head.Y < size.Y * 0.75, `{label}: the head in the middle band of the frame ({math.round(head.Y)} of {size.Y})`)
+	end
+
+	-- Switching to the other enemy trucks across; tapping its plate mid-truck still confirms.
+	local other = if picked == "E1" then "E2" else "E1"
+	local plates = client.playerGui.CombatHUDEnemies
+	local otherPlate = plates["Enemy_" .. other].Root.Plate
+	expect(Sim.isClickable(otherPlate), `{label}: the other enemy's plate can be tapped under the tight shot`)
+	-- Over to the other enemy: a truck (FOV held), ending on it.
+	local from = camera.CFrame.Position
+	sim:click(client, otherPlate)
+	sim:run(0.4)
+	do
+		local look = camera.CFrame.LookVector
+		local toOther = (summonRoot(stage[other].Summon).CFrame.Position - camera.CFrame.Position).Unit
+		local toFirst = (enemy.Position - camera.CFrame.Position).Unit
+		expect(look:Dot(toOther) > look:Dot(toFirst), `{label}: the truck ends framing the other enemy`)
+	end
+	local otherRoot = summonRoot(stage[other].Summon).CFrame.Position
+	local travelled = (camera.CFrame.Position - from).Magnitude / math.max(1e-3, (otherRoot - enemy.Position).Magnitude)
+	expect(travelled > 0.15, `{label}: the camera trucked across ({travelled} of the enemies' spacing)`)
+	expect(math.abs(camera.FieldOfView - CameraSpec.TargetSingle.fov) < 1.5, `{label}: the field of view holds through the truck`)
+	-- Back to the first: the tap that starts the truck, and the tap that confirms it with the truck
+	-- still in flight (no frame has passed), both land.
+	local firstPlate = plates["Enemy_" .. picked].Root.Plate
+	expect(Sim.isClickable(firstPlate), `{label}: the first enemy's plate can be tapped from the other's shot`)
+	sim:click(client, firstPlate)
+	expect(Sim.isClickable(firstPlate), `{label}: the plate is still there mid-truck`)
+	sim:click(client, firstPlate) -- the pick again: confirm
+	expect(not target.Visible, `{label}: a tap on the picked plate mid-truck confirmed the move`)
+	expect(sim:runUntil(function()
+		local battle = client.lastSnapshot.battle
+		return battle ~= nil and battle.lastAction ~= nil and battle.lastAction.abilityId == "Strike" and battle.lastAction.results[1].targetId == picked
+	end, 5), `{label}: the Strike on {picked} resolved`)
+	assertClean(sim, observer)
+end
+
+test("C1 camera spec: the skill list pushes in with depth of field; a target is framed tight and trucked between; a plate tap works mid-truck (phone and desktop)", function()
+	checkFramingAt(909, PHONE, "phone")
+	checkFramingAt(910, roblox.Vector2.new(1920, 1080), "desktop")
+	checkFramingAt(912, roblox.Vector2.new(749, 388), "iPhone 14")
+end)
+
+test("C1 camera spec: a party-wide buff is watched from overhead; a heal opens on the caster and cuts to the recipient, lifting with the effect", function()
+	local sim, observer = newWorld(911)
+	-- The playtest override: Grove-Keepers, for their heal and party buff.
+	sim.server.dm:GetService("ServerScriptService"):SetAttribute("PartySummons", "TungTungGroveKeeper, TungTungGroveKeeper")
+	local client = joinHud(sim, observer, -1, "Ann", PHONE)
+	local CameraSpec = cameraSpecOf(client)
+	local camera = cameraOf(client)
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side")
+	runToPhase(sim, observer, myInputTurn(-1), "Ann's turn")
+	sim:run(0.8)
+	local stage = stageOf(client)
+	local battle = client.lastSnapshot.battle
+	expectEqual(currentActor(battle).summonId, "TungTungGroveKeeper", "the override fielded Grove-Keepers")
+	local safeArea = client.playerGui.CombatHUD.SafeArea
+
+	-- Tailwind, on the whole party: no target to pick; the overhead shot, held, then back.
+	local overheadFrom, overheadTo = nil, nil
+	local sampler = client.env.heartbeat:Connect(function()
+		if camera.CFrame.LookVector.Y < -0.35 and math.abs(camera.FieldOfView - CameraSpec.Party.fov) < 3 then
+			overheadFrom = overheadFrom or sim.now
+			overheadTo = sim.now
+		end
+	end)
+	chooseSkill(sim, client, "Tailwind")
+	expect(sim:runUntil(function()
+		local b = client.lastSnapshot.battle
+		return b ~= nil and b.lastAction ~= nil and b.lastAction.abilityId == "Tailwind"
+	end, 5), "Tailwind never resolved")
+	sim:run(0.6)
+	local partyCenter = (stage.P1.Spot.CFrame.Position + stage.P2.Spot.CFrame.Position) / 2
+	expect(camera.CFrame.Position.Y - partyCenter.Y > 6, `high above the party ({camera.CFrame.Position.Y - partyCenter.Y} studs up)`)
+	expect(camera.CFrame.LookVector.Y < -0.35, `looking down at it ({camera.CFrame.LookVector.Y})`)
+	expect(math.abs(camera.FieldOfView - CameraSpec.Party.fov) < 1.5, `the party field of view ({camera.FieldOfView})`)
+	expect(CameraSpec.Party.fov >= 60 and CameraSpec.Party.fov <= 65 and CameraSpec.Party.holdSeconds < 1.2, "party buff: FOV 60-65, held under 1.2 s (CAMERA_SPEC section 7)")
+	expect(math.abs(tiltOf(camera)) < 1, `level ({tiltOf(camera)})`)
+	local overhead = camera.CFrame.Position
+	sim:run(CameraSpec.Party.holdSeconds + 0.6)
+	expect((camera.CFrame.Position - overhead).Magnitude > 3, "the camera has come back down after the hold")
+	sampler:Disconnect()
+	local shown = overheadTo - overheadFrom + 0.2 -- (one heartbeat of granularity)
+	expect(shown < 1.2 + 0.2, `the overhead shot lasts under 1.2 s ({shown})`)
+
+	-- Sap Mend on the other party member: the caster's frontal shot, then a cut to the recipient
+	-- chest-up, rising with the effect as the field of view breathes out.
+	runToPhase(sim, observer, myInputTurn(-1), "Ann's next turn")
+	sim:run(0.8)
+	battle = client.lastSnapshot.battle
+	local actorId = battle.currentActorId
+	local recipientId = if actorId == "P1" then "P2" else "P1"
+	chooseSkill(sim, client, "SapMend")
+	sim:run(0.4)
+	expect(safeArea.TargetPanel.Visible, "picking an ally")
+	expect(math.abs(camera.FieldOfView - CameraSpec.TargetAlly.fov) < 1.5, `the ally field of view while picking ({camera.FieldOfView})`)
+	local card = safeArea.Party:FindFirstChild("Card_" .. recipientId)
+	expect(card ~= nil and Sim.isClickable(card), "the other party member's card can be tapped")
+	sim:click(client, card)
+	sim:run(0.2)
+	local casterRoot = stage[actorId].Character.HumanoidRootPart.CFrame
+	local recipientRoot = stage[recipientId].Character.HumanoidRootPart.CFrame
+	local toRecipient = camera.CFrame.Position - recipientRoot.Position
+	expect(toRecipient:Dot(recipientRoot.LookVector) > 3 and toRecipient.Magnitude < 10, `the pick: chest-up on the recipient ({toRecipient:Dot(recipientRoot.LookVector)}, {toRecipient.Magnitude} studs)`)
+	if safeArea.TargetPanel.Visible then
+		sim:click(client, safeArea.TargetPanel.Confirm)
+	end
+	-- Confirmed: the camera goes to the caster's frontal at once, before the server answers.
+	sim:run(0.4)
+	local toCaster = camera.CFrame.Position - casterRoot.Position
+	expect(toCaster:Dot(casterRoot.LookVector) > 4 and math.abs(toCaster:Dot(casterRoot.RightVector)) < 4, `the invocation: in front of the caster ({toCaster:Dot(casterRoot.LookVector)} ahead, {toCaster:Dot(casterRoot.RightVector)} aside)`)
+	expect(math.abs(camera.FieldOfView - CameraSpec.Cast.casterFov) < 1.5, `the caster field of view ({camera.FieldOfView})`)
+	expect(sim:runUntil(function()
+		local b = client.lastSnapshot.battle
+		return b ~= nil and b.lastAction ~= nil and b.lastAction.abilityId == "SapMend"
+	end, 5), "Sap Mend never resolved")
+	expect(sim:runUntil(function()
+		local toCamera = camera.CFrame.Position - recipientRoot.Position
+		return toCamera:Dot(recipientRoot.LookVector) > 3 and toCamera.Magnitude < 10
+	end, 3), "a cut to the recipient as the heal lands")
+	local y0, fov0 = camera.CFrame.Position.Y, camera.FieldOfView
+	sim:run(0.4)
+	expect(camera.CFrame.Position.Y > y0 + 0.15, `the pedestal lift ({camera.CFrame.Position.Y - y0} studs)`)
+	expect(camera.FieldOfView > fov0 + 1, `breathing out ({camera.FieldOfView - fov0} degrees)`)
+	assertClean(sim, observer)
+end)
+
+-- At `size`: an enemy hits a party member; for the whole hold the damage number on the hit hero
+-- stays in the HUD's middle band (below the status block, above the bottom row).
+local function checkPopupClearAt(seed, size, label, attackerSide)
+	attackerSide = attackerSide or "Enemy"
+	local sim, observer = newWorld(seed)
+	local client = joinHud(sim, observer, -1, "Ann", size)
+	Bot.new(sim, client, SLOW, observer)
+	local camera = cameraOf(client)
+	local Config = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.CombatConfig)
+	local BattleView = client.env.require(client.env.dm:GetService("StarterPlayer").StarterPlayerScripts.Combat.BattleView)
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side")
+	runToPhase(sim, observer, function(b)
+		local actor = currentActor(b)
+		local ability = if attackerSide == "Enemy" then "Strike" else "Attack"
+		if b.phase ~= "resolve" or actor == nil or actor.side ~= attackerSide or b.lastAction == nil or b.lastAction.abilityId ~= ability then
+			return false
+		end
+		local result = b.lastAction.results[1]
+		return result ~= nil and result.hit and not result.knockedOut and string.sub(result.targetId, 1, 1) == (if attackerSide == "Enemy" then "P" else "E")
+	end, "a hit")
+	local battle = observer.last.battle
+	local struckId = battle.lastAction.results[1].targetId
+	local spot = stageOf(client)[struckId].Spot
+	local folder = client.playerGui.CombatHUDEnemies
+	-- The band between the status block and whatever's at the bottom middle: the mana plate when
+	-- it shows, else the screen's edge.
+	local top = folder:GetAttribute("BoxTop")
+	local function bottomBound()
+		local mana = client.playerGui.CombatHUD.SafeArea.ManaPlate
+		if mana.Visible then
+			return folder:GetAttribute("BoxBottom")
+		end
+		return size.Y - 8
+	end
+	local bottom = bottomBound()
+	local checked = 0
+	local startedAt = sim.now
+	-- The fake Roblox lands a tween only when it ends, so each check uses where the popup's rise
+	-- ends (from the tween log): the highest it gets, a little past the end of the hold.
+	local function riseGoal()
+		for index = #sim.tweenLog, 1, -1 do
+			local entry = sim.tweenLog[index]
+			local instance = entry.instance
+			local ok, mine = pcall(function() -- (older popups are destroyed)
+				return instance.Name == "Popup" and entry.goals.StudsOffset ~= nil and instance.Parent ~= nil and instance.Parent.Parent ~= nil and instance.Parent.Parent.Name == struckId
+			end)
+			if ok and mine then
+				return entry.goals.StudsOffset.Y
+			end
+		end
+		return nil
+	end
+	local watchFor = if attackerSide == "Enemy" then 0.45 + Config.EnemyHoldSeconds else 1.0
+	while sim.now + 0.2 <= startedAt + watchFor - 0.05 do -- (while the camera holds)
+		sim:run(0.2)
+		bottom = bottomBound()
+		local popup = spot:FindFirstChild("Popup")
+		local goal = riseGoal()
+		if popup and popup.Adornee and goal then
+			local at = popup.Adornee.CFrame.Position + camera.CFrame.UpVector * goal
+			local screen = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, size, at)
+			expect(screen.Y > top and screen.Y < bottom, `{label}: the damage number is clear of the HUD at +{math.round((sim.now - startedAt) * 10) / 10} s ({math.round(screen.Y)}; band {math.round(top)}-{math.round(bottom)})`)
+			-- An ailment's name (when the blow inflicts one) sits that much higher or lower.
+			local ailment = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, size, at + camera.CFrame.UpVector * BattleView.AILMENT_POPUP_HEIGHT)
+			expect(ailment.Y > top and ailment.Y < bottom, `{label}: an ailment's name would be clear of the HUD too ({math.round(ailment.Y)}; band {math.round(top)}-{math.round(bottom)})`)
+			local ailmentStart = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, size, at + camera.CFrame.UpVector * (BattleView.AILMENT_POPUP_HEIGHT - BattleView.POPUP_RISE_STUDS))
+			expect(ailmentStart.Y < bottom, `{label}: and where it starts ({math.round(ailmentStart.Y)}; bottom {math.round(bottom)})`)
+			checked += 1
+		end
+	end
+	expect(checked >= 3, `{label}: the number was on screen through the hold ({checked} checks)`)
+	assertClean(sim, observer)
+end
+
+test("C1 camera spec: an enemy's blow shows its number clear of the HUD for the whole hold (phone and desktop)", function()
+	checkPopupClearAt(913, PHONE, "phone")
+	checkPopupClearAt(914, roblox.Vector2.new(1920, 1080), "desktop")
+	checkPopupClearAt(916, roblox.Vector2.new(749, 388), "iPhone 14")
+end)
+
+test("C1 camera spec: a party member's own blow shows its number on the enemy clear of the HUD (phone and desktop)", function()
+	checkPopupClearAt(917, PHONE, "phone", "Party")
+	checkPopupClearAt(918, roblox.Vector2.new(749, 388), "iPhone 14", "Party")
+	checkPopupClearAt(919, roblox.Vector2.new(1920, 1080), "desktop", "Party")
+end)
+
+test("C1 camera spec: a move that turns more than 90 degrees is a cut; smaller moves and target trucks sweep, done in their time", function()
+	local sim = Sim.new(PLACE, { seed = 7 })
+	local client = sim:connectClient(-1, "Ann")
+	local Presentation = client.env.dm:GetService("StarterPlayer").StarterPlayerScripts.Combat.Presentation
+	local BattleCamera = client.env.require(Presentation.BattleCamera)
+	local CameraSpec = client.env.require(Presentation.CameraSpec)
+	local V3 = roblox.Vector3
+	local camera = BattleCamera.new()
+	camera:activate()
+	local function pose(x, z)
+		return { position = V3.new(x, 5, z), lookAt = V3.new(0, 4, 0), fov = 52, roll = -4 }
+	end
+	camera:cut(pose(0, 12))
+	camera:moveTo(pose(0, -12), CameraSpec.Transition.maxSweepSeconds) -- looking the other way: 180 degrees
+	expect(camera:isSettled(), "a 180-degree move is a cut")
+	camera:moveTo(pose(4, -12), CameraSpec.Transition.maxSweepSeconds) -- a few degrees
+	expect(not camera:isSettled(), "a small move sweeps")
+	camera:update(CameraSpec.Transition.maxSweepSeconds)
+	expect((client.env.dm:GetService("Workspace").CurrentCamera.CFrame.Position - V3.new(4, 5, -12)).Magnitude < 0.15, "and is done in its time")
+	camera:moveTo(pose(0, 12), CameraSpec.TargetSingle.truckSeconds, true) -- a truck: a sweep however far it turns
+	expect(not camera:isSettled(), "a truck sweeps")
+	camera:deactivate()
+end)
+
+test("C1 camera spec: the PartySummons playtest override is ignored outside Studio", function()
+	local sim, observer = newWorld(915)
+	sim.isStudio = false
+	sim.server.dm:GetService("ServerScriptService"):SetAttribute("PartySummons", "TungTungGroveKeeper, TungTungGroveKeeper")
+	local client = join(sim, observer, -1, "Ann", SLOW)
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side")
+	runToPhase(sim, observer, function(b)
+		return b.phase == "input"
+	end, "the first turn")
+	for _, p in observer.last.battle.participants do
+		if p.side == "Party" then
+			expectEqual(p.summonId, "TungTungSahur", "the configured party, not the override")
+		end
+	end
+	assertClean(sim, observer)
+end)
+
+test("C1 camera spec: every shot is built from CameraSpec's numbers", function()
+	local sim = Sim.new(PLACE, { seed = 7 })
+	local client = sim:connectClient(-1, "Ann")
+	local Presentation = client.env.dm:GetService("StarterPlayer").StarterPlayerScripts.Combat.Presentation
+	local Shots = client.env.require(Presentation.Shots)
+	local CameraSpec = client.env.require(Presentation.CameraSpec)
+	local V3, CF = roblox.Vector3, roblox.CFrame
+	local hero = CF.lookAt(V3.new(-20, 2.5, 0), V3.new(0, 2.5, 0)) -- facing +X, toward the enemies
+	local enemyCenter = V3.new(20, 3, 0)
+	local idle = Shots.overShoulder(hero, enemyCenter)
+	expectEqual(idle.fov, CameraSpec.Idle.fov, "idle fov")
+	expectEqual(idle.roll, CameraSpec.Idle.roll, "idle tilt")
+	expect(idle.position.X < hero.Position.X and idle.position.Y > hero.Position.Y, "behind and above the hero")
+	local menu = Shots.menuPush(idle)
+	expect(math.abs((menu.position - idle.position).Magnitude - CameraSpec.Menu.dolly) < 1e-6, "the micro-push is the spec's dolly")
+	expectEqual(menu.fov, CameraSpec.Menu.fov, "menu fov")
+	expectEqual(menu.roll, CameraSpec.Menu.roll, "menu tilt")
+	local enemy = CF.lookAt(V3.new(20, 3, 0), V3.new(0, 3, 0)) -- 6 studs tall, facing the party
+	local tight = Shots.targetEnemy(enemy, 6, hero.Position)
+	expectEqual(tight.fov, CameraSpec.TargetSingle.fov, "target fov")
+	expect(tight.position.X < enemy.Position.X and tight.position.X > hero.Position.X, "on the hero's side of the enemy")
+	expect(tight.position.Y < enemy.Position.Y and tight.lookAt.Y > tight.position.Y, "low, looking up")
+	local squad = Shots.targetSquad(hero, enemyCenter)
+	expectEqual(squad.fov, CameraSpec.TargetSquad.fov, "squad fov")
+	expect(squad.position.Y > idle.position.Y and squad.position.X < hero.Position.X, "pulled back and up")
+	local overhead = Shots.partyOverhead(V3.new(-20, 2, 0), V3.xAxis)
+	local look = (overhead.lookAt - overhead.position).Unit
+	expect(math.abs(math.deg(math.asin(-look.Y)) - CameraSpec.Party.pitchDown) < 4, `pitched down about {CameraSpec.Party.pitchDown} degrees ({math.deg(math.asin(-look.Y))})`)
+	expectEqual(overhead.fov, CameraSpec.Party.fov, "party fov")
+	local incoming = Shots.incoming(hero, enemyCenter)
+	expect(incoming.position.X < hero.Position.X, "the incoming shot is over the hero's shoulder")
+	expectEqual(incoming.fov, CameraSpec.EnemyIncoming.fov, "incoming fov")
+	local lineup = Shots.partyLineup(V3.new(-20, 2, 0), V3.xAxis)
+	expect(lineup.position.X < -20 and lineup.position.Y > 2, "the lineup is behind and above the party")
+	expectEqual(lineup.fov, CameraSpec.EnemyAoE.fov, "lineup fov")
+	local lift0, lift1 = Shots.allyLift(hero, 0), Shots.allyLift(hero, 1)
+	expect(math.abs((lift1.position.Y - lift0.position.Y) - CameraSpec.Cast.lift) < 1e-6, "the pedestal lift")
+	expect(math.abs((lift1.fov - lift0.fov) - CameraSpec.Cast.breatheOut) < 1e-6, "breathing out")
+	local frontal = Shots.enemyFrontal(enemy, 6)
+	expectEqual(frontal.fov, CameraSpec.EnemyWindup.fov, "wind-up fov")
+	expectEqual(frontal.roll, CameraSpec.EnemyWindup.roll, "wind-up tilt")
+	local caster = Shots.casterFrontal(hero, 5)
+	expectEqual(caster.fov, CameraSpec.Cast.casterFov, "caster fov")
+	expect((caster.position - hero.Position):Dot(hero.LookVector) > 3, "the caster shot is in front of the caster")
+	local reaction = Shots.reaction(hero, 5)
+	expectEqual(reaction.fov, CameraSpec.Reaction.fov, "reaction fov")
+	-- A 13-stud Elder 40 studs from the hero: the target shot stands short of the hero.
+	local elder = CF.lookAt(V3.new(20, 6.5, 0), V3.new(0, 6.5, 0))
+	local elderShot = Shots.targetEnemy(elder, 13, hero.Position)
+	expect(elderShot.position.X > hero.Position.X + CameraSpec.TargetSingle.heroClearance - 0.01, `the Elder's target shot stays in front of the hero ({elderShot.position.X})`)
+	expect((frontal.position - enemy.Position):Dot(enemy.LookVector) > 3, "in front of the enemy")
 end)
 
 test("C1: the camera's guess at who acts next follows the turn queue, the opening bonus turn and who's still standing", function()

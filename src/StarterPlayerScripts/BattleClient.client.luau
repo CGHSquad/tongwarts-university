@@ -60,6 +60,9 @@ local callbacks = {
 	onTargetChanged = function(targetId: string?, friendly: boolean)
 		view:setTarget(targetId, friendly)
 	end,
+	onFramingChanged = function(framing: CombatHUD.Framing, targetId: string?) -- the ring, the list, or a target: the camera frames it
+		view:setFraming(framing, targetId)
+	end,
 }
 ui = CombatHUD.new(playerGui, localPlayer.UserId, callbacks)
 

@@ -31,6 +31,9 @@ export type Dependencies = {
 	-- The fight is over and cleared, and everyone's back in the overworld. The winner is nil if the
 	-- fight was reset after an error.
 	battleEnded: (winner: BattleTypes.Side?) -> (),
+	-- The party's summons for the next fight (default CombatConfig.PartySummons); BattleServer lets
+	-- a playtest override them.
+	partySummons: (() -> { string })?,
 }
 
 -- A fight about to start, from the overworld.
@@ -186,7 +189,12 @@ end
 function BattleDirector._startBattle(self: BattleDirector, party: { Member }, encounter: Encounter)
 	-- Party summons are dealt round-robin: one each for two players, both for a solo player.
 	local roster: { BattleSession.RosterEntry } = {}
-	for slot, summonId in CombatConfig.PartySummons do
+	local summons: { string } = CombatConfig.PartySummons
+	local override: (() -> { string })? = self.deps.partySummons
+	if override ~= nil then
+		summons = override()
+	end
+	for slot, summonId in summons do
 		local owner = party[(slot - 1) % #party + 1]
 		local entry: BattleSession.RosterEntry = {
 			side = "Party",

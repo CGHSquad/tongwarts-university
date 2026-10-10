@@ -61,7 +61,22 @@ treat it as the current source of truth, not something to hand-edit here.
   cues per beat that owns what it creates and reports when the stage is busy), `BattleCamera`
   (critically damped springs between `Shots` poses, with sway, shake, FOV punch and whip roll, all
   scaled by the reduced-motion setting), `Shots` (pure CFrame math per beat) and `Transition` (the
-  battle-start swirl). `ReplicatedStorage/Combat/Pacing.luau` gives the seconds the server waits
+  battle-start swirl). Every camera number (FOV, Dutch tilt, offsets, sweep times, the enemy return
+  style) is in `Presentation/CameraSpec.luau`, aligned to the owner's `docs/combat-overhaul/CAMERA_SPEC.md`
+  (section 7's state matrix) with the owner's playtest feedback on top: moves between shots are
+  cuts or sweeps of at most 0.25 s, holds stay long. The HUD tells the view what the player is
+  looking at on their turn (`onFramingChanged`: ring, skill list, a target) and `BattleView:setFraming`
+  frames it: the skill list gets a micro-push and the camera's own depth of field (off on low
+  graphics quality), one enemy a tight low shot with a truck between targets (the other enemies'
+  plates stay pinned to the HUD box's edge so they can still be tapped; a plate the box pushes onto
+  its own enemy's head goes beside it; plate offsets are an exact back-projection of their pixel,
+  written in the spot's own frame (the engine applies `StudsOffsetWorldSpace` in the Adornee's frame,
+  and the spots are turned; the tests read it back with `PointToWorldSpace`),
+  and the overlay writes its box as BoxLeft/Top/Right/Bottom attributes on its folder), one ally
+  chest-up. Any move that turns the camera more than 90 degrees is a cut (a target truck excepted).
+  Heals and buffs open on the caster and cut to the recipient (lifting) or hold a party overhead;
+  an enemy's attack cuts over the targeted hero's shoulder, then to the hero on impact.
+  `ReplicatedStorage/Combat/Pacing.luau` gives the seconds the server waits
   after each action (`CombatConfig.ResolvePauseSeconds` plus `ResolveExtraSeconds` per beat);
   BattleDirector waits exactly that and the client treats it as its budget, which the tests'
   observer checks on every turn. `UI/Core/Motion.luau` reads Roblox's reduce-motion switch
@@ -77,6 +92,10 @@ treat it as the current source of truth, not something to hand-edit here.
   length isn't loaded yet is stopped at its beat's budget. Every critic and playtester pass also
   checks: can the player clearly see the outcome of every action (who was hit, for how much, what
   changed) before the camera moves on, on enemy turns especially.
+- Playtests can field other party summons without a code change: set a `PartySummons` attribute
+  on ServerScriptService (e.g. `"TungTungGroveKeeper,TungTungSahur"`) before the fight starts;
+  BattleServer reads it per fight, in Studio only (the Grove-Keeper has the only heal and party
+  buff today). The Sim's `RunService:IsStudio()` answers true unless a test sets `sim.isStudio = false`.
 - After changing combat numbers or rules, run `lune run tools/simulate-battles` (Lune is pinned
   in `rokit.toml`) to see win rates per party comp, what each role does, and how Guard gets used.
   "turtle" play (guard whenever it's likely to be attacked, stacking Guard's damage cut) must keep

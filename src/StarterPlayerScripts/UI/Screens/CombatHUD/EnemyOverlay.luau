@@ -68,10 +68,14 @@ local EnemyOverlay = {}
 EnemyOverlay.PLATE_WIDTH = 190
 EnemyOverlay.PLATE_HEIGHT = 60
 EnemyOverlay.STACK_GAP = 6 -- pixels between stacked plates
+EnemyOverlay.BESIDE_STUDS = 1.5 -- a plate put beside its enemy clears its middle by this much (a head's half-width and some)
+EnemyOverlay.HEAD_GAP_STUDS = 1.8 -- BattleView hangs the plate's anchor this far above the enemy's head
+EnemyOverlay.STACK_SLACK = 12 -- pixels a stacked plate may hang past the box's bottom before it goes sideways instead (a phone's box is two plates tall less a few pixels)
 -- The camera has to move this much before the plates are placed again (the idle sway stays under
 -- it, so a held shot costs nothing per frame).
 EnemyOverlay.REPLACE_DISTANCE = 0.3 -- studs
 EnemyOverlay.REPLACE_ANGLE = math.cos(math.rad(1))
+EnemyOverlay.REPLACE_FOV = 0.5 -- degrees of field of view (the confirm punch, a shot's own FOV) before the plates are placed again
 
 -- Where a world point lands on the viewport (pixels; it may be outside it) and whether it's in
 -- front of the camera. A plain function, so the per-frame pcall allocates nothing.
@@ -125,6 +129,18 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 
 	-- A respawn (a reset mid-fight, the respawn after a loss) clears PlayerGui of everything but the
 	-- ScreenGuis that opt out, and the plates go with their folder: start over with a new one.
+	-- The box is also written on the folder (BoxLeft/Top/Right/Bottom, viewport pixels), for the
+	-- tests and for debugging in Studio.
+	local function writeBounds()
+		local box = bounds
+		if box then
+			folder:SetAttribute("BoxLeft", box.left)
+			folder:SetAttribute("BoxTop", box.top)
+			folder:SetAttribute("BoxRight", box.right)
+			folder:SetAttribute("BoxBottom", box.bottom)
+		end
+	end
+
 	local function ensureFolder()
 		if folder.Parent ~= nil then
 			return
@@ -135,6 +151,7 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 		folder.Parent = playerGui
 		builtFor = nil
 		api.folder = folder
+		writeBounds()
 	end
 
 	local function build(battle: HudBattle)
@@ -223,6 +240,8 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 	-- camera's projection, which the tests' fake Roblox doesn't have; then the plates stay put.
 	local lastCameraPosition: Vector3? = nil
 	local lastCameraLook: Vector3? = nil
+	local lastCameraUp: Vector3? = nil -- (the Dutch tilt and the whip roll turn the frame without moving it)
+	local lastCameraFov = 0
 	type Entry = { plate: Plate, x: number, y: number, anchorX: number, anchorY: number, pixelsPerStud: number }
 	local function byX(a: Entry, b: Entry): boolean
 		return a.x < b.x
@@ -235,6 +254,9 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 		local cameraCFrame = camera.CFrame
 		lastCameraPosition = cameraCFrame.Position
 		lastCameraLook = cameraCFrame.LookVector
+		lastCameraUp = cameraCFrame.UpVector
+		lastCameraFov = camera.FieldOfView
+		local plateWidth, plateHeight = width * scale, height * scale
 		local entries: { Entry } = {}
 		for _, plate in plates do
 			local spot: Instance? = plate.gui.Adornee
@@ -247,10 +269,13 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 				return -- no projection here (the fake Roblox without a camera): leave every plate where it is
 			end
 			-- A plate whose anchor is behind the camera, or far outside the frame, hides; one just
-			-- above or beside the frame (a tall enemy's head in a close shot) is pulled in below.
+			-- above or beside the frame (a tall enemy's head in a close shot) is pulled in below. A
+			-- plate the player can tap (picking a target) stays however far out its enemy is: the
+			-- target shot is tight on one enemy, and the others must still be there to switch to.
 			local viewport = camera.ViewportSize
 			local margin = viewport.Y * 0.5
-			local placeable = inFront and x > -margin and x < viewport.X + margin and y > -margin and y < viewport.Y + margin
+			local pinned = plate.button.Interactable
+			local placeable = inFront and (pinned or (x > -margin and x < viewport.X + margin and y > -margin and y < viewport.Y + margin))
 			plate.root.Visible = placeable
 			if not placeable then
 				continue
@@ -261,7 +286,6 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 		end
 		table.sort(entries, byX)
 
-		local plateWidth, plateHeight = width * scale, height * scale
 		local rowStep = plateHeight + EnemyOverlay.STACK_GAP
 		local box = bounds
 		local minX, maxX = -math.huge, math.huge
@@ -270,10 +294,30 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 			minX, maxX = box.left + plateWidth / 2, math.max(box.left + plateWidth / 2, box.right - plateWidth / 2)
 			minY, maxY = box.top + plateHeight / 2, math.max(box.top + plateHeight / 2, box.bottom - plateHeight / 2)
 		end
-		-- 1. Each plate inside the box, where it would hang on its own.
+		-- 1. Each plate inside the box, where it would hang on its own. One the box's top pushes
+		-- down onto its own enemy's head (a close shot: the head is near the top of the box) goes
+		-- beside the enemy instead, on whichever side fits, toward the screen's middle if both do.
+		local middleX = (minX + maxX) / 2
 		for _, entry in entries do
+			local pushedDown = math.clamp(entry.y, minY, maxY) - entry.y
 			entry.x = math.clamp(entry.x, minX, maxX)
 			entry.y = math.clamp(entry.y, minY, maxY)
+			local headTop = entry.anchorY + entry.pixelsPerStud * EnemyOverlay.HEAD_GAP_STUDS
+			local overHead = entry.y + plateHeight / 2 > headTop
+				and math.abs(entry.x - entry.anchorX) < plateWidth / 2 + entry.pixelsPerStud * EnemyOverlay.BESIDE_STUDS
+			if pushedDown > 0 and overHead then
+				local clear = plateWidth / 2 + entry.pixelsPerStud * EnemyOverlay.BESIDE_STUDS
+				local leftX, rightX = entry.anchorX - clear, entry.anchorX + clear
+				local leftFits = leftX >= minX and leftX <= maxX
+				local rightFits = rightX >= minX and rightX <= maxX
+				if leftFits and rightFits then
+					entry.x = if entry.anchorX > middleX then leftX else rightX
+				elseif leftFits then
+					entry.x = leftX
+				elseif rightFits then
+					entry.x = rightX
+				end
+			end
 		end
 		-- 2. Plates that would sit on each other move apart: a row down when the box has room,
 		-- else pushed apart sideways, both of them, within the box. A plate that was displaced
@@ -287,13 +331,14 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 					local a, b = entries[i], entries[j]
 					local loose = if a.plate.row > 0 or b.plate.row > 0 then 24 else EnemyOverlay.STACK_GAP
 					local dx, dy = b.x - a.x, b.y - a.y
-					if math.abs(dx) >= plateWidth + loose or math.abs(dy) >= plateHeight + loose then
+					-- (Rows are a row step apart: a stacked pair is separated, however loose the sideways test.)
+					if math.abs(dx) >= plateWidth + loose or math.abs(dy) >= rowStep - 0.5 then
 						continue
 					end
 					any = true
 					displaced[b.plate] = true
 					local lower = math.max(a.y, b.y) + rowStep
-					if lower <= maxY then
+					if lower <= maxY + EnemyOverlay.STACK_SLACK then
 						-- Room below: the one further right drops a row under the other.
 						b.y = math.max(b.y, a.y + rowStep)
 					else
@@ -320,14 +365,32 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 				break
 			end
 		end
-		-- 3. Back to the world: each plate's pixel shift from its anchor, along the camera's right
-		-- and up, written only when it changed.
-		local right, up = cameraCFrame.RightVector, cameraCFrame.UpVector
+		-- (Whatever the passes did, every plate ends inside the box, the stack's slack included.)
+		for _, entry in entries do
+			entry.x = math.clamp(entry.x, minX, maxX)
+			entry.y = math.clamp(entry.y, minY, maxY + EnemyOverlay.STACK_SLACK)
+		end
+		-- 3. Back to the world: the point at the anchor's depth that the camera sees at the plate's
+		-- pixel (a ray through the pixel, exact under perspective however far a pinned plate moved
+		-- from its enemy), as an offset from the spot, written only when it changed.
+		local cameraPosition = cameraCFrame.Position
+		local right, up, look = cameraCFrame.RightVector, cameraCFrame.UpVector, cameraCFrame.LookVector
+		local viewport = camera.ViewportSize
+		local tanY = math.tan(math.rad(camera.FieldOfView) / 2)
+		local tanX = tanY * viewport.X / math.max(viewport.Y, 1)
 		for _, entry in entries do
 			local plate = entry.plate
 			plate.row = if displaced[plate] then 1 else 0
-			local shift = right * ((entry.x - entry.anchorX) / entry.pixelsPerStud) - up * ((entry.y - entry.anchorY) / entry.pixelsPerStud)
-			local offset = Vector3.new(0, plate.baseOffset, 0) + shift
+			local spot = plate.gui.Adornee :: BasePart
+			local spotAt = spot.CFrame.Position
+			local anchor = spotAt + Vector3.new(0, plate.baseOffset, 0)
+			local depth = (anchor - cameraPosition):Dot(look)
+			local nx = entry.x / viewport.X * 2 - 1
+			local ny = 1 - entry.y / viewport.Y * 2
+			local through = look + right * (nx * tanX) + up * (ny * tanY)
+			-- (The engine applies StudsOffsetWorldSpace in the spot's own frame, not the world's: the
+			-- enemies' spots are turned to face the party, so the world offset is turned with them.)
+			local offset = spot.CFrame:VectorToObjectSpace(cameraPosition + through * depth - spotAt)
 			local last = plate.placedAt
 			if last == nil or (last - offset).Magnitude > 0.02 then
 				plate.placedAt = offset
@@ -406,10 +469,14 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 			return
 		end
 		local cframe = camera.CFrame
-		local lastPosition, lastLook = lastCameraPosition, lastCameraLook
-		if lastPosition == nil or lastLook == nil then
+		local lastPosition, lastLook, lastUp = lastCameraPosition, lastCameraLook, lastCameraUp
+		if lastPosition == nil or lastLook == nil or lastUp == nil then
 			place()
-		elseif (cframe.Position - lastPosition).Magnitude > EnemyOverlay.REPLACE_DISTANCE or cframe.LookVector:Dot(lastLook) < EnemyOverlay.REPLACE_ANGLE then
+		elseif (cframe.Position - lastPosition).Magnitude > EnemyOverlay.REPLACE_DISTANCE
+			or cframe.LookVector:Dot(lastLook) < EnemyOverlay.REPLACE_ANGLE
+			or cframe.UpVector:Dot(lastUp) < EnemyOverlay.REPLACE_ANGLE
+			or math.abs(camera.FieldOfView - lastCameraFov) > EnemyOverlay.REPLACE_FOV
+		then
 			place()
 		end
 	end
@@ -426,6 +493,7 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 		end,
 		setBounds = function(newBounds: Bounds)
 			bounds = newBounds
+			writeBounds()
 			lastCameraPosition = nil -- place again on the next tick
 		end,
 		hide = function()

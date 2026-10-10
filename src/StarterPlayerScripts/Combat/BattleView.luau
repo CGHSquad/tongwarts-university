@@ -44,10 +44,12 @@ local Summons = require(Combat:WaitForChild("Summons"))
 local BattleTheme = require(script.Parent:WaitForChild("BattleTheme"))
 local Presentation = script.Parent:WaitForChild("Presentation")
 local BattleCamera = require(Presentation:WaitForChild("BattleCamera"))
+local CameraSpec = require(Presentation:WaitForChild("CameraSpec"))
 local Sequencer = require(Presentation:WaitForChild("Sequencer"))
 local Shots = require(Presentation:WaitForChild("Shots"))
 local Transition = require(Presentation:WaitForChild("Transition"))
 local Motion = require(script.Parent.Parent:WaitForChild("UI"):WaitForChild("Core"):WaitForChild("Motion"))
+local Layout = require(script.Parent.Parent:WaitForChild("UI"):WaitForChild("Core"):WaitForChild("Layout"))
 
 type BattleState = BattleTypes.BattleState
 type ParticipantState = BattleTypes.ParticipantState
@@ -80,19 +82,17 @@ local ATTACK_MAX_SECONDS = 1.6
 local DEATH_MAX_SECONDS = 1.6
 -- The battle start: the swirl covers the screen, the stage is set, the swirl clears onto the sweep.
 local COVER_SECONDS = 0.45
-local SWEEP_SECONDS = 1.9
+local SWEEP_SECONDS = CameraSpec.Sweep.seconds
 -- A beat's sequence ends this long before the server opens the next turn, so there's slack for
 -- latency; the next turn's whip-pan takes over from wherever the camera is.
 local RESOLVE_SLACK = 0.3
 local HIT_DELAY = 0.12 -- after the blow lands: the recoil, the flinch, the shake
--- An enemy's turn opens with an eased move to its shot (never a whip: those are for the party's
--- own actions), and after its action the camera eases back to whoever's next.
-local ENEMY_TURN_MOVE_SECONDS = 0.45
+-- The party faces this way on the stage (toward the enemies): the party-wide shots are built on it.
+local PARTY_FACING = Vector3.xAxis
 -- A creature with no swing clip (none uploaded, or still downloading) lunges instead, after this
 -- long, so the shot over its shoulder is readable before the blow lands.
 local LUNGE_LEAD = 0.3
-local CONFIRM_PUNCH = 8 -- degrees of field of view, on confirming a move
-local RESULT_SECONDS = 2.5
+local RESULT_SECONDS = CameraSpec.Victory.seconds
 
 -- A summon's animation tracks, loaded from its art once its model is in the DataModel. Any can be
 -- missing (see Summons.SummonAnimations).
@@ -141,6 +141,11 @@ type ViewFields = {
 	resultShown: boolean,
 	targetId: string?,
 	targetFriendly: boolean,
+	framing: Framing, -- what the HUD is showing on the player's own turn (setFraming)
+	framingTargetId: string?,
+	framingLocked: boolean, -- a move was confirmed: the HUD's framing no longer steers the camera this turn
+	framingPending: boolean, -- asked for while a beat was playing: applied once the stage is free
+	framingShown: Framing, -- what the camera last framed (a truck is from one enemy shot to another)
 	enemyNameplates: boolean, -- off when the new HUD draws its own enemy plates (M0 report R19)
 	partyNameplates: boolean, -- off for the new HUD too: its party cards carry the same
 	localUserId: number?,
@@ -149,6 +154,10 @@ type ViewFields = {
 	sequencer: Sequencer.Sequencer,
 	transition: Transition.Transition?,
 }
+
+-- What the HUD is showing while the player picks a move: the command ring, the skill list, or a
+-- target (one enemy, one ally, or every enemy).
+export type Framing = "Command" | "Menu" | "TargetEnemy" | "TargetAlly" | "TargetSquad"
 
 export type Options = {
 	enemyNameplates: boolean?, -- default true
@@ -735,10 +744,19 @@ end
 -- it: gone after a second, or at once if the fight is left.
 local POPUP_SECONDS = 1.6 -- long enough to be read through an enemy beat's hold
 local POPUP_RISE_SECONDS = 1.4
+-- How far a popup drifts up as it fades. Kept small: in the close reaction shot every stud is
+-- about a tenth of the screen, and a number that rose further passed under the status block
+-- during the hold (the playtest), on a phone within half a second.
+local POPUP_RISE_STUDS = 1
+local POPUP_CREATURE_HEIGHT = 0.35 -- where on a creature's body a popup starts, from its feet
+local AILMENT_POPUP_HEIGHT = -0.8 -- an ailment's name, just under the number (above it, it reached the status block on a phone)
+BattleView.POPUP_RISE_STUDS = POPUP_RISE_STUDS -- (for the tests)
+BattleView.AILMENT_POPUP_HEIGHT = AILMENT_POPUP_HEIGHT
 local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: string, color: Color3, startHeight: number)
 	local part, rest = body(figure)
-	-- From the body's middle up (an imported rig's root sits at its feet).
-	local lift = if figure.character then 0 else math.max(0, (figure.home.Position.Y - BLOCK_SIZE.Y / 2 + figure.height / 2) - rest.Position.Y)
+	-- From a creature's chest, a third of the way up its body (an imported rig's root sits at its
+	-- feet): its middle put the number under the phone's status block from over the party's shoulder.
+	local lift = if figure.character then 0 else math.max(0, (figure.home.Position.Y - BLOCK_SIZE.Y / 2 + figure.height * POPUP_CREATURE_HEIGHT) - rest.Position.Y)
 	local popup = Instance.new("BillboardGui")
 	popup.Name = "Popup"
 	popup.Adornee = part
@@ -752,7 +770,7 @@ local function showPopup(sequencer: Sequencer.Sequencer, figure: Figure, text: s
 	popup.Parent = figure.spot
 
 	local rise = TweenInfo.new(POPUP_RISE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + lift + 3.5, 0) }):Play()
+	TweenService:Create(popup, rise, { StudsOffset = Vector3.new(0, startHeight + lift + POPUP_RISE_STUDS, 0) }):Play()
 	TweenService:Create(label, TweenInfo.new(POPUP_RISE_SECONDS * 0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In, 0, false, POPUP_RISE_SECONDS * 0.5), { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
 	sequencer:own(popup, POPUP_SECONDS)
 end
@@ -780,6 +798,11 @@ function BattleView.new(options: Options?): BattleView
 		resultShown = false,
 		targetId = nil,
 		targetFriendly = false,
+		framing = "Command",
+		framingTargetId = nil,
+		framingLocked = false,
+		framingPending = false,
+		framingShown = "Command",
 		enemyNameplates = if options and options.enemyNameplates ~= nil then options.enemyNameplates :: boolean else true,
 		partyNameplates = if options and options.partyNameplates ~= nil then options.partyNameplates :: boolean else true,
 		localUserId = if localPlayer then localPlayer.UserId else nil,
@@ -811,6 +834,12 @@ function BattleView.render(self: BattleView, battle: BattleState?): number
 
 	if battle.turnNumber ~= self.turnSeen and battle.currentActorId ~= nil then
 		self.turnSeen = battle.turnNumber
+		self.framing = "Command"
+		self.framingTargetId = nil
+		self.framingLocked = false
+		self.framingPending = false
+		self.framingShown = "Command"
+		self.camera:setFocusBlur(false)
 		self:_openTurn(battle)
 	end
 	local action = battle.lastAction
@@ -927,6 +956,7 @@ local nextActorId = BattleView.nextActorId
 -- The server refused the move (or the turn moved on): back to the turn's own shot.
 function BattleView.refocus(self: BattleView)
 	local battle = self.battle
+	self.framingLocked = false
 	if battle and battle.currentActorId then
 		self:_openTurn(battle)
 	end
@@ -936,6 +966,11 @@ end
 function BattleView.update(self: BattleView, dt: number)
 	self.camera:setMotionScale(Motion.scale())
 	self.sequencer:update(dt)
+	if self.framingPending and not self.sequencer:isBusy() then
+		-- The HUD changed what the player looks at while a beat was still playing: frame it now.
+		self.framingPending = false
+		self:setFraming(self.framing, self.framingTargetId)
+	end
 	self.camera:update(dt)
 end
 
@@ -947,26 +982,104 @@ function BattleView.confirm(self: BattleView, abilityId: string?, targetId: stri
 	if battle == nil then
 		return
 	end
-	self.camera:punch(CONFIRM_PUNCH)
+	self.camera:punch(CameraSpec.Kicks.confirmPunch)
+	self.framingLocked = true
+	self.framingPending = false
+	self.camera:setFocusBlur(false)
 	local actorId = battle.currentActorId
 	local figure = if actorId then self.figures[actorId] else nil
 	local ability = if abilityId then Abilities[abilityId] else nil
 	if figure == nil or abilityId == nil or ability == nil then
 		return
 	end
+	if ability.kind == "Attack" then
+		-- Back from the target shot to the hero's shoulder at once, so the swing that follows (the
+		-- character's own, or its summon's from the summon shot below) is seen from the hero's side.
+		local home = self:_shotFor(actorId)
+		if not self.camera:isHeadingTo(home) then
+			self.camera:moveTo(home, CameraSpec.Transition.maxSweepSeconds)
+		end
+	end
 	for _, participant in battle.participants do
 		if participant.id == actorId and Pacing.isSummoned(participant.side, participant.abilities, abilityId) then
-			-- Aim where the move goes: the enemies, the ally it helps, the party, or itself.
-			local aim = self:_focus("Enemy")
-			if ability.targets == "Ally" and targetId then
-				aim = self:_focusOf({ targetId }, aim)
-			elseif ability.targets == "AllAllies" then
-				aim = self:_focus("Party")
-			elseif ability.targets == "Self" then
-				aim = self:_focusOf({ figure.id }, aim)
+			if ability.kind == "Attack" then
+				self.camera:moveTo(Shots.summon(standing(figure), self:_focus("Enemy")), CameraSpec.Transition.maxSweepSeconds)
+			else
+				-- A heal or buff opens on its own shot (the beat picks up from there: see _playAction).
+				local recipientId = if ability.targets == "Self" then figure.id else targetId
+				self.camera:moveTo(self:_castOpening(figure, ability.targets == "AllAllies", recipientId), CameraSpec.Transition.maxSweepSeconds)
 			end
-			self.camera:moveTo(Shots.summon(standing(figure), aim), 0.3)
 		end
+	end
+end
+
+-- The shot a heal or buff opens on: a frontal medium shot of the caster's character, or for the
+-- whole party the high-angle overhead. On the caster itself it opens on the recipient's shot (the
+-- invocation and the effect share one frame, so there's no jump cut between two near-identical
+-- shots).
+function BattleView._castOpening(self: BattleView, caster: Figure, partyWide: boolean, recipientId: string?): Shots.Pose
+	if partyWide then
+		return Shots.partyOverhead(self:_focus("Party"), PARTY_FACING)
+	elseif recipientId == caster.id then
+		return Shots.allyChestUp(standing(caster))
+	end
+	return Shots.casterFrontal(standing(caster), bodyHeight(caster))
+end
+
+-- The HUD changed what the player is looking at on their own turn (the ring, the skill list, a
+-- target): the camera frames it (CAMERA_SPEC sections 3 and 4). Only while the stage is idle and
+-- no move has been confirmed; a new turn resets it.
+function BattleView.setFraming(self: BattleView, framing: Framing, targetId: string?)
+	local previous = self.framingShown
+	self.framing = framing
+	self.framingTargetId = targetId
+	local battle = self.battle
+	if battle == nil or battle.phase ~= "input" or self.framingLocked then
+		return
+	elseif self.sequencer:isBusy() then
+		self.framingPending = true
+		return
+	end
+	local actorId = battle.currentActorId
+	local actor = if actorId then self.figures[actorId] else nil
+	if actor == nil or actor.side ~= "Party" or actor.ownerUserId == nil or actor.ownerUserId ~= self.localUserId then
+		return
+	end
+	local camera = self.camera
+	local transition = CameraSpec.Transition
+	local idle = self:_shotFor(actorId)
+	self.framingShown = framing
+	if framing == "Menu" then
+		camera:moveTo(Shots.menuPush(idle), transition.maxSweepSeconds)
+		camera:setFocusBlur(true, standing(actor).Position + Vector3.new(0, CameraSpec.Idle.focusUp, 0))
+		return
+	end
+	camera:setFocusBlur(false)
+	local target = if targetId then self.figures[targetId] else nil
+	if framing == "TargetEnemy" and target then
+		local others: { string } = {}
+		for _, participant in battle.participants do
+			if participant.side == "Enemy" and participant.id ~= target.id and participant.status == "Active" then
+				table.insert(others, participant.id)
+			end
+		end
+		local othersAt = if #others > 0 then self:_focusOf(others, standing(target).Position) else nil
+		local viewport = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize
+		local compact = viewport ~= nil and Layout.deviceClass(viewport) == "Phone"
+		local shot = Shots.targetEnemy(standing(target), bodyHeight(target), standing(actor).Position, othersAt, compact)
+		-- A truck between enemies stays a sweep, whatever it turns.
+		local trucking = previous == "TargetEnemy"
+		camera:moveTo(shot, if trucking then CameraSpec.TargetSingle.truckSeconds else transition.maxSweepSeconds, trucking)
+		return
+	elseif framing == "TargetAlly" and target then
+		camera:moveTo(Shots.allyChestUp(standing(target)), transition.maxSweepSeconds)
+		return
+	elseif framing == "TargetSquad" then
+		camera:moveTo(Shots.targetSquad(standing(actor), self:_focus("Enemy")), transition.maxSweepSeconds)
+		return
+	end
+	if not camera:isHeadingTo(idle) then
+		camera:moveTo(idle, transition.whipSeconds)
 	end
 end
 
@@ -1168,13 +1281,14 @@ function BattleView._shotFor(self: BattleView, actorId: string?): Shots.Pose
 	local rest = standing(figure)
 	if figure.side == "Party" then
 		local mine = figure.ownerUserId ~= nil and figure.ownerUserId == self.localUserId
-		return Shots.overShoulder(rest, self:_focus("Enemy"), if mine then 1 else 1.3)
+		return Shots.overShoulder(rest, self:_focus("Enemy"), if mine then 1 else CameraSpec.Idle.teammatePull)
 	end
 	return Shots.enemyFrontal(rest, bodyHeight(figure))
 end
 
--- A turn opened: whip-pan to a party member about to act; ease over to an enemy (its beat ends
--- with the camera already easing to whoever's next, so this is usually a no-op then).
+-- A turn opened: whip-pan to a party member about to act; a short ease over to an enemy's wind-up
+-- shot (its beat ends with the camera already heading to whoever's next, so this is usually a
+-- no-op then).
 function BattleView._openTurn(self: BattleView, battle: BattleState)
 	local actorId = battle.currentActorId
 	local shot = self:_shotFor(actorId)
@@ -1183,7 +1297,7 @@ function BattleView._openTurn(self: BattleView, battle: BattleState)
 	end
 	local figure = if actorId then self.figures[actorId] else nil
 	local enemy = figure ~= nil and figure.side == "Enemy"
-	self.camera:moveTo(shot, if enemy then ENEMY_TURN_MOVE_SECONDS else BattleCamera.WHIP_SECONDS)
+	self.camera:moveTo(shot, if enemy then CameraSpec.Transition.enemyTurnSeconds else CameraSpec.Transition.whipSeconds)
 end
 
 --[[ Beats ]]
@@ -1231,8 +1345,9 @@ end
 -- abilities (swinging its attack clip, if it has one; only a character or a block lunges at its
 -- target), hits make the target recoil as the blow lands (a player's character flinches too), and
 -- every target gets a popup (damage, CRIT, MISS, an ailment, healing, GUARD, or the status gained).
--- The camera: it holds over a party member's shoulder (pulling back for its summon) and shakes as
--- a blow lands; for an enemy's attack it cuts over the enemy's shoulder, then to whoever it hit.
+-- The camera: it holds over a party member's shoulder (pulling back for its summon, framing a heal
+-- or buff's caster and recipient) and shakes as a blow lands; for an enemy's attack it cuts over
+-- the targeted hero's shoulder, then to the hero as the blow lands, holds, and comes back.
 -- Returns how long the beat plays (the sequence's length), so what follows can wait for it, and
 -- how long until its outcome shows (the blow landing; the cast taking effect).
 function BattleView._playAction(self: BattleView, battle: BattleState, action: ActionRecord): (number, number)
@@ -1313,6 +1428,13 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	-- When the action's outcome shows: an attack as its blow lands, anything else once its
 	-- performer has materialized (a summon) and gestured.
 	local outcomeAt = if attacking then lead + HIT_DELAY else lead + (if summoned then 0.3 else 0.1)
+	local helping = ability.kind ~= "Guard" and (ability.targets == "Self" or ability.targets == "Ally" or ability.targets == "AllAllies")
+	if actor.side == "Party" and not attacking and helping then
+		-- A heal or buff: its invocation shot is seen (CameraSpec.Cast.initiationSeconds, once the
+		-- camera has swept there) before the effect lands and the camera cuts to the recipient.
+		local opening = if ability.targets == "AllAllies" then 0 else CameraSpec.Cast.initiationSeconds -- (a party-wide cast has no caster shot)
+		outcomeAt = math.max(outcomeAt, opening + CameraSpec.Transition.maxSweepSeconds + CameraSpec.Cast.effectSlackSeconds)
+	end
 	for index, result in action.results do
 		local target = self.figures[result.targetId]
 		if target == nil then
@@ -1378,7 +1500,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 					local def = StatusEffects[inflicted]
 					local name = `{if def then def.name else inflicted}!`
 					table.insert(popups, function()
-						showPopup(sequencer, target, name, BattleTheme.Danger, 1.5)
+						showPopup(sequencer, target, name, BattleTheme.Danger, AILMENT_POPUP_HEIGHT)
 					end)
 				end
 			end
@@ -1405,37 +1527,110 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	end
 
 	-- The camera for the beat.
-	if actor.side == "Party" then
-		if summoned then
-			-- (Already on its way there if this player confirmed the move: see confirm.) An attack
-			-- looks at the enemies; a heal or buff at whoever it's for.
-			local aim = self:_focus("Enemy")
-			if not attacking then
-				local ids = {}
-				for _, result in action.results do
-					table.insert(ids, result.targetId)
+	local transition = CameraSpec.Transition
+	local nextId = nextActorId(battle)
+	-- Back to whoever's next (a cut or a short sweep, CameraSpec.Transition.returnStyle), at `at`
+	-- in the beat; not when this blow decided the fight, when the result camera takes over.
+	local function returnAt(at: number)
+		if nextId == nil then
+			return
+		end
+		table.insert(cues, {
+			at = math.min(at, math.max(0, duration - 0.05)),
+			run = function()
+				local shot = self:_shotFor(nextId)
+				local style = transition.returnStyle
+				if style == "cut" then
+					camera:cut(shot)
+				else
+					camera:moveTo(shot, transition.returnSeconds, style == "sweep")
 				end
-				aim = self:_focusOf(ids, aim)
+			end,
+		})
+	end
+	if actor.side == "Party" then
+		if not attacking and helping then
+			-- A heal or buff (CAMERA_SPEC section 5). On one ally (or itself): the caster's frontal
+			-- medium shot for the invocation, then a cut to the recipient chest-up as it lands, the
+			-- camera lifting with the effect (reduced motion: the chest-up shot, still). On the
+			-- whole party: the high-angle overhead, held through the effect, then back.
+			local recipients: { Figure } = {}
+			for _, result in action.results do
+				local recipient = self.figures[result.targetId]
+				if recipient then
+					table.insert(recipients, recipient)
+				end
 			end
-			camera:moveTo(Shots.summon(standing(actor), aim), 0.25)
+			local partyWide = ability.targets == "AllAllies" or #recipients > 1
+			local first = recipients[1]
+			local opening = self:_castOpening(actor, partyWide, if first then first.id else nil)
+			if not camera:isHeadingTo(opening) then
+				camera:moveTo(opening, transition.maxSweepSeconds)
+			end
+			if partyWide then
+				returnAt(outcomeAt + CameraSpec.Party.holdSeconds)
+			else
+				local recipient = recipients[1] or actor
+				local root = standing(recipient)
+				local cast = CameraSpec.Cast
+				table.insert(cues, {
+					at = outcomeAt - 0.1,
+					run = function()
+						if Motion.scale() <= 0 then
+							camera:cut(Shots.allyChestUp(root))
+						else
+							camera:follow(function(t: number): Shots.Pose
+								return Shots.allyLift(root, t / cast.liftSeconds)
+							end, cast.liftSeconds)
+						end
+					end,
+				})
+			end
+		elseif summoned then
+			-- (Already on its way there if this player confirmed the move: see confirm.)
+			local shot = Shots.summon(standing(actor), self:_focus("Enemy"))
+			if not camera:isHeadingTo(shot) then
+				camera:moveTo(shot, transition.maxSweepSeconds)
+			end
+		elseif attacking then
+			-- The character's own swing, from over its shoulder (a teammate's, or this player's
+			-- when the confirm's move hasn't happened: joining mid-turn).
+			local shot = self:_shotFor(actor.id)
+			if not camera:isHeadingTo(shot) then
+				camera:moveTo(shot, transition.maxSweepSeconds)
+			end
 		end
 	else
-		-- An enemy's beat: hard cuts (never two springs in flight at once), a hold on the outcome,
-		-- then one eased move back to whoever's next. An attack cuts over the enemy's shoulder for
-		-- the swing and to the target's reaction as the blow lands (a miss too: the MISS shows
-		-- there); a heal or buff holds the enemy's own shot.
+		-- An enemy's beat (CAMERA_SPEC section 6): hard cuts (never two springs in flight at once),
+		-- a hold on the outcome, then one move back to whoever's next. The camera starts on the
+		-- enemy's wind-up shot (_openTurn). A single-target attack cuts over the targeted hero's
+		-- shoulder, looking out at the incoming swing, then to the hero's reaction as the blow
+		-- lands (a miss too: the MISS shows there); an attack on the whole party cuts to a wide
+		-- lineup of the party as the blows land. A heal or buff holds the enemy's own shot.
 		local landsAt = lead + HIT_DELAY
-		if attacking and firstTarget then
+		local struckCount = 0
+		for _, result in action.results do
+			local target = self.figures[result.targetId]
+			if target and target ~= actor then
+				struckCount += 1
+			end
+		end
+		if attacking and firstTarget and struckCount > 1 then
+			local lineup = Shots.partyLineup(self:_focus("Party"), PARTY_FACING)
+			table.insert(cues, {
+				at = math.max(0, landsAt - CameraSpec.EnemyIncoming.cutLeadSeconds),
+				run = function()
+					camera:cut(lineup)
+				end,
+			})
+		elseif attacking and firstTarget then
 			local struck = firstTarget
 			local struckRest = standing(struck)
 			local reaction = Shots.reaction(struckRest, bodyHeight(struck))
-			if landsAt >= 0.25 then
-				-- Over the creature's shoulder for the swing (further off the bigger it is: an Elder
-				-- is thirteen studs), then the target's reaction as the blow lands.
-				local pull = 1.2 * math.max(1, bodyHeight(actor) / 6)
-				camera:cut(Shots.overShoulder(standing(actor), struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), pull, 0))
+			if landsAt >= CameraSpec.EnemyIncoming.minLeadSeconds then
+				camera:cut(Shots.incoming(struckRest, standing(actor).Position))
 				table.insert(cues, {
-					at = landsAt - 0.05,
+					at = landsAt - CameraSpec.EnemyIncoming.cutLeadSeconds,
 					run = function()
 						camera:cut(reaction)
 					end,
@@ -1445,30 +1640,23 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 				camera:cut(reaction)
 			end
 		end
-		-- Then back to whoever's next; unless this blow decided the fight, when the result camera
-		-- takes over from the hold. A knockout holds longer, through the fall (the server's wait
-		-- has the Knockout extra for exactly that).
-		local nextId = nextActorId(battle)
-		if nextId then
-			local hold = CombatConfig.EnemyHoldSeconds
-			if knockedSomeone then
-				hold += CombatConfig.ResolveExtraSeconds.Knockout
-			end
-			table.insert(cues, {
-				at = landsAt + hold,
-				run = function()
-					camera:moveTo(self:_shotFor(nextId), CombatConfig.EnemyReturnSeconds)
-				end,
-			})
+		-- A knockout holds longer, through the fall (the server's wait has the Knockout extra for
+		-- exactly that).
+		local hold = CombatConfig.EnemyHoldSeconds
+		if knockedSomeone then
+			hold += CombatConfig.ResolveExtraSeconds.Knockout
 		end
+		returnAt(landsAt + hold)
 	end
 	if firstHit then
 		table.insert(cues, {
 			at = lead + HIT_DELAY,
 			run = function()
-				camera:shake(if anyCritical then 0.4 else 0.25, if anyCritical then 0.35 else 0.25)
+				local kicks = CameraSpec.Kicks
+				local shake = if anyCritical then kicks.criticalShake else kicks.shake
+				camera:shake(shake.amplitude, shake.seconds)
 				if anyCritical then
-					camera:punch(-4)
+					camera:punch(kicks.criticalPunch)
 				end
 			end,
 		})
@@ -1482,7 +1670,7 @@ end
 -- The results screen opens over it. (Runs after the final blow's beat: see render.)
 function BattleView._playResult(self: BattleView, battle: BattleState)
 	local center = self:_focus("Party")
-	local facing = Vector3.xAxis
+	local facing = PARTY_FACING
 	local track = if battle.winner == "Party"
 		then function(t: number): Shots.Pose
 			return Shots.victory(center, facing, t / RESULT_SECONDS)

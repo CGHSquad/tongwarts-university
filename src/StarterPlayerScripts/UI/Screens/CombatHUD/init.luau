@@ -59,7 +59,14 @@ type CommandId = UITypes.CommandId
 export type Callbacks = {
 	onAction: (abilityId: string, targetId: string) -> (), -- a summon's ability, or Attack or Guard
 	onTargetChanged: (targetId: string?, friendly: boolean) -> (), -- friendly = picking an ally
+	-- What the player is looking at on their turn changed: the ring ("Command"), the skill list
+	-- ("Menu"), or a target (one enemy, one ally); the battle camera frames it.
+	onFramingChanged: ((framing: Framing, targetId: string?) -> ())?,
 }
+
+-- (Kept in step with BattleView.Framing; "TargetSquad" is framed there but nothing targets every
+-- enemy yet, so the HUD doesn't send it until an ability does, C6.)
+export type Framing = "Command" | "Menu" | "TargetEnemy" | "TargetAlly" | "TargetSquad"
 
 export type Options = {
 	namePrefix: string?, -- the harness runs a second HUD beside the live one
@@ -115,6 +122,8 @@ type Fields = {
 	overworldBanner: number,
 	detailBase: string,
 	deadline: number?,
+	framing: Framing, -- last told to onFramingChanged
+	framingTargetId: string?,
 	stageBusy: boolean, -- the stage is still playing a beat (BattleView), so the ring waits
 	turnOpenedAt: number?, -- server clock, when the turn being shown opened
 	ringHeld: boolean, -- the ring is due but waiting for the stage
@@ -290,6 +299,8 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		overworldBanner = 0,
 		detailBase = "",
 		deadline = nil,
+		framing = "Command",
+		framingTargetId = nil,
 		stageBusy = false,
 		turnOpenedAt = nil,
 		ringHeld = false,
@@ -682,9 +693,27 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	local shownTarget = if self.mode == "Target" then self.targetId else nil
 	self.party.frame.Visible = self.mode ~= "List" and phase ~= "Reward"
 	self.party.update(hud, self.localUserId, if friendly then shownTarget else nil, pickable)
-	self.manaPlate.update(if myTurn then actor else nil, self.localUserId)
+	-- (Not while picking a target: nothing is spent there, and the target shot puts the enemy where
+	-- the plate sits, at the bottom middle.)
+	self.manaPlate.update(if myTurn and self.mode ~= "Target" then actor else nil, self.localUserId)
 	self.enemies.update(hud, if friendly then nil else shownTarget, pickable)
+	if self.mode == "List" then
+		-- The skill list covers the middle and the camera has pushed in on the hero: the plates
+		-- would only show through the list's rows (or behind the hero's head on a phone).
+		self.enemies.hide()
+	end
 	self.callbacks.onTargetChanged(shownTarget, friendly)
+	local framing: Framing = "Command"
+	if self.mode == "List" then
+		framing = "Menu"
+	elseif self.mode == "Target" and shownTarget ~= nil then
+		framing = if friendly then "TargetAlly" else "TargetEnemy"
+	end
+	local onFraming = self.callbacks.onFramingChanged
+	if onFraming and (framing ~= self.framing or shownTarget ~= self.framingTargetId) then
+		self.framing, self.framingTargetId = framing, shownTarget
+		onFraming(framing, shownTarget)
+	end
 end
 
 function CombatHUD._setMode(self: CombatHUD, mode: Mode)

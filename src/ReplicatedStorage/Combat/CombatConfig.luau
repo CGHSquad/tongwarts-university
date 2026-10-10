@@ -40,7 +40,7 @@ local CombatConfig = {
 	-- over EnemyReturnSeconds; both are added to the wait for every enemy action, so the next turn
 	-- never opens mid-hold.
 	EnemyHoldSeconds = 0.9,
-	EnemyReturnSeconds = 0.45,
+	EnemyReturnSeconds = 0.3,
 	MinResolveSeconds = 0.5,
 	TurnTimeoutSeconds = 30, -- a player who doesn't act in time skips the turn (AFK/disconnect rule)
 	ResultScreenSeconds = 8, -- victory/defeat screen before everyone's back in the overworld

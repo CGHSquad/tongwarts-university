@@ -705,7 +705,13 @@ function Sim:createEnv(name, side, client)
 	-- Services the prototype uses; anything else comes straight from the DataModel.
 	local heartbeat = Signal.new(sim, name .. " Heartbeat")
 	env.heartbeat = heartbeat
-	services.RunService = { Heartbeat = heartbeat }
+	services.RunService = {
+		Heartbeat = heartbeat,
+		-- The headless fights stand in for Studio playtests (BattleServer's playtest overrides apply).
+		IsStudio = function()
+			return sim.isStudio ~= false -- a test sets sim.isStudio = false to play a live server
+		end,
+	}
 	services.TweenService = {
 		Create = function(_, target, tweenInfo, goals)
 			assert(type(tweenInfo) == "table" and tweenInfo.__tweenInfo, "TweenService:Create needs a TweenInfo")

@@ -21,9 +21,11 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
 local CombatConfig = require(ReplicatedStorage.Combat.CombatConfig)
+local Summons = require(ReplicatedStorage.Combat.Summons)
 local BattleDirector = require(script.Parent.Combat.BattleDirector)
 local Encounter = require(script.Parent.Overworld.Encounter)
 local Overworld = require(script.Parent.Overworld.Overworld)
@@ -81,6 +83,24 @@ director = BattleDirector.new({
 	end,
 	battleEnded = function(winner)
 		overworld:endBattle(winner)
+	end,
+	-- Playtests: a PartySummons attribute on ServerScriptService ("TungTungGroveKeeper,TungTungSahur",
+	-- set from Studio's command bar) fields those summons instead of CombatConfig's. Studio only, so
+	-- an attribute saved into the place by accident never changes a live server's parties.
+	partySummons = function()
+		local override = if RunService:IsStudio() then script.Parent:GetAttribute("PartySummons") else nil
+		if type(override) == "string" then
+			local ids = {}
+			for id in string.gmatch(override, "[^,%s]+") do
+				if Summons[id] then
+					table.insert(ids, id)
+				end
+			end
+			if #ids > 0 then
+				return ids
+			end
+		end
+		return CombatConfig.PartySummons
 	end,
 })
 
