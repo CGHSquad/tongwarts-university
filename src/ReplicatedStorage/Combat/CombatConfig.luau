@@ -21,19 +21,25 @@ local CombatConfig = {
 	InitiativeRevealSeconds = 3.5, -- time to read the initiative rolls (and who struck first) before the first turn; the battle-start camera sweep plays under it
 	EnemyThinkSeconds = 1.25, -- small delay so enemy turns are readable (the camera holds on the enemy)
 	-- After an action, before the next turn opens: this base, plus what the action's beats add
-	-- (Pacing.resolveSeconds), so the stage can play it out before anyone acts again. A lost or
-	-- passed turn waits only the base. Attack by a character ~1.4, a summon's attack ~2.3, a
-	-- knockout on a critical ~3.1.
+	-- (Pacing.resolveSeconds), so the stage can play it out before anyone acts again. A passed turn
+	-- waits only the base; a turn lost to an ailment adds LostTurn (Pacing.lostTurnSeconds). A
+	-- character's Attack ~2.55, a summon's attack ~2.4, a knockout on a critical ~3.8.
 	ResolvePauseSeconds = 0.9,
+	-- A beat on the stage ends this long before the server's wait does (slack for latency), so the
+	-- results screen opens this long before the final blow's wait is over (Pacing.resultsSeconds).
+	ResolveSlackSeconds = 0.3,
 	ResolveExtraSeconds = {
-		Lunge = 0.5, -- an attack: the swing and the recoil
+		Dash = 1.55, -- a character's own Attack: dash in 0.35, swing to contact 0.42, recover 0.25, dash back 0.4 (C2)
+		Lunge = 0.5, -- any other attack (a summon's, a creature's): the swing and the recoil
+		HitStop = 0.1, -- a blow that lands freezes for a few frames (C2)
 		Summon = 0.9, -- a party member's summon materializes behind it, performs, and dismisses
-		AllTarget = 0.3, -- more than one target
+		AllTarget = 0.3, -- more than one target (their hits register a few frames apart)
 		Knockout = 0.8, -- hold on the fall
 		Miss = -0.2, -- nothing to sell
-		Critical = 0.2, -- the flash
+		Critical = 0.45, -- the flash and the slow-mo (C2)
 		Cast = 0.4, -- a heal or a status
 		Guard = 0.2,
+		LostTurn = 1.4, -- a turn an ailment cost: the camera holds on the dazed figure and its callout
 	},
 	-- An enemy's action holds on its outcome (the target's reaction, the damage, a status, a
 	-- knockout) for EnemyHoldSeconds after it lands, then the camera eases back to whoever's next
@@ -43,7 +49,7 @@ local CombatConfig = {
 	EnemyReturnSeconds = 0.3,
 	MinResolveSeconds = 0.5,
 	TurnTimeoutSeconds = 30, -- a player who doesn't act in time skips the turn (AFK/disconnect rule)
-	ResultScreenSeconds = 8, -- victory/defeat screen before everyone's back in the overworld
+	ResultScreenSeconds = 8, -- victory/defeat screen before everyone's back in the overworld, counted from when it opens (after the final blow's beat: Pacing.resultsSeconds)
 
 	-- Initiative (GDD Step 6): rolled once per battle.
 	-- total = random 1..InitiativeDieSides + floor(Agility / AgilityPerInitiativeBonus)

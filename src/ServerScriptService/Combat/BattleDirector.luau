@@ -277,7 +277,9 @@ function BattleDirector._afterTurn(self: BattleDirector, action: BattleTypes.Act
 	local session = self.session :: BattleSession.BattleSession
 	self.turnDeadline = nil
 	if session.phase == "reward" then
-		self:_showResults()
+		-- The results screen opens once the final blow has played out: it gets its full time
+		-- after that.
+		self:_showResults(BattleDirector.resolveSeconds(session, action))
 	else
 		self:_after(BattleDirector.resolveSeconds(session, action), function()
 			self:_beginNextTurn()
@@ -288,6 +290,10 @@ end
 -- How long the stage gets for `action` before the next turn (Pacing, from what it did).
 function BattleDirector.resolveSeconds(session: BattleSession.BattleSession, action: BattleTypes.ActionRecord?): number
 	if action == nil then
+		local lost = session.lostTurn
+		if lost ~= nil and lost.turnNumber == session.turnNumber then
+			return Pacing.lostTurnSeconds() -- an ailment cost the turn: the stage shows it
+		end
 		return Pacing.resolveSeconds(nil, nil, false)
 	end
 	local actor = session.byId[action.actorId]
@@ -296,13 +302,16 @@ function BattleDirector.resolveSeconds(session: BattleSession.BattleSession, act
 	return Pacing.resolveSeconds(ability, action.results, summoned, if actor then actor.side else nil)
 end
 
-function BattleDirector._showResults(self: BattleDirector)
+-- The fight is decided: everyone's back in the overworld once the final blow's beat
+-- (`finalBeatSeconds`; none when a departure decided it) and then the results screen have played.
+function BattleDirector._showResults(self: BattleDirector, finalBeatSeconds: number?)
 	if self.overworldReturnAt ~= nil then
 		return
 	end
 	self.turnDeadline = nil
-	self.overworldReturnAt = self.deps.now() + CombatConfig.ResultScreenSeconds
-	self:_after(CombatConfig.ResultScreenSeconds, function()
+	local seconds = Pacing.resultsSeconds(finalBeatSeconds or 0)
+	self.overworldReturnAt = self.deps.now() + seconds
+	self:_after(seconds, function()
 		self:_endBattle()
 	end)
 end

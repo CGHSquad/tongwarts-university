@@ -112,6 +112,11 @@ local CameraSpec = {
 		focusUp = 1.8, -- (aimed at the shoulders, so the head clears the status line above)
 	},
 
+	-- A turn lost to a daze (C2 follow-up): the dazed figure's own shot (a party member chest-up,
+	-- an enemy frontal), aimed so its head and the stars over it sit this far down the screen,
+	-- below the HUD's status block on a phone (which reaches about half way down).
+	Daze = { headAt = 0.64 },
+
 	-- Buffs and heals, when they fire (section 5).
 	Cast = {
 		initiationSeconds = 0.25, -- the caster's frontal medium shot
@@ -209,15 +214,30 @@ local CameraSpec = {
 	Kicks = {
 		confirmPunch = 8, -- field of view, on confirming a move
 		punchSettleSeconds = 0.25,
-		criticalPunch = -4,
 		whipRoll = 2, -- how far a whip-pan rolls the frame at its peak
 		whipBelowSeconds = 0.3, -- a move quicker than this is a whip-pan (it rolls)...
 		whipMinStuds = 2, -- ...when it travels at least this far
 		fovRange = { 20, 120 }, -- the field of view never leaves this, kicks included
 		rollSettleSeconds = 0.3,
-		shake = { amplitude = 0.25, seconds = 0.25 },
-		criticalShake = { amplitude = 0.4, seconds = 0.35 },
 		shakeFrequency = 47,
+	},
+
+	-- The impact of a blow (CAMERA_SPEC section 4B/4C, C2). Frames are 60 fps frames.
+	Impact = {
+		frameSeconds = 1 / 60,
+		hitStopFrames = 4, -- on contact the swing holds and the target reacts only after (spec: 2-6)
+		criticalHitStopFrames = 6,
+		fovPunch = -5, -- the field of view snaps this much narrower on the contact frame...
+		fovPunchSettleSeconds = 0.18, -- ...and eases back over this (spec: 0.15-0.2)
+		trauma = { amplitude = 0.3, seconds = 0.25 }, -- the shake, along the blow's direction
+		criticalTrauma = { amplitude = 0.45, seconds = 0.35 },
+		-- Several targets register one after another, this many frames apart (spec: 3-5), each
+		-- with its own small shudder and pulse.
+		staggerFrames = 4,
+		tick = { fovPunch = -2, amplitude = 0.15, seconds = 0.15 },
+		-- A critical: a white flash and a brief slow-mo after the hit-stop.
+		flash = { seconds = 0.09, startTransparency = 0.35 },
+		slowMo = { seconds = 0.3, scale = 0.25 },
 	},
 
 	-- Depth of field is left off on low graphics quality levels (1-3 of 10).

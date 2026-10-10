@@ -662,6 +662,11 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 			detail = Strings.format.waitingFor(active.name)
 			self.deadline = hud.turnDeadline
 		end
+	elseif phase == "Reward" and self.resultsHeld then
+		-- The final blow is still playing before the results open: say what it did (the line before
+		-- the battle's last one, which is the Victory/Defeat line the results screen says anyway).
+		local lines = hud.recentLog
+		title, detail = Strings.format.round(hud.round), (if #lines >= 2 then lines[#lines - 1] else hud.lastLogLine) or ""
 	end
 	self.status.frame.Visible = title ~= "" and self.mode ~= "List" -- the list takes its place on a phone
 	self.status.title.Text = title

@@ -23,6 +23,9 @@ Theme.Colors = {
 	ManaBlue = Color3.fromRGB(70, 150, 255),
 	TextLight = Color3.fromRGB(245, 243, 236),
 	TextDim = Color3.fromRGB(168, 172, 190),
+	-- Text that sits straight over the 3D scene (the status line's detail): near-white, always with
+	-- an Ink stroke (Sizes.StrokeOverScene), so it reads over a bright sky as well as dark ground.
+	TextOverScene = Color3.fromRGB(236, 238, 246),
 	Disabled = Color3.fromRGB(70, 72, 88),
 	Ink = Color3.fromRGB(0, 0, 0), -- outlines and lettering strokes
 	White = Color3.fromRGB(255, 255, 255),
@@ -79,6 +82,7 @@ Theme.Sizes = {
 	TextTitle = 24,
 	TextDisplay = 40,
 	StrokeDisplay = 3,
+	StrokeOverScene = 2, -- the Ink outline on text over the scene (TextOverScene)
 	BarHeight = 14,
 	RowHeight = 56,
 	Gap = 8,

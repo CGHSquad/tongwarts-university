@@ -98,6 +98,7 @@ type SessionFields = {
 	currentActorId: string?,
 	winner: Side?,
 	lastAction: BattleTypes.ActionRecord?,
+	lostTurn: BattleTypes.LostTurn?, -- the current turn, when an ailment cost it
 	actionCount: number,
 	log: { string },
 }
@@ -277,6 +278,7 @@ function BattleSession.new(id: number, roster: { RosterEntry }, rng: Random): Ba
 		currentActorId = nil,
 		winner = nil,
 		lastAction = nil,
+		lostTurn = nil,
 		actionCount = 0,
 		log = {},
 	}
@@ -372,6 +374,7 @@ end
 function BattleSession.beginNextTurn(self: BattleSession): Participant
 	assert(self.phase == "setup" or self.phase == "resolve", `Can't begin a turn during "{self.phase}"`)
 	assert(#self.turnQueue > 0, "Roll initiative before the first turn")
+	self.lostTurn = nil
 
 	-- The bonus turn, if the fight opened with one, comes before round 1 (the round is still 0).
 	while self.openingIndex < #self.openingQueue do
@@ -586,6 +589,7 @@ function BattleSession.getState(self: BattleSession): BattleTypes.BattleState
 		participants = participants,
 		winner = self.winner,
 		lastAction = lastAction,
+		lostTurn = if self.lostTurn then table.clone(self.lostTurn) else nil,
 		log = table.move(self.log, firstLogLine, #self.log, 1, {}),
 		turnDeadline = nil,
 		overworldReturnAt = nil,
@@ -601,10 +605,12 @@ function BattleSession._startTurn(self: BattleSession, actor: Participant)
 	actor.mana = math.min(actor.maxMana, actor.mana + CombatConfig.ManaRegenPerTurn)
 
 	local lostTurnTo: StatusEffects.StatusDef? = nil
+	local lostTurnId: string? = nil
 	for _, status in actor.statuses do
 		local def = StatusEffects[status.id]
 		if lostTurnTo == nil and def.skipTurnChance ~= nil and self:_roll(def.skipTurnChance) then
 			lostTurnTo = def
+			lostTurnId = status.id
 		end
 	end
 
@@ -616,8 +622,9 @@ function BattleSession._startTurn(self: BattleSession, actor: Participant)
 		end
 	end
 
-	if lostTurnTo then
+	if lostTurnTo and lostTurnId then
 		self.phase = "resolve"
+		self.lostTurn = { turnNumber = self.turnNumber, actorId = actor.id, statusId = lostTurnId }
 		self:_log(`{actor.name} is {string.lower(lostTurnTo.name)} and loses its turn.`)
 	end
 end

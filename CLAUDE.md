@@ -96,6 +96,30 @@ treat it as the current source of truth, not something to hand-edit here.
   on ServerScriptService (e.g. `"TungTungGroveKeeper,TungTungSahur"`) before the fight starts;
   BattleServer reads it per fight, in Studio only (the Grove-Keeper has the only heal and party
   buff today). The Sim's `RunService:IsStudio()` answers true unless a test sets `sim.isStudio = false`.
+- C2 (Strike attack and impact feel, `docs/combat-overhaul/C2_REPORT.md`): a party character's
+  own Attack dashes in (to the target's side as the camera sees it, so its body rarely hides the
+  reaction), swings and dashes back, with hit-stop, FOV punch, directional trauma, a
+  critical's flash and slow-mo, and staggered hits on several targets (`CameraSpec.Impact`; the
+  Sequencer's `hold` runs its clock at 0 or a fraction). `Presentation/CharacterRig` gives each
+  party character its clips, weapon and stance (Idle, Guard while Bracing, Downed when knocked out);
+  `Fx` plays particle effects and `Sfx` sounds. Their data sits in `ReplicatedStorage/Combat/`:
+  `Weapons` (Club and Fists, both Strike; the `DebugWeapon` Player attribute picks one, Studio only),
+  `CharacterMoves` (clips by beat with marker times and a published `id`), `CombatFx` (effect keys
+  and particle caps, lower on touch-only devices) and `CombatSounds`. A clip with no published id is
+  registered from its KeyframeSequence in Studio only (a temporary id); with neither, and with no
+  effect or weapon template, the beat falls back to procedural moves, which is what the headless
+  tests see. Real-time motion that mustn't play under a hit-stop or slow-mo (a knockout's fall)
+  waits with `Sequencer:afterHolds`. A turn lost to an ailment is `lostTurn` in the snapshot; the
+  server waits `Pacing.lostTurnSeconds` and the stage holds on the dazed figure. The results
+  screen gets its full `ResultScreenSeconds` after the final blow's beat (`Pacing.resultsSeconds`).
+- Asset packs (licensed BuiltByBit packs, see `CREDITS.md`): never commit any pack file, export or
+  copy to this public repo, and never put one in the repo folder; `.gitignore` covers the usual
+  names, but check each commit's file list. The raw packs live only in the place, in
+  `ServerStorage.AssetPacks`. The runtime copies live in `ReplicatedStorage.CombatAssets`
+  (`Weapons/`, `Vfx/`, `Animations/`), a Studio-only folder: `default.project.json` gives it
+  `$ignoreUnknownInstances`, so Rojo leaves its contents alone. To refill it, copy from
+  `ServerStorage.AssetPacks` (the weapon and effect templates keep a `Source` attribute naming their pack item; animations are named by their `CharacterMoves` key). Only
+  published asset ids go into the data modules.
 - After changing combat numbers or rules, run `lune run tools/simulate-battles` (Lune is pinned
   in `rokit.toml`) to see win rates per party comp, what each role does, and how Guard gets used.
   "turtle" play (guard whenever it's likely to be attacked, stacking Guard's damage cut) must keep

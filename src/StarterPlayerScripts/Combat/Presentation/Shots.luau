@@ -133,7 +133,26 @@ function Shots.targetSquad(heroRoot: CFrame, squadCenter: Vector3): Pose
 	return pose(position, squadCenter + Vector3.new(0, t.focusUp, 0), t.fov, t.roll)
 end
 
+-- `shot`, re-aimed up or down (from where it stands, toward `point`) so `point` sits `fraction` of
+-- the way down the screen: e.g. a dazed head and its stars below the HUD's status block
+-- (CameraSpec.Daze). Exact for a pinhole with a vertical field of view (the shot's roll aside):
+-- the camera pitches so the point is the right angle below its axis.
+function Shots.withPointAt(shot: Pose, point: Vector3, fraction: number): Pose
+	local offset = point - shot.position
+	local flat = Vector3.new(offset.X, 0, offset.Z)
+	local distance = flat.Magnitude
+	if distance < 1e-3 then
+		return shot
+	end
+	local below = math.atan2(-offset.Y, distance) -- the point's angle below the horizon
+	local off = math.atan((2 * fraction - 1) * math.tan(math.rad(shot.fov / 2))) -- below the axis
+	local pitch = below - off -- the axis's angle below the horizon
+	local lookAt = shot.position + flat.Unit * distance - Vector3.new(0, distance * math.tan(pitch), 0)
+	return pose(shot.position, lookAt, shot.fov, shot.roll)
+end
+
 -- Picking, or healing, one ally: a chest-up frontal shot (`root` is its hip root, facing the enemies).
+
 function Shots.allyChestUp(root: CFrame): Pose
 	local a = CameraSpec.TargetAlly
 	local position = root.Position + root.LookVector * a.front + root.RightVector * a.side + Vector3.new(0, a.up, 0)
