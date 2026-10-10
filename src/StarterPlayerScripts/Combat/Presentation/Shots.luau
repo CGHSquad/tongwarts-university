@@ -30,7 +30,7 @@ Shots.FOV = 60
 -- Over the shoulder: pulled back so the character shows from head to knees with the field beyond;
 -- the aim leans toward the enemies (focusBlend) and a little right (aimRight), so the character
 -- sits left of centre from either party slot and the enemies around the middle.
-Shots.OTS = { back = 8.5, up = 3, side = 2.8, focusUp = 2, focusBlend = 0.65, aimRight = 2.5 }
+Shots.OTS = { back = 8.5, up = 3, side = 5, focusUp = 2, focusBlend = 0.65, aimRight = 2.5 }
 Shots.ENEMY = { front = 5, side = 3, up = 0.15, focusUp = 0.1, offset = 1.5, fov = 58 }
 Shots.WIDE = { back = 40, up = 20, focusUp = 3 }
 
