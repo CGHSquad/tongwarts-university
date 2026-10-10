@@ -146,8 +146,9 @@ end
 -- The ring waits for the stage to finish its beat, but never longer than this past the turn's
 -- start: a slow client must never hold up the fight (the server's turn timer runs regardless).
 CombatHUD.RING_WAIT_CAP = 0.6
--- The results screen waits for the final blow (and the fall) to play, but never longer than this.
-CombatHUD.RESULTS_WAIT_CAP = 3.5
+-- The results screen waits for the final blow (and the fall) to play, but never longer than this
+-- (the longest beat, an enemy's critical knockout, runs about 3.5 s).
+CombatHUD.RESULTS_WAIT_CAP = 4.5
 
 function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Callbacks, options: Options?): CombatHUD
 	local prefix = if options and options.namePrefix then options.namePrefix :: string else ""

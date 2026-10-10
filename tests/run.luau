@@ -4160,6 +4160,27 @@ test("C1: an enemy's action holds on its outcome, then eases back to whoever's n
 	assertClean(sim, observer)
 end)
 
+test("C1: the camera's guess at who acts next follows the turn queue, the opening bonus turn and who's still standing", function()
+	local sim = Sim.new(PLACE, { seed = 7 })
+	local client = sim:connectClient(-1, "Ann")
+	local BattleView = client.env.require(client.env.dm:GetService("StarterPlayer").StarterPlayerScripts.Combat.BattleView)
+	local function battle(current, round, opening, down, phase)
+		local participants = {}
+		for _, id in { "E1", "P1", "E2", "P2" } do
+			table.insert(participants, { id = id, side = if string.sub(id, 1, 1) == "P" then "Party" else "Enemy", status = if down and down[id] then "KnockedOut" else "Active" })
+		end
+		return { phase = phase or "resolve", turnQueue = { "E1", "P1", "E2", "P2" }, currentActorId = current, round = round, opening = opening, participants = participants }
+	end
+	expectEqual(BattleView.nextActorId(battle("E1", 1, nil)), "P1", "the next in the queue")
+	expectEqual(BattleView.nextActorId(battle("P2", 2, nil)), "E1", "wrapping to the top")
+	expectEqual(BattleView.nextActorId(battle("E1", 1, nil, { P1 = true })), "E2", "skipping the fallen")
+	expectEqual(BattleView.nextActorId(battle("E1", 0, "Enemy")), "E2", "the bonus turn: the rest of the side that struck first")
+	expectEqual(BattleView.nextActorId(battle("E2", 0, "Enemy")), "E1", "then round 1 from the top of the queue")
+	expectEqual(BattleView.nextActorId(battle("P1", 0, "Party")), "P2", "the party's bonus turn")
+	expectEqual(BattleView.nextActorId(battle("P2", 0, "Party")), "E1", "then round 1")
+	expectEqual(BattleView.nextActorId(battle("E1", 3, nil, { P1 = true, P2 = true }, "reward")), nil, "no one: the fight is decided")
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if passed + failed == 0 then
 	quit(`No test names contain "{ONLY}".`)

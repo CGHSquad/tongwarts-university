@@ -138,6 +138,11 @@ function Sequencer.isBusy(self: Sequencer): boolean
 	return self.busy
 end
 
+-- Seconds since the current sequence started (where a cue added now would be placed).
+function Sequencer.elapsed(self: Sequencer): number
+	return self.time
+end
+
 -- How many things it holds right now (for the tests: zero after a fight).
 function Sequencer.ownedCount(self: Sequencer): number
 	return #self.owned + #self.connections

@@ -88,6 +88,9 @@ local HIT_DELAY = 0.12 -- after the blow lands: the recoil, the flinch, the shak
 -- An enemy's turn opens with an eased move to its shot (never a whip: those are for the party's
 -- own actions), and after its action the camera eases back to whoever's next.
 local ENEMY_TURN_MOVE_SECONDS = 0.45
+-- A creature with no swing clip (none uploaded, or still downloading) lunges instead, after this
+-- long, so the shot over its shoulder is readable before the blow lands.
+local LUNGE_LEAD = 0.3
 local CONFIRM_PUNCH = 8 -- degrees of field of view, on confirming a move
 local RESULT_SECONDS = 2.5
 
@@ -809,7 +812,8 @@ function BattleView.render(self: BattleView, battle: BattleState?)
 	end
 	for _, figure in self.figures do
 		if figure.fall == "Pending" then
-			self:_fall(figure, DEATH_MAX_SECONDS, 0) -- knocked out with no blow to wait for (joined late, or the action wasn't seen)
+			-- Knocked out with no blow to wait for (joined late, or the action wasn't seen).
+			self:_fall(figure, DEATH_MAX_SECONDS, self.sequencer:elapsed())
 		end
 	end
 	if battle.phase == "reward" and not self.resultShown then
@@ -830,7 +834,9 @@ end
 -- member's summon comes out to fall (if it has a death clip). `remaining` is the time left in the
 -- beat for the fall, dismissal included; `at` is where in the sequence the fall starts, so a clip
 -- whose length isn't known can be frozen when the beat ends.
-function BattleView._fall(self: BattleView, figure: Figure, remaining: number, at: number)
+-- `cues` is the list of the beat about to be played, when the fall belongs to one that hasn't
+-- started yet (its freeze cue then goes there rather than onto the live sequence).
+function BattleView._fall(self: BattleView, figure: Figure, remaining: number, at: number, cues: { Sequencer.Cue }?)
 	if figure.fall == "None" then
 		return
 	end
@@ -847,15 +853,25 @@ function BattleView._fall(self: BattleView, figure: Figure, remaining: number, a
 	end
 	if untimed then
 		local track = untimed
-		sequencer:addCue(at + budget - SUMMON_FADE_SECONDS, function()
+		local function freeze()
 			endUntimedClip(track, true)
-		end)
+		end
+		if cues then
+			table.insert(cues, { at = at + budget - SUMMON_FADE_SECONDS, run = freeze })
+		else
+			sequencer:addCue(at + budget - SUMMON_FADE_SECONDS, freeze)
+		end
 	end
 end
 
--- Who acts next, from the turn queue and who's still standing (nil when no one is: the fight is
--- over). The camera can head there before the server opens the turn.
-local function nextActorId(battle: BattleState): string?
+-- Who acts next, from the turn queue and who's still standing (nil when the fight is over), the
+-- way BattleSession walks it: during the opening bonus turn (round 0) the rest of the side that
+-- struck first, in queue order, then round 1 from the top of the queue; otherwise the next in the
+-- queue, wrapping. The camera can head there before the server opens the turn.
+function BattleView.nextActorId(battle: BattleState): string?
+	if battle.phase == "reward" then
+		return nil
+	end
 	local queue = battle.turnQueue
 	local current = battle.currentActorId
 	local index = if current then table.find(queue, current) else nil
@@ -863,8 +879,24 @@ local function nextActorId(battle: BattleState): string?
 		return nil
 	end
 	local standing: { [string]: boolean } = {}
+	local side: { [string]: BattleTypes.Side } = {}
 	for _, participant in battle.participants do
 		standing[participant.id] = participant.status == "Active"
+		side[participant.id] = participant.side
+	end
+	if battle.round == 0 and battle.opening ~= nil then
+		for later = index + 1, #queue do
+			local candidate = queue[later]
+			if standing[candidate] and side[candidate] == battle.opening then
+				return candidate
+			end
+		end
+		for _, candidate in queue do
+			if standing[candidate] then
+				return candidate
+			end
+		end
+		return nil
 	end
 	for step = 1, #queue do
 		local candidate = queue[(index + step - 1) % #queue + 1]
@@ -874,6 +906,7 @@ local function nextActorId(battle: BattleState): string?
 	end
 	return nil
 end
+local nextActorId = BattleView.nextActorId
 
 -- The server refused the move (or the turn moved on): back to the turn's own shot.
 function BattleView.refocus(self: BattleView)
@@ -1203,11 +1236,12 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			summoned = true
 		end
 	end
+	local cues: { Sequencer.Cue } = {}
 	-- The previous beat's sequence is about to be replaced: a fall it still had cued lands now, so
 	-- a knocked-out figure never stays standing because the next snapshot came in early.
 	for _, figure in self.figures do
 		if figure.fall == "Cued" then
-			self:_fall(figure, DEATH_MAX_SECONDS, 0)
+			self:_fall(figure, DEATH_MAX_SECONDS, 0, cues)
 		end
 	end
 
@@ -1219,18 +1253,25 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	local holdAndReturn = if enemyActor then CombatConfig.EnemyHoldSeconds + CombatConfig.EnemyReturnSeconds else 0
 	local clipSeconds = duration - holdAndReturn - HIT_DELAY - 0.2 - (if summoned then SUMMON_FADE_SECONDS * 2 else 0)
 
-	local cues: { Sequencer.Cue } = {}
 	local performer, performerHome = body(actor)
 	local lead = 0 -- how long the move waits: for its performer to materialize, then its swing
 	local untimed: AnimationTrack? = nil
+	local swings = false -- a real model playing a timed swing clip (otherwise it lunges)
 	if summoned then
 		lead, untimed = bringOutSummon(actor, if attacking then "attack" else "cast", clipSeconds, duration, self.sequencer)
 		performer, performerHome = actor.summonRoot, actor.summonHome
+		swings = attacking and actor.summonBlock == nil and actor.clips ~= nil and actor.clips.attack ~= nil
 	elseif attacking and actor.character == nil then
-		-- An enemy's creature swings its attack clip, if it has one.
+		-- An enemy's creature swings its attack clip, if it has one; without one (or while it's
+		-- still downloading) it lunges after a readable lead instead.
 		local _, impact, track = playAttackClip(actor, clipSeconds)
-		lead = impact or 0
 		untimed = track
+		if impact then
+			lead = impact
+			swings = true
+		else
+			lead = LUNGE_LEAD
+		end
 	end
 	if untimed then
 		-- The clip's length wasn't known yet (still downloading): it plays as is and stops at the
@@ -1256,14 +1297,16 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 		end
 
 		if result.knockedOut and target.fall == "Pending" then
-			-- It falls as the blow lands, not before, within what's left of the beat.
+			-- It falls as the blow lands, not before, within what's left of the beat: through an
+			-- enemy's hold (the hold is there to show it), done before the camera returns.
 			target.fall = "Cued"
 			local fallen = target
 			local fallAt = lead + HIT_DELAY
+			local returnSeconds = if enemyActor then CombatConfig.EnemyReturnSeconds else 0
 			table.insert(cues, {
 				at = fallAt,
 				run = function()
-					self:_fall(fallen, duration - holdAndReturn - fallAt, fallAt)
+					self:_fall(fallen, duration - returnSeconds - fallAt, fallAt)
 				end,
 			})
 		end
@@ -1273,8 +1316,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 
 		if ability.kind == "Attack" and target ~= actor then
 			local toward = (target.home.Position - actor.home.Position).Unit
-			-- A character or a block lunges at its target; a summon's real model has its swing.
-			local swings = (summoned or actor.character == nil) and actor.summonBlock == nil
+			-- A character, a block, or a model with no swing clip lunges at its target.
 			if index == 1 and not swings then
 				nudge(performer, performerHome, toward * 4, 0.15, lead)
 			end
@@ -1343,16 +1385,25 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 		if attacking and firstTarget then
 			local struck = firstTarget
 			local struckRest = standing(struck)
-			-- Over the creature's shoulder, further off the bigger it is (an Elder is thirteen studs).
-			local pull = 1.2 * math.max(1, bodyHeight(actor) / 6)
-			camera:cut(Shots.overShoulder(standing(actor), struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), pull))
-			table.insert(cues, {
-				at = math.max(0, landsAt - 0.05),
-				run = function()
-					camera:cut(Shots.reaction(struckRest, bodyHeight(struck)))
-				end,
-			})
+			local reaction = Shots.reaction(struckRest, bodyHeight(struck))
+			if landsAt >= 0.25 then
+				-- Over the creature's shoulder for the swing (further off the bigger it is: an Elder
+				-- is thirteen studs), then the target's reaction as the blow lands.
+				local pull = 1.2 * math.max(1, bodyHeight(actor) / 6)
+				camera:cut(Shots.overShoulder(standing(actor), struckRest.Position + Vector3.new(0, bodyHeight(struck) * 0.5, 0), pull))
+				table.insert(cues, {
+					at = landsAt - 0.05,
+					run = function()
+						camera:cut(reaction)
+					end,
+				})
+			else
+				-- No swing worth a shot of its own: straight to the reaction, one cut.
+				camera:cut(reaction)
+			end
 		end
+		-- Then back to whoever's next; unless this blow decided the fight, when the result camera
+		-- takes over from the hold.
 		local nextId = nextActorId(battle)
 		if nextId then
 			table.insert(cues, {

@@ -258,6 +258,17 @@ function BattleCamera.update(self: BattleCamera, dt: number)
 	end
 	dt = math.clamp(dt, 0, 0.25)
 	self.time += dt
+	-- The zone's lighting preset may be swapped under the fight (ZoneClient), replacing the depth
+	-- of field effect: keep the new one off too.
+	local dof = self.dof
+	if dof == nil or dof.Parent == nil then
+		local found = Lighting:FindFirstChildOfClass("DepthOfFieldEffect")
+		if found and found ~= dof then
+			self.dof = found
+			self.dofWasEnabled = found.Enabled
+			found.Enabled = false
+		end
+	end
 
 	local track = self.track
 	if track then
