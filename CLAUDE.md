@@ -72,7 +72,11 @@ treat it as the current source of truth, not something to hand-edit here.
   world points through the client's camera (`Camera:WorldToViewportPoint`, a pinhole like the
   engine's) and gives animation tracks a length when a test sets `sim.clipLengths[rbxassetid]`,
   so plate placement and clip compression run headlessly; the C1 tests pin the shots, the
-  reduced-motion setting, Pacing, the ring gate and the plates' HUD box.
+  reduced-motion setting, Pacing, the ring gate and the plates' HUD box. Enemy beats hold on their
+  outcome (`CombatConfig.EnemyHoldSeconds`) and ease back (`EnemyReturnSeconds`); a clip whose
+  length isn't loaded yet is stopped at its beat's budget. Every critic and playtester pass also
+  checks: can the player clearly see the outcome of every action (who was hit, for how much, what
+  changed) before the camera moves on, on enemy turns especially.
 - After changing combat numbers or rules, run `lune run tools/simulate-battles` (Lune is pinned
   in `rokit.toml`) to see win rates per party comp, what each role does, and how Guard gets used.
   "turtle" play (guard whenever it's likely to be attacked, stacking Guard's damage cut) must keep

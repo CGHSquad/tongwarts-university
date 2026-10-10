@@ -478,3 +478,14 @@ Wild Elder resists Strike, which is why §9 keeps its Strike Neutral.
 
 Settled earlier: the kit table's costs are authoritative (GDD 353ecea), Wind Ward is a break, and
 the animation upload flow (§1). Nothing in this milestone changed code.
+
+## 14. Scope additions after C1 (owner's playtest feedback)
+
+- **C2 gains a knocked-out state for player characters**: a downed pose, or dimmed and out of
+  frame, so a knocked-out teammate no longer stands in the survivor's over-the-shoulder shot like
+  a ghost.
+- **Rubric item for every critic and playtester from C1's review on**: "Can the player clearly see
+  the outcome of every action (who was hit, for how much, what changed) before the camera moves
+  on?" The playtester checks it on enemy turns specifically.
+- Enemy beats hold on their outcome (`CombatConfig.EnemyHoldSeconds`, 0.9 s) and ease back to the
+  next actor (`EnemyReturnSeconds`, 0.45 s); both are part of the server's wait for enemy actions.

@@ -4047,6 +4047,119 @@ test("C1: under the battle camera the enemy plates keep inside the HUD's box and
 	checkPlatesAt(905, roblox.Vector2.new(1920, 1080), "desktop")
 end)
 
+-- The animation log entries for one clip on one client, in order.
+local function clipEvents(sim, client, id)
+	local events = {}
+	for _, entry in sim.animationLog do
+		if entry.env == client.env.name and entry.id == id then
+			table.insert(events, entry)
+		end
+	end
+	return events
+end
+
+test("C1: a clip whose length isn't known yet is stopped at its beat's budget, never outliving the beat", function()
+	local sim, observer = newWorld(906)
+	local client = join(sim, observer, -1, "Ann", SLOW)
+	local Summons = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.Summons)
+	local attackClip = Summons.WildSapling.art.animations.attack -- Length stays 0 on the fake Roblox: "still downloading"
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side")
+	-- An enemy swings: its clip plays at its own pace...
+	expect(sim:runUntil(function()
+		for _, entry in clipEvents(sim, client, attackClip) do
+			if entry.event == "Play" and entry.speed == 1 then
+				return true
+			end
+		end
+		return false
+	end, 240), "no enemy attack clip played")
+	local played = nil
+	for _, entry in clipEvents(sim, client, attackClip) do
+		if entry.event == "Play" and played == nil then
+			played = entry
+		end
+	end
+	local resolveAt = sim.now
+	-- ...and is stopped before the next turn opens.
+	expect(sim:runUntil(function()
+		local battle = client.lastSnapshot.battle
+		return battle ~= nil and battle.phase == "input" and sim.now > resolveAt + 0.5
+	end, 10), "the next turn never opened")
+	local stopped = nil
+	for _, entry in clipEvents(sim, client, attackClip) do
+		if entry.event == "Stop" and entry.time > played.time then
+			stopped = stopped or entry
+		end
+	end
+	expect(stopped ~= nil, "the untimed clip was stopped")
+	expect(stopped.time <= sim.now, "before the next turn opened")
+	expect(stopped.time - played.time <= 2.5, `within its beat ({stopped.time - played.time}s)`)
+	assertClean(sim, observer)
+end)
+
+test("C1: a death clip is compressed into what's left of the beat, so nothing opens mid-fall", function()
+	local sim, observer = newWorld(907)
+	local client = join(sim, observer, -1, "Ann", { thinkMin = 0.3, thinkMax = 0.8, policy = "greedy" })
+	local Summons = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.Summons)
+	local deathClip = Summons.WildSapling.art.animations.death
+	sim.clipLengths[deathClip] = 3 -- a slow fall: longer than any knockout beat
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side")
+	expect(sim:runUntil(function()
+		for _, entry in clipEvents(sim, client, deathClip) do
+			if entry.event == "Play" and entry.speed > 1 then
+				return true
+			end
+		end
+		return false
+	end, 600), "no sapling fell with a compressed death clip")
+	local fell = nil
+	for _, entry in clipEvents(sim, client, deathClip) do
+		if entry.event == "Play" and fell == nil then
+			fell = entry
+		end
+	end
+	expect(fell.speed >= 1.8, `compressed into the beat's remaining time (speed {fell.speed})`)
+	local fallEnds = fell.time + 3 / fell.speed
+	-- The next turn (or the result) opens only once the fall is over.
+	expect(sim:runUntil(function()
+		local battle = client.lastSnapshot.battle
+		return battle == nil or battle.phase == "input" or battle.phase == "reward"
+	end, 10), "the fight never moved on")
+	local battle = client.lastSnapshot.battle
+	if battle and battle.phase == "input" then
+		expect(sim.now >= fallEnds - 0.05, `the next turn opened after the fall ({sim.now} vs {fallEnds})`)
+	end
+	assertClean(sim, observer)
+end)
+
+test("C1: an enemy's action holds on its outcome, then eases back to whoever's next; the next turn opens after that", function()
+	local sim, observer = newWorld(908)
+	local client = join(sim, observer, -1, "Ann", SLOW)
+	local camera = cameraOf(client)
+	local Config = client.env.require(client.env.dm:GetService("ReplicatedStorage").Combat.CombatConfig)
+	sim:run(1)
+	touch(sim, observer, -1, "NorthLookout", "side")
+	-- An enemy attacks.
+	runToPhase(sim, observer, function(b)
+		local actor = currentActor(b)
+		return b.phase == "resolve" and actor ~= nil and actor.side == "Enemy" and b.lastAction ~= nil and b.lastAction.abilityId ~= "Guard"
+	end, "an enemy's action")
+	local resolveAt = sim.now
+	sim:run(0.3) -- the client has it, the blow has landed (lead 0 for an untimed clip), the reaction cut is in
+	local held = camera.CFrame.Position
+	sim:run(0.5) -- still inside the hold
+	local drift = (camera.CFrame.Position - held).Magnitude
+	expect(drift < 0.4, `the camera holds on the outcome ({drift} studs of drift)`)
+	-- Then it eases back to the next actor's shot before the next turn opens.
+	sim:run(Config.EnemyHoldSeconds + Config.EnemyReturnSeconds + 0.2)
+	local moved = (camera.CFrame.Position - held).Magnitude
+	expect(moved > 2, `the camera has moved on by the end of the beat ({moved} studs)`)
+	expect(client.lastSnapshot.battle.phase == "resolve" or sim.now - resolveAt >= Config.EnemyHoldSeconds + Config.EnemyReturnSeconds, "the next turn waited for the hold and the return")
+	assertClean(sim, observer)
+end)
+
 print(string.format("\n%d passed, %d failed", passed, failed))
 if passed + failed == 0 then
 	quit(`No test names contain "{ONLY}".`)
