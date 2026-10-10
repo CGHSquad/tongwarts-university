@@ -31,7 +31,8 @@ local CAPPUCCINO_RADIUS = 1300
 local BALLERINA_CENTER = Vector3.new(-4400, 597, 4450)
 local BALLERINA_RADIUS = 1500
 
-local current: string? = nil
+local current: string? = nil -- the zone the player stands in
+local lit: string? = nil -- the lighting preset on screen: the zone's, or the Overworld's during a fight
 local showCampusSky
 
 local function zoneAt(pos: Vector3): string
@@ -120,10 +121,11 @@ end
 local skies = presets:WaitForChild("Skies")
 local NOT_LIGHTING = { DayNight = true }
 
-local function apply(zone: string)
-	if zone == current then return end
-	current = zone
-	local preset = presets:WaitForChild(zone)
+-- Puts a preset's lighting on screen: its post-effects, sky and atmosphere, and its Lighting values.
+local function applyPreset(name: string)
+	if name == lit then return end
+	lit = name
+	local preset = presets:WaitForChild(name)
 	for _, c in Lighting:GetChildren() do
 		if c:IsA("PostEffect") or c:IsA("Sky") or c:IsA("Atmosphere") or c:IsA("Clouds") then c:Destroy() end
 	end
@@ -131,9 +133,19 @@ local function apply(zone: string)
 	for k, v in preset:GetAttributes() do
 		if not NOT_LIGHTING[k] then Lighting[k] = v end
 	end
-	player:SetAttribute("Zone", zone) -- BattleClient listens for this
-	refreshOutlines()
-	showCampusSky(zone == "Campus")
+end
+
+-- The zone the player stands in decides the lighting, except during a fight (BattleClient marks the
+-- player InBattle): the battle stage is lit like a clear afternoon on the grass whatever zone the
+-- fight started in, and the zone's own lighting comes back the moment the fight is over.
+local function apply(zone: string)
+	if zone ~= current then
+		current = zone
+		player:SetAttribute("Zone", zone) -- BattleClient listens for this
+		refreshOutlines()
+		showCampusSky(zone == "Campus")
+	end
+	applyPreset(if player:GetAttribute("InBattle") == true then "Overworld" else zone)
 end
 
 --[[ Day and night (outdoor zones: the overworld and the university)
@@ -161,7 +173,7 @@ local function setSky(which: string)
 end
 
 local function cycle()
-	local preset = current and presets:FindFirstChild(current)
+	local preset = lit and presets:FindFirstChild(lit)
 	if not (preset and preset:GetAttribute("DayNight")) then
 		skyShown = nil
 		return
@@ -169,8 +181,12 @@ local function cycle()
 	local minutes = presets:GetAttribute("CycleMinutes") or 20
 	local dayShare = presets:GetAttribute("DayShare") or 0.7
 	local p = (workspace:GetServerTimeNow() / (minutes * 60)) % 1
-	local isDay = p < dayShare
-	local q = if isDay then p / dayShare else (p - dayShare) / (1 - dayShare) -- progress through this half
+	-- A fight has its own light: a clear afternoon on the battle stage whatever the time outside
+	-- (the Overworld preset is on screen during a fight, see apply), so the stage never goes dark
+	-- mid-fight. The cycle picks up where it is once the fight is over.
+	local inBattle = player:GetAttribute("InBattle") == true
+	local isDay = inBattle or p < dayShare
+	local q = if inBattle then 0.55 elseif isDay then p / dayShare else (p - dayShare) / (1 - dayShare) -- progress through this half
 	Lighting.ClockTime = 6.2 + q * 11.6
 	-- how close we are to dawn/dusk (1 right at the switch, 0 from a little way in)
 	local edge = math.clamp(1 - math.min(q, 1 - q) / 0.1, 0, 1)

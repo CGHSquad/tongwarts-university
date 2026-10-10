@@ -17,6 +17,7 @@ local UserInputService = game:GetService("UserInputService")
 local Controls = {}
 
 local enabled = true
+local modalBefore: boolean? = nil -- UserInputService.ModalEnabled before a fight switched it on
 local changes = 0
 local listeners: { [number]: (boolean) -> () } = {}
 local nextListener = 0
@@ -52,6 +53,29 @@ local function apply()
 		local button = ContextActionService:GetButton("Sprint")
 		if button then
 			button.Visible = enabled
+		end
+	end)
+	-- Belt and braces for the thumbstick and jump button: Roblox hides them for a modal UI, and
+	-- their own ScreenGui (TouchGui) can be switched off outright, which the ControlModule's
+	-- Disable doesn't always do (Studio's device emulator kept them on screen). ModalEnabled is a
+	-- global flag, so whatever it was before the fight is put back after.
+	pcall(function()
+		if enabled then
+			if modalBefore ~= nil then
+				UserInputService.ModalEnabled = modalBefore
+				modalBefore = nil
+			end
+		elseif modalBefore == nil then
+			modalBefore = UserInputService.ModalEnabled
+			UserInputService.ModalEnabled = true
+		end
+	end)
+	pcall(function()
+		local player = Players.LocalPlayer
+		local playerGui = if player then player:FindFirstChildOfClass("PlayerGui") else nil
+		local touchGui = if playerGui then playerGui:FindFirstChild("TouchGui") else nil
+		if touchGui and touchGui:IsA("ScreenGui") then
+			touchGui.Enabled = enabled
 		end
 	end)
 end

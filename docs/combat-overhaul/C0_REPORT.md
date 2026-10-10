@@ -163,7 +163,7 @@ group. **Blender** = I keyframe in Blender via bpy and export FBX; you import an
 **C1 (camera and flow)**: no new clips. VFX: swirl/iris wipe overlay (UI, school colours), initiative
 sting. Sounds: `battle_start`, `whip_pan`, `initiative_reveal`, `turn_open`.
 
-**C2 (Strike attack and impact feel)**:
+**C2 (Strike attack and impact feel)** (plus, from the camera spec: hit-stop, the impact FOV punch values and wind-up framing, directional trauma, staggered AoE hits with the detonation pull-back, and the downed ground-level snap; see section 14):
 
 | Asset | Who | Make it with | Notes |
 | --- | --- | --- | --- |
@@ -184,7 +184,7 @@ character), evade afterimage (faded clone, 0.25 s). Sounds (keys, filled from th
 `swing_club`, `hit_blunt`, `hit_crit`, `miss_whoosh`, `guard_raise`, `guard_block`, `evade_step`,
 `ko_fall`, `damage_pop`.
 
-**C3 (summons and polish)**:
+**C3 (summons and polish)** (plus, from the camera spec: the summon cut-in, where the camera cut masks the summon materializing; see section 14):
 
 | Asset | Who | Make it with |
 | --- | --- | --- |
@@ -377,7 +377,7 @@ them). C7 copies this table.
   enemy and sends `ParticipantState.knownWeaknesses`; `Bindings` fills the existing
   `HudParticipant.knownWeaknesses` / `hitsKnownWeakness`; `Flags.ShowAffinities = true`.
 
-**C8 (charged attacks)**
+**C8 (charged attacks)** (plus, from the camera spec: the boss wind-up at an extreme low angle, FOV 35-40, held through the charge turn; see section 14)
 - `kind = "Charged"`: `{ windupTurns = 1, targets = "Enemy" | "AllEnemies", power, scalingStat,
   statRatio, damageType, ignoresTaunt = true }`; `CombatConfig.ChargedAttackMultiplier = 2.5`.
 - Status `Charging` with `payload = { abilityId, targetId }`, shown in the snapshot
@@ -478,3 +478,40 @@ Wild Elder resists Strike, which is why §9 keeps its Strike Neutral.
 
 Settled earlier: the kit table's costs are authoritative (GDD 353ecea), Wind Ward is a break, and
 the animation upload flow (§1). Nothing in this milestone changed code.
+
+## 14. Scope additions after C1 (owner's playtest feedback)
+
+- **C2 gains a knocked-out state for player characters**: a downed pose, or dimmed and out of
+  frame, so a knocked-out teammate no longer stands in the survivor's over-the-shoulder shot like
+  a ghost.
+- **Rubric item for every critic and playtester from C1's review on**: "Can the player clearly see
+  the outcome of every action (who was hit, for how much, what changed) before the camera moves
+  on?" The playtester checks it on enemy turns specifically.
+- Enemy beats hold on their outcome (`CombatConfig.EnemyHoldSeconds`, 0.9 s) and come back to the
+  next actor (`EnemyReturnSeconds`, 0.3 s of server budget; the client's return is a cut or a
+  0.25 s sweep, `CameraSpec.Transition.returnStyle`, "auto" by default: a cut when the camera would turn more than 90 degrees); both are part of the server's wait for
+  enemy actions.
+
+### Camera spec alignment (C1, `docs/combat-overhaul/CAMERA_SPEC.md`)
+
+The owner's Atlus-style camera spec landed after C1's first review. Its C1 parts were aligned on
+the same branch: idle and command framing (two-thirds composition, Dutch tilt, idle FOV 52), the
+sub-menu micro-push with depth of field, target-select framing (tight single target with a truck
+between targets; squad pull-back for all-enemy abilities, once one exists), single and party
+buff/heal framing, and enemy single-target (over the targeted hero's shoulder) and all-party
+framing. Every number lives in `StarterPlayerScripts/Combat/Presentation/CameraSpec.luau`. The
+owner's playtest feedback beats the spec where they differ: enemy beats keep holding ~0.9 s on
+their outcome, and "snappy" means the moves between shots are cuts or sweeps of at most 0.25 s,
+never a shot cut short.
+
+Deferred from the spec to later milestones (each is in that milestone's scope now):
+
+| Spec item | Milestone |
+|---|---|
+| Hit-stop (60-100 ms) on impact, the impact FOV punch values (pulse to 35) and the player wind-up framing (FOV 38-42, +4..+6 tilt) | C2 |
+| Directional trauma (shake along the hit direction) | C2 |
+| Staggered AoE hits with the detonation pull-back (FOV 60) | C2 |
+| Downed / critical-health ground-level snap (FOV 35, tilt -6..-8) | C2 (with the knocked-out state above) |
+| Summon cut-in: the camera cut masks the summon's appearance | C3 |
+| Boss wind-up: extreme low angle (FOV 35-40), held through the charge turn | C8 |
+| Music-synced camera breathing | Backlog (post-C9) |

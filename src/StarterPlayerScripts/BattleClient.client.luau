@@ -19,6 +19,7 @@ local Combat = script.Parent:WaitForChild("Combat")
 local BattleView = require(Combat:WaitForChild("BattleView"))
 local UIFolder = script.Parent:WaitForChild("UI")
 local Controls = require(UIFolder:WaitForChild("Core"):WaitForChild("Controls"))
+local Motion = require(UIFolder:WaitForChild("Core"):WaitForChild("Motion"))
 local CombatHUD = require(UIFolder:WaitForChild("Screens"):WaitForChild("CombatHUD"))
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Battle")
@@ -34,17 +35,36 @@ local playerGui = localPlayer:WaitForChild("PlayerGui") :: PlayerGui
 -- uses 1-5 for its commands. Nothing in the game hands out Tools, so the Backpack is off for good.
 -- (If Tools ever arrive, switch it per snapshot the way Controls handles the touch controls.)
 StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
--- The HUD draws the enemies' plates itself (M0 report R19).
-local view = BattleView.new({ enemyNameplates = false })
+-- The reduced-motion setting (Roblox's switch, or a ReducedMotion attribute on the player).
+Motion.start()
+-- The HUD draws the enemies' plates and the party's cards itself (M0 report R19), and holds the
+-- command ring while the stage is still playing a beat. Both flags are attributes on PlayerGui so
+-- the headless tests can read them.
+local ui: CombatHUD.CombatHUD
+local view = BattleView.new({
+	enemyNameplates = false,
+	partyNameplates = false,
+	playerGui = playerGui,
+	onBusyChanged = function(busy: boolean)
+		playerGui:SetAttribute("StageBusy", busy)
+		if ui then
+			ui:setStageBusy(busy)
+		end
+	end,
+})
 local callbacks = {
 	onAction = function(abilityId: string, targetId: string) -- any move from the HUD; the server decides what happens
+		view:confirm(abilityId, targetId) -- the camera reacts at once; the server's answer is what plays out
 		submitActionRemote:FireServer(abilityId, targetId)
 	end,
 	onTargetChanged = function(targetId: string?, friendly: boolean)
 		view:setTarget(targetId, friendly)
 	end,
+	onFramingChanged = function(framing: CombatHUD.Framing, targetId: string?) -- the ring, the list, or a target: the camera frames it
+		view:setFraming(framing, targetId)
+	end,
 }
-local ui = CombatHUD.new(playerGui, localPlayer.UserId, callbacks)
+ui = CombatHUD.new(playerGui, localPlayer.UserId, callbacks)
 
 -- The battle, if this player is in it.
 local function myBattle(snapshot: BattleTypes.Snapshot): BattleTypes.BattleState?
@@ -62,12 +82,42 @@ end
 -- The latest snapshot, kept so a respawn can be drawn again without a round trip.
 local lastSnapshot: BattleTypes.Snapshot? = nil
 
+local hudRenders = 0
+local lastRendered: BattleTypes.Snapshot? = nil -- what the HUD was last given (for the masked render)
 local function render(snapshot: BattleTypes.Snapshot)
 	lastSnapshot = snapshot
 	local mine = myBattle(snapshot)
-	view:render(mine)
-	ui:render(snapshot)
-	-- Touch controls off while in a fight, keyed off every snapshot (M0 report R21).
+	local impactIn = view:render(mine)
+	-- The HUD's numbers (HP bars, the status line, the plates) show an action's outcome when its
+	-- blow lands on the stage, not when the server's snapshot arrives; a newer snapshot cancels
+	-- the wait. HudPendingUntil (server clock) tells the tests when the HUD will have caught up.
+	hudRenders += 1
+	local serial = hudRenders
+	local previous = lastRendered
+	lastRendered = snapshot
+	if impactIn > 0.05 and previous and previous.battle and snapshot.battle then
+		-- Meanwhile the HUD shows the new phase (the ring folds, the status says what's resolving)
+		-- with the previous snapshot's numbers, statuses and log: nothing is given away early.
+		local masked = table.clone(snapshot)
+		local battle = table.clone(snapshot.battle :: BattleTypes.BattleState)
+		battle.participants = previous.battle.participants
+		battle.log = previous.battle.log
+		battle.lastAction = previous.battle.lastAction
+		masked.battle = battle
+		ui:render(masked)
+		playerGui:SetAttribute("HudPendingUntil", Workspace:GetServerTimeNow() + impactIn)
+		task.delay(impactIn, function()
+			if hudRenders == serial then
+				playerGui:SetAttribute("HudPendingUntil", nil)
+				ui:render(snapshot)
+			end
+		end)
+	else
+		playerGui:SetAttribute("HudPendingUntil", nil)
+		ui:render(snapshot)
+	end
+	-- Touch controls off while in a fight, keyed off every snapshot (M0 report R21). (BattleView
+	-- marks the player InBattle for the world's other client scripts, once the wipe covers the screen.)
 	Controls.setEnabled(mine == nil)
 end
 
@@ -86,10 +136,18 @@ end)
 
 noticeRemote.OnClientEvent:Connect(function(message: string)
 	ui:showNotice(message)
+	view:refocus() -- a refused move: back from wherever confirm sent the camera
 end)
 
-RunService.Heartbeat:Connect(function()
+local ownedShown = -1
+RunService.Heartbeat:Connect(function(dt: number)
+	view:update(dt)
 	ui:tick(Workspace:GetServerTimeNow())
+	local owned = view:ownedCount()
+	if owned ~= ownedShown then
+		ownedShown = owned
+		playerGui:SetAttribute("StageOwned", owned) -- what the presentation still holds (the tests check it's nothing after a fight)
+	end
 end)
 
 -- The overworld panel pops up for a few seconds each time you arrive on the grass (ZoneClient sets "Zone").

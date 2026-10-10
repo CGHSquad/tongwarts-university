@@ -28,10 +28,17 @@ local Tag = require(Components:WaitForChild("Tag"))
 type HudBattle = UITypes.HudBattle
 type HudParticipant = UITypes.HudParticipant
 
+-- The screen area the plates may use, in viewport pixels: between the HUD's status line and its
+-- recent-actions feed, and between the command ring's column and the party cards' column
+-- (CombatHUD works it out from its layout). Plates that would land outside are pushed inside.
+export type Bounds = { left: number, top: number, right: number, bottom: number }
+
 export type EnemyOverlay = {
 	folder: Folder,
 	update: (battle: HudBattle, targetId: string?, pickable: { [string]: boolean }) -> (),
+	tick: () -> (), -- every frame: re-places the plates once the battle camera has moved enough
 	setScale: (scale: number) -> (),
+	setBounds: (bounds: Bounds) -> (),
 	hide: () -> (),
 	onPick: (callback: (id: string) -> ()) -> (),
 	destroy: () -> (),
@@ -42,6 +49,8 @@ type Plate = {
 	root: Frame,
 	scale: UIScale,
 	baseOffset: number, -- studs above the spot, from BattleView's own plate
+	row: number, -- stacked this many plates down last time (hysteresis)
+	placedAt: Vector3?, -- the world-space offset last written
 	button: ImageButton,
 	stroke: UIStroke?,
 	title: TextLabel,
@@ -58,6 +67,22 @@ local EnemyOverlay = {}
 
 EnemyOverlay.PLATE_WIDTH = 190
 EnemyOverlay.PLATE_HEIGHT = 60
+EnemyOverlay.STACK_GAP = 6 -- pixels between stacked plates
+EnemyOverlay.BESIDE_STUDS = 1.5 -- a plate put beside its enemy clears its middle by this much (a head's half-width and some)
+EnemyOverlay.HEAD_GAP_STUDS = 1.8 -- BattleView hangs the plate's anchor this far above the enemy's head
+EnemyOverlay.STACK_SLACK = 12 -- pixels a stacked plate may hang past the box's bottom before it goes sideways instead (a phone's box is two plates tall less a few pixels)
+-- The camera has to move this much before the plates are placed again (the idle sway stays under
+-- it, so a held shot costs nothing per frame).
+EnemyOverlay.REPLACE_DISTANCE = 0.3 -- studs
+EnemyOverlay.REPLACE_ANGLE = math.cos(math.rad(1))
+EnemyOverlay.REPLACE_FOV = 0.5 -- degrees of field of view (the confirm punch, a shot's own FOV) before the plates are placed again
+
+-- Where a world point lands on the viewport (pixels; it may be outside it) and whether it's in
+-- front of the camera. A plain function, so the per-frame pcall allocates nothing.
+local function projectPoint(camera: Camera, point: Vector3): (number, number, boolean)
+	local screen = camera:WorldToViewportPoint(point)
+	return screen.X, screen.Y, screen.Z > 0
+end
 
 -- The stage part this participant's plate hangs over, and how high above it, from BattleView.
 local function spotFor(id: string): (BasePart?, Vector3)
@@ -84,6 +109,7 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 	local connections: { RBXScriptConnection } = {}
 	local scale = 1
 	local width, height = EnemyOverlay.PLATE_WIDTH, EnemyOverlay.PLATE_HEIGHT
+	local bounds: Bounds? = nil
 
 	local function clear()
 		for _, connection in connections do
@@ -103,6 +129,18 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 
 	-- A respawn (a reset mid-fight, the respawn after a loss) clears PlayerGui of everything but the
 	-- ScreenGuis that opt out, and the plates go with their folder: start over with a new one.
+	-- The box is also written on the folder (BoxLeft/Top/Right/Bottom, viewport pixels), for the
+	-- tests and for debugging in Studio.
+	local function writeBounds()
+		local box = bounds
+		if box then
+			folder:SetAttribute("BoxLeft", box.left)
+			folder:SetAttribute("BoxTop", box.top)
+			folder:SetAttribute("BoxRight", box.right)
+			folder:SetAttribute("BoxBottom", box.bottom)
+		end
+	end
+
 	local function ensureFolder()
 		if folder.Parent ~= nil then
 			return
@@ -113,6 +151,7 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 		folder.Parent = playerGui
 		builtFor = nil
 		api.folder = folder
+		writeBounds()
 	end
 
 	local function build(battle: HudBattle)
@@ -187,59 +226,176 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 				end
 			end))
 			gui.Parent = folder
-			local plate: Plate = { gui = gui, root = root, scale = uiScale, baseOffset = 0, button = button, stroke = button:FindFirstChildOfClass("UIStroke"), title = title, hp = hp, statuses = statuses, statusKey = "", left = left, right = right, weak = weak, down = down }
+			local plate: Plate = { gui = gui, root = root, scale = uiScale, baseOffset = 0, row = 0, placedAt = nil, button = button, stroke = button:FindFirstChildOfClass("UIStroke"), title = title, hp = hp, statuses = statuses, statusKey = "", left = left, right = right, weak = weak, down = down }
 			applyScale(plate)
 			plates[id] = plate
 		end
 		builtFor = battle.rosterKey
 	end
 
-	-- The battle camera is fixed and the enemies stand close, so two plates of a fixed pixel size
-	-- can land on top of each other (ten studs apart is about a plate's width on a phone). Plates
-	-- whose enemies overlap on screen stack instead: the later one in screen order moves up a row.
-	-- Needs the camera's projection, which the tests' fake Roblox doesn't have; then they stay put.
-	local function stagger()
+	-- Placing the plates for the current camera: each hangs over its enemy's head, pushed inside the
+	-- HUD's bounds, and plates that would overlap stack downward (the later one in screen order
+	-- drops a row; a plate keeps its row while it's within a looser distance, so nothing flickers
+	-- during a pan). The result is written as a world-space offset, only when it changed. Needs the
+	-- camera's projection, which the tests' fake Roblox doesn't have; then the plates stay put.
+	local lastCameraPosition: Vector3? = nil
+	local lastCameraLook: Vector3? = nil
+	local lastCameraUp: Vector3? = nil -- (the Dutch tilt and the whip roll turn the frame without moving it)
+	local lastCameraFov = 0
+	type Entry = { plate: Plate, x: number, y: number, anchorX: number, anchorY: number, pixelsPerStud: number }
+	local function byX(a: Entry, b: Entry): boolean
+		return a.x < b.x
+	end
+	local function place()
 		local camera = Workspace.CurrentCamera
 		if camera == nil then
 			return
 		end
-		local entries: { { plate: Plate, x: number, pixelsPerStud: number } } = {}
+		local cameraCFrame = camera.CFrame
+		lastCameraPosition = cameraCFrame.Position
+		lastCameraLook = cameraCFrame.LookVector
+		lastCameraUp = cameraCFrame.UpVector
+		lastCameraFov = camera.FieldOfView
+		local plateWidth, plateHeight = width * scale, height * scale
+		local entries: { Entry } = {}
 		for _, plate in plates do
 			local spot: Instance? = plate.gui.Adornee
 			if not plate.gui.Enabled or spot == nil or not spot:IsA("BasePart") then
 				continue
 			end
-			local ok, x, pixelsPerStud = pcall(function()
-				local base = spot.CFrame.Position + Vector3.new(0, plate.baseOffset, 0)
-				local point = camera:WorldToViewportPoint(base)
-				local up = camera:WorldToViewportPoint(base + Vector3.new(0, 1, 0))
-				return point.X, math.max(point.Y - up.Y, 0.001)
-			end)
-			if ok then
-				table.insert(entries, { plate = plate, x = x, pixelsPerStud = pixelsPerStud })
+			local base = spot.CFrame.Position + Vector3.new(0, plate.baseOffset, 0)
+			local ok, x, y, inFront = pcall(projectPoint, camera, base)
+			if not ok then
+				return -- no projection here (the fake Roblox without a camera): leave every plate where it is
+			end
+			-- A plate whose anchor is behind the camera, or far outside the frame, hides; one just
+			-- above or beside the frame (a tall enemy's head in a close shot) is pulled in below. A
+			-- plate the player can tap (picking a target) stays however far out its enemy is: the
+			-- target shot is tight on one enemy, and the others must still be there to switch to.
+			local viewport = camera.ViewportSize
+			local margin = viewport.Y * 0.5
+			local pinned = plate.button.Interactable
+			local placeable = inFront and (pinned or (x > -margin and x < viewport.X + margin and y > -margin and y < viewport.Y + margin))
+			plate.root.Visible = placeable
+			if not placeable then
+				continue
+			end
+			local _, upY = projectPoint(camera, base + Vector3.new(0, 1, 0)) -- (the first call just worked, so this one does)
+			local pixelsPerStud = math.max(y - upY, 0.001)
+			table.insert(entries, { plate = plate, x = x, y = y, anchorX = x, anchorY = y, pixelsPerStud = pixelsPerStud })
+		end
+		table.sort(entries, byX)
+
+		local rowStep = plateHeight + EnemyOverlay.STACK_GAP
+		local box = bounds
+		local minX, maxX = -math.huge, math.huge
+		local minY, maxY = -math.huge, math.huge
+		if box then
+			minX, maxX = box.left + plateWidth / 2, math.max(box.left + plateWidth / 2, box.right - plateWidth / 2)
+			minY, maxY = box.top + plateHeight / 2, math.max(box.top + plateHeight / 2, box.bottom - plateHeight / 2)
+		end
+		-- 1. Each plate inside the box, where it would hang on its own. One the box's top pushes
+		-- down onto its own enemy's head (a close shot: the head is near the top of the box) goes
+		-- beside the enemy instead, on whichever side fits, toward the screen's middle if both do.
+		local middleX = (minX + maxX) / 2
+		for _, entry in entries do
+			local pushedDown = math.clamp(entry.y, minY, maxY) - entry.y
+			entry.x = math.clamp(entry.x, minX, maxX)
+			entry.y = math.clamp(entry.y, minY, maxY)
+			local headTop = entry.anchorY + entry.pixelsPerStud * EnemyOverlay.HEAD_GAP_STUDS
+			local overHead = entry.y + plateHeight / 2 > headTop
+				and math.abs(entry.x - entry.anchorX) < plateWidth / 2 + entry.pixelsPerStud * EnemyOverlay.BESIDE_STUDS
+			if pushedDown > 0 and overHead then
+				local clear = plateWidth / 2 + entry.pixelsPerStud * EnemyOverlay.BESIDE_STUDS
+				local leftX, rightX = entry.anchorX - clear, entry.anchorX + clear
+				local leftFits = leftX >= minX and leftX <= maxX
+				local rightFits = rightX >= minX and rightX <= maxX
+				if leftFits and rightFits then
+					entry.x = if entry.anchorX > middleX then leftX else rightX
+				elseif leftFits then
+					entry.x = leftX
+				elseif rightFits then
+					entry.x = rightX
+				end
 			end
 		end
-		table.sort(entries, function(a, b)
-			return a.x < b.x
-		end)
-		local placed: { { x: number, row: number } } = {}
-		local plateWidth = width * scale
-		for _, entry in entries do
-			local row = 0
-			local function clashes(r: number): boolean
-				for _, other in placed do
-					if other.row == r and math.abs(other.x - entry.x) < plateWidth + 8 then
-						return true
+		-- 2. Plates that would sit on each other move apart: a row down when the box has room,
+		-- else pushed apart sideways, both of them, within the box. A plate that was displaced
+		-- last time only goes back once it's clear by a wider margin (hysteresis), so nothing
+		-- flickers during a pan.
+		local displaced: { [Plate]: boolean } = {}
+		for _ = 1, 3 do
+			local any = false
+			for i = 1, #entries - 1 do
+				for j = i + 1, #entries do
+					local a, b = entries[i], entries[j]
+					local loose = if a.plate.row > 0 or b.plate.row > 0 then 24 else EnemyOverlay.STACK_GAP
+					local dx, dy = b.x - a.x, b.y - a.y
+					-- (Rows are a row step apart: a stacked pair is separated, however loose the sideways test.)
+					if math.abs(dx) >= plateWidth + loose or math.abs(dy) >= rowStep - 0.5 then
+						continue
+					end
+					any = true
+					displaced[b.plate] = true
+					local lower = math.max(a.y, b.y) + rowStep
+					if lower <= maxY + EnemyOverlay.STACK_SLACK then
+						-- Room below: the one further right drops a row under the other.
+						b.y = math.max(b.y, a.y + rowStep)
+					else
+						-- Side by side: push both apart, and if the box stops one, the other gives way.
+						displaced[a.plate] = true
+						local need = plateWidth + EnemyOverlay.STACK_GAP - math.abs(dx)
+						local leftOne, rightOne = if dx >= 0 then a else b, if dx >= 0 then b else a
+						leftOne.x -= need / 2
+						rightOne.x += need / 2
+						if leftOne.x < minX then
+							rightOne.x += minX - leftOne.x
+							leftOne.x = minX
+						end
+						if rightOne.x > maxX then
+							leftOne.x -= rightOne.x - maxX
+							rightOne.x = maxX
+						end
+						leftOne.x = math.clamp(leftOne.x, minX, maxX)
+						rightOne.x = math.clamp(rightOne.x, minX, maxX)
 					end
 				end
-				return false
 			end
-			while clashes(row) do
-				row += 1
+			if not any then
+				break
 			end
-			table.insert(placed, { x = entry.x, row = row })
-			local rowStuds = (height * scale + 6) / entry.pixelsPerStud
-			entry.plate.gui.StudsOffset = Vector3.new(0, entry.plate.baseOffset + row * rowStuds, 0)
+		end
+		-- (Whatever the passes did, every plate ends inside the box, the stack's slack included.)
+		for _, entry in entries do
+			entry.x = math.clamp(entry.x, minX, maxX)
+			entry.y = math.clamp(entry.y, minY, maxY + EnemyOverlay.STACK_SLACK)
+		end
+		-- 3. Back to the world: the point at the anchor's depth that the camera sees at the plate's
+		-- pixel (a ray through the pixel, exact under perspective however far a pinned plate moved
+		-- from its enemy), as an offset from the spot, written only when it changed.
+		local cameraPosition = cameraCFrame.Position
+		local right, up, look = cameraCFrame.RightVector, cameraCFrame.UpVector, cameraCFrame.LookVector
+		local viewport = camera.ViewportSize
+		local tanY = math.tan(math.rad(camera.FieldOfView) / 2)
+		local tanX = tanY * viewport.X / math.max(viewport.Y, 1)
+		for _, entry in entries do
+			local plate = entry.plate
+			plate.row = if displaced[plate] then 1 else 0
+			local spot = plate.gui.Adornee :: BasePart
+			local spotAt = spot.CFrame.Position
+			local anchor = spotAt + Vector3.new(0, plate.baseOffset, 0)
+			local depth = (anchor - cameraPosition):Dot(look)
+			local nx = entry.x / viewport.X * 2 - 1
+			local ny = 1 - entry.y / viewport.Y * 2
+			local through = look + right * (nx * tanX) + up * (ny * tanY)
+			-- (The engine applies StudsOffsetWorldSpace in the spot's own frame, not the world's: the
+			-- enemies' spots are turned to face the party, so the world offset is turned with them.)
+			local offset = spot.CFrame:VectorToObjectSpace(cameraPosition + through * depth - spotAt)
+			local last = plate.placedAt
+			if last == nil or (last - offset).Magnitude > 0.02 then
+				plate.placedAt = offset
+				plate.gui.StudsOffsetWorldSpace = offset
+			end
 		end
 	end
 
@@ -256,8 +412,11 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 			local spot, offset = spotFor(id)
 			if spot then
 				plate.gui.Adornee = spot
-				plate.gui.StudsOffset = offset
 				plate.baseOffset = offset.Y
+				if plate.placedAt == nil then
+					plate.gui.StudsOffset = Vector3.zero
+					plate.gui.StudsOffsetWorldSpace = Vector3.new(0, offset.Y, 0) -- over its head until placed
+				end
 			end
 			plate.gui.Enabled = spot ~= nil and not p.left -- no spot (the harness): the plate just stays off
 			plate.hp.set(p.hp.current, p.hp.max, true)
@@ -300,17 +459,42 @@ function EnemyOverlay.new(playerGui: PlayerGui, name: string?): EnemyOverlay
 			plate.weak.frame.Visible = Flags.ShowAffinities and #p.knownWeaknesses > 0
 			plate.down.frame.Visible = Flags.DownSystem and p.isDown
 		end
-		stagger()
+		place()
+	end
+
+	-- Every frame: place the plates again once the camera has moved or turned enough.
+	local function tick()
+		local camera = Workspace.CurrentCamera
+		if camera == nil or next(plates) == nil then
+			return
+		end
+		local cframe = camera.CFrame
+		local lastPosition, lastLook, lastUp = lastCameraPosition, lastCameraLook, lastCameraUp
+		if lastPosition == nil or lastLook == nil or lastUp == nil then
+			place()
+		elseif (cframe.Position - lastPosition).Magnitude > EnemyOverlay.REPLACE_DISTANCE
+			or cframe.LookVector:Dot(lastLook) < EnemyOverlay.REPLACE_ANGLE
+			or cframe.UpVector:Dot(lastUp) < EnemyOverlay.REPLACE_ANGLE
+			or math.abs(camera.FieldOfView - lastCameraFov) > EnemyOverlay.REPLACE_FOV
+		then
+			place()
+		end
 	end
 
 	api = {
 		folder = folder,
 		update = update,
+		tick = tick,
 		setScale = function(newScale: number)
 			scale = newScale
 			for _, plate in plates do
 				applyScale(plate)
 			end
+		end,
+		setBounds = function(newBounds: Bounds)
+			bounds = newBounds
+			writeBounds()
+			lastCameraPosition = nil -- place again on the next tick
 		end,
 		hide = function()
 			for _, plate in plates do

@@ -36,6 +36,19 @@ end
 local FixedCFrame = setmetatable({ lookAt = Sim.lookAt }, { __index = roblox.CFrame })
 Sim.__index = Sim
 
+-- Camera:WorldToViewportPoint, as the engine computes it (a vertical field of view, no inset).
+function Sim.worldToViewportPoint(cameraCFrame, fieldOfView, viewportSize, point)
+	local relative = cameraCFrame:PointToObjectSpace(point)
+	local depth = -relative.Z
+	local halfTan = math.tan(math.rad(fieldOfView) / 2)
+	local aspect = viewportSize.X / viewportSize.Y
+	local safeDepth = if math.abs(depth) < 1e-6 then 1e-6 else depth
+	local x = (0.5 + (relative.X / safeDepth) / (halfTan * aspect) / 2) * viewportSize.X
+	local y = (0.5 - (relative.Y / safeDepth) / halfTan / 2) * viewportSize.Y
+	local inFrame = depth > 0 and x >= 0 and x <= viewportSize.X and y >= 0 and y <= viewportSize.Y
+	return roblox.Vector3.new(x, y, depth), inFrame
+end
+
 local PROXY = newproxy(false) -- private key: proxy -> real instance
 
 local function unwrap(value)
@@ -168,6 +181,7 @@ function Sim.new(placePath, options)
 	self.tweening = setmetatable({}, { __mode = "k" }) -- instance -> property -> the tween driving it
 	self.tweenLog = {} -- every tween played: { instance, goals, info, time }
 	self.animationLog = {} -- every animation track played or stopped: { env, animator, id, event, speed, time }
+	self.clipLengths = {} -- [rbxassetid] = seconds: lengths for animation tracks (0, "still downloading", otherwise)
 	self.remotes = {}
 	self.clients = {}
 	self.clientOrder = {}
@@ -377,13 +391,14 @@ function Sim:createEnv(name, side, client)
 
 	-- A stand-in for an AnimationTrack: it keeps the state the game sets and reads (Looped, Priority,
 	-- IsPlaying, ...) and logs every Play and Stop to sim.animationLog. Nothing moves, and Length
-	-- stays 0, as it is in the engine while a clip is still downloading.
+	-- stays 0, as it is in the engine while a clip is still downloading, unless a test gives that
+	-- clip a length in sim.clipLengths (by its rbxassetid) to exercise the timing that depends on it.
 	local function newAnimationTrack(animator, animationId)
 		local track = {
 			Animation = animationId,
 			Looped = false,
 			Priority = roblox.Enum.AnimationPriority.Core,
-			Length = 0,
+			Length = sim.clipLengths[animationId] or 0,
 			IsPlaying = false,
 			TimePosition = 0,
 			Speed = 1,
@@ -607,6 +622,13 @@ function Sim:createEnv(name, side, client)
 					end
 				elseif className == "Camera" and key == "ViewportSize" then
 					return env.viewportSize or roblox.Vector2.new(1280, 720)
+				elseif className == "Camera" and key == "WorldToViewportPoint" then
+					-- A pinhole projection from the camera's CFrame, FieldOfView (vertical) and the
+					-- viewport, like the engine's: (x, y) in pixels from the top-left, z the depth,
+					-- and whether the point is in front of the camera and inside the viewport.
+					return function(_, point)
+						return Sim.worldToViewportPoint(instance.CFrame, instance.FieldOfView, env.viewportSize or roblox.Vector2.new(1280, 720), point)
+					end
 				end
 
 				local member = engineMember(instance, key)
@@ -683,7 +705,13 @@ function Sim:createEnv(name, side, client)
 	-- Services the prototype uses; anything else comes straight from the DataModel.
 	local heartbeat = Signal.new(sim, name .. " Heartbeat")
 	env.heartbeat = heartbeat
-	services.RunService = { Heartbeat = heartbeat }
+	services.RunService = {
+		Heartbeat = heartbeat,
+		-- The headless fights stand in for Studio playtests (BattleServer's playtest overrides apply).
+		IsStudio = function()
+			return sim.isStudio ~= false -- a test sets sim.isStudio = false to play a live server
+		end,
+	}
 	services.TweenService = {
 		Create = function(_, target, tweenInfo, goals)
 			assert(type(tweenInfo) == "table" and tweenInfo.__tweenInfo, "TweenService:Create needs a TweenInfo")

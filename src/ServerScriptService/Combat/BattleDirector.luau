@@ -15,8 +15,10 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local Abilities = require(ReplicatedStorage.Combat.Abilities)
 local BattleTypes = require(ReplicatedStorage.Combat.BattleTypes)
 local CombatConfig = require(ReplicatedStorage.Combat.CombatConfig)
+local Pacing = require(ReplicatedStorage.Combat.Pacing)
 local BattleSession = require(script.Parent.BattleSession)
 local EnemyAI = require(script.Parent.EnemyAI)
 
@@ -29,6 +31,9 @@ export type Dependencies = {
 	-- The fight is over and cleared, and everyone's back in the overworld. The winner is nil if the
 	-- fight was reset after an error.
 	battleEnded: (winner: BattleTypes.Side?) -> (),
+	-- The party's summons for the next fight (default CombatConfig.PartySummons); BattleServer lets
+	-- a playtest override them.
+	partySummons: (() -> { string })?,
 }
 
 -- A fight about to start, from the overworld.
@@ -144,7 +149,7 @@ function BattleDirector.submitAction(self: BattleDirector, userId: number, abili
 	self:_protect(function()
 		local accepted, _, message = session:submitAction(userId, abilityId, targetId)
 		if accepted then
-			self:_afterTurn()
+			self:_afterTurn(session.lastAction)
 		else
 			changed = false
 			self.deps.notify(userId, message or "You can't do that right now.")
@@ -184,7 +189,12 @@ end
 function BattleDirector._startBattle(self: BattleDirector, party: { Member }, encounter: Encounter)
 	-- Party summons are dealt round-robin: one each for two players, both for a solo player.
 	local roster: { BattleSession.RosterEntry } = {}
-	for slot, summonId in CombatConfig.PartySummons do
+	local summons: { string } = CombatConfig.PartySummons
+	local override: (() -> { string })? = self.deps.partySummons
+	if override ~= nil then
+		summons = override()
+	end
+	for slot, summonId in summons do
 		local owner = party[(slot - 1) % #party + 1]
 		local entry: BattleSession.RosterEntry = {
 			side = "Party",
@@ -220,11 +230,11 @@ function BattleDirector._beginNextTurn(self: BattleDirector)
 	local actor = session:beginNextTurn()
 
 	if session.phase ~= "input" then
-		self:_afterTurn() -- an ailment cost it the turn
+		self:_afterTurn(nil) -- an ailment cost it the turn
 	elseif actor.ownerUserId == nil and not session:canAffordAnyAbility(actor) then
 		-- Only enemies get here: players can always Guard, which is free. The AI doesn't guard.
 		session:passTurn("NoMana")
-		self:_afterTurn()
+		self:_afterTurn(nil)
 	elseif actor.ownerUserId == nil then
 		self:_after(CombatConfig.EnemyThinkSeconds, function()
 			self:_takeEnemyTurn()
@@ -235,7 +245,7 @@ function BattleDirector._beginNextTurn(self: BattleDirector)
 		self.turnDeadline = self.deps.now() + CombatConfig.TurnTimeoutSeconds
 		self:_after(CombatConfig.TurnTimeoutSeconds, function()
 			session:passTurn("Timeout")
-			self:_afterTurn()
+			self:_afterTurn(nil)
 		end)
 	end
 end
@@ -257,21 +267,33 @@ function BattleDirector._takeEnemyTurn(self: BattleDirector)
 	if not acted then
 		session:passTurn("NoValidAction")
 	end
-	self:_afterTurn()
+	self:_afterTurn(if acted then session.lastAction else nil)
 end
 
--- The current turn is over (acted, passed, or its player left): pause so everyone can see what
--- happened, then open the next turn, or show the result if the battle just ended.
-function BattleDirector._afterTurn(self: BattleDirector)
+-- The current turn is over (acted, passed, or its player left): pause long enough for everyone's
+-- stage to play `action` out (Pacing; nil when nothing happened), then open the next turn, or
+-- show the result if the battle just ended.
+function BattleDirector._afterTurn(self: BattleDirector, action: BattleTypes.ActionRecord?)
 	local session = self.session :: BattleSession.BattleSession
 	self.turnDeadline = nil
 	if session.phase == "reward" then
 		self:_showResults()
 	else
-		self:_after(CombatConfig.ResolvePauseSeconds, function()
+		self:_after(BattleDirector.resolveSeconds(session, action), function()
 			self:_beginNextTurn()
 		end)
 	end
+end
+
+-- How long the stage gets for `action` before the next turn (Pacing, from what it did).
+function BattleDirector.resolveSeconds(session: BattleSession.BattleSession, action: BattleTypes.ActionRecord?): number
+	if action == nil then
+		return Pacing.resolveSeconds(nil, nil, false)
+	end
+	local actor = session.byId[action.actorId]
+	local ability = Abilities[action.abilityId]
+	local summoned = actor ~= nil and Pacing.isSummoned(actor.side, actor.abilities, action.abilityId)
+	return Pacing.resolveSeconds(ability, action.results, summoned, if actor then actor.side else nil)
 end
 
 function BattleDirector._showResults(self: BattleDirector)

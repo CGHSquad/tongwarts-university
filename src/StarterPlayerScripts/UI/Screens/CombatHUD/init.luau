@@ -21,6 +21,7 @@
 	Off the player's turn everything but the status line is hidden (Idle).
 ]]
 
+local GuiService = game:GetService("GuiService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
@@ -58,7 +59,14 @@ type CommandId = UITypes.CommandId
 export type Callbacks = {
 	onAction: (abilityId: string, targetId: string) -> (), -- a summon's ability, or Attack or Guard
 	onTargetChanged: (targetId: string?, friendly: boolean) -> (), -- friendly = picking an ally
+	-- What the player is looking at on their turn changed: the ring ("Command"), the skill list
+	-- ("Menu"), or a target (one enemy, one ally); the battle camera frames it.
+	onFramingChanged: ((framing: Framing, targetId: string?) -> ())?,
 }
+
+-- (Kept in step with BattleView.Framing; "TargetSquad" is framed there but nothing targets every
+-- enemy yet, so the HUD doesn't send it until an ability does, C6.)
+export type Framing = "Command" | "Menu" | "TargetEnemy" | "TargetAlly" | "TargetSquad"
 
 export type Options = {
 	namePrefix: string?, -- the harness runs a second HUD beside the live one
@@ -114,6 +122,13 @@ type Fields = {
 	overworldBanner: number,
 	detailBase: string,
 	deadline: number?,
+	framing: Framing, -- last told to onFramingChanged
+	framingTargetId: string?,
+	stageBusy: boolean, -- the stage is still playing a beat (BattleView), so the ring waits
+	turnOpenedAt: number?, -- server clock, when the turn being shown opened
+	ringHeld: boolean, -- the ring is due but waiting for the stage
+	rewardSeenAt: number?, -- server clock, when the fight was decided
+	resultsHeld: boolean, -- the results screen is due but waiting for the final blow to play
 	connections: { RBXScriptConnection },
 }
 
@@ -136,6 +151,13 @@ local KEY_COMMANDS: { [string]: CommandId } = {
 local function secondsLeft(at: number, now: number): number
 	return math.max(0, math.ceil(at - now))
 end
+
+-- The ring waits for the stage to finish its beat, but never longer than this past the turn's
+-- start: a slow client must never hold up the fight (the server's turn timer runs regardless).
+CombatHUD.RING_WAIT_CAP = 0.6
+-- The results screen waits for the final blow (and the fall) to play, but never longer than this
+-- (the longest beat, an enemy's critical knockout, runs about 3.5 s).
+CombatHUD.RESULTS_WAIT_CAP = 4.5
 
 function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Callbacks, options: Options?): CombatHUD
 	local prefix = if options and options.namePrefix then options.namePrefix :: string else ""
@@ -277,6 +299,13 @@ function CombatHUD.new(playerGui: PlayerGui, localUserId: number, callbacks: Cal
 		overworldBanner = 0,
 		detailBase = "",
 		deadline = nil,
+		framing = "Command",
+		framingTargetId = nil,
+		stageBusy = false,
+		turnOpenedAt = nil,
+		ringHeld = false,
+		rewardSeenAt = nil,
+		resultsHeld = false,
 		connections = {},
 	}
 	self = setmetatable(fields, CombatHUD)
@@ -319,14 +348,43 @@ function CombatHUD.render(self: CombatHUD, snapshot: Snapshot)
 	self:tick(Workspace:GetServerTimeNow())
 end
 
+-- The stage started or finished playing a beat (BattleView): the ring waits for it.
+function CombatHUD.setStageBusy(self: CombatHUD, busy: boolean)
+	if self.stageBusy == busy then
+		return
+	end
+	self.stageBusy = busy
+	-- (A held ring is released on the next tick, not here: this can be called from inside a
+	-- render, through BattleView.)
+end
+
+-- Whether the ring has to wait for the stage right now.
+function CombatHUD._ringWaits(self: CombatHUD, now: number): boolean
+	local openedAt = self.turnOpenedAt
+	return self.stageBusy and openedAt ~= nil and now - openedAt < CombatHUD.RING_WAIT_CAP
+end
+
+-- Whether the results screen has to wait for the stage right now.
+function CombatHUD._resultsWait(self: CombatHUD, now: number): boolean
+	local seenAt = self.rewardSeenAt
+	return self.stageBusy and seenAt ~= nil and now - seenAt < CombatHUD.RESULTS_WAIT_CAP
+end
+
 -- Updates countdowns; called every frame.
 function CombatHUD.tick(self: CombatHUD, now: number)
 	local hud = self.hud
 	if hud == nil then
 		return
 	end
+	self.enemies.tick()
+	if (self.ringHeld and not self:_ringWaits(now)) or (self.resultsHeld and not self:_resultsWait(now)) then
+		self:_rerender()
+		return
+	end
 	if hud.phase == "Reward" then
-		self.results.tick(now)
+		if self.manager:isOpen(self.resultsName) then
+			self.results.tick(now)
+		end
 	elseif self.hint and self.mode == "Ring" then
 		self.status.detail.Text = self.hint :: string
 	elseif self.deadline then
@@ -420,9 +478,15 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 	panel.confirm.button.Size = UDim2.fromOffset(left.w, Theme.Sizes.TapComfortable)
 	panel.back.button.Size = UDim2.fromOffset(left.w, Theme.Sizes.TapMin)
 
+	-- The party column: the cards, with the recent-actions feed under them (out of the middle,
+	-- where the battle camera frames the acting character and the enemies).
+	local feedHeight = 66 -- three wrapped rows of the feed's text
+	local cardsHeight = math.max(0, right.h - feedHeight - gap)
 	self.party.frame.Position = UDim2.fromOffset(right.x, right.y)
-	self.party.frame.Size = UDim2.fromOffset(right.w, right.h)
-	self.party.layout(right.w, right.h)
+	self.party.frame.Size = UDim2.fromOffset(right.w, cardsHeight)
+	self.party.layout(right.w, cardsHeight)
+	self.log.frame.Position = UDim2.fromOffset(right.x, right.y + right.h - feedHeight)
+	self.log.frame.Size = UDim2.fromOffset(right.w, feedHeight)
 
 	local plateWidth = math.min(bottom.w, 360)
 	self.manaPlate.frame.Position = UDim2.fromOffset(bottom.x + math.floor((bottom.w - plateWidth) / 2), bottom.y + 4)
@@ -430,17 +494,30 @@ function CombatHUD._layout(self: CombatHUD, virtual: Vector2)
 
 	self.reveal.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.reveal.frame.Size = UDim2.fromOffset(center.w, center.h)
-	-- The feed sits at the bottom of the middle, under the enemies' plates and clear of the ring.
-	local feedHeight = 48
-	self.log.frame.Position = UDim2.fromOffset(center.x, center.y + center.h - feedHeight)
-	self.log.frame.Size = UDim2.fromOffset(center.w, feedHeight)
 	self.stamps.frame.Position = UDim2.fromOffset(center.x, center.y)
 	self.stamps.frame.Size = UDim2.fromOffset(center.w, center.h)
 
 	self.overworld.frame.Position = UDim2.fromOffset(top.x, top.y)
 	self.overworld.frame.Size = UDim2.fromOffset(math.min(top.w, 520), 130)
 
-	self.enemies.setScale(Layout.scaleFor(ScreenManager.measure(self.gui)))
+	-- The enemy plates (BillboardGuis, in viewport pixels) keep to the box between the status line
+	-- and the bottom of the middle, the ring's column and the party's column.
+	local measured = ScreenManager.measure(self.gui)
+	local scale = Layout.scaleFor(measured)
+	self.enemies.setScale(scale)
+	-- (Layout.regions already includes the safe margins; the SafeArea frame sits at the GUI's
+	-- origin, which is the inset below Roblox's top bar.)
+	local inset = Vector2.zero
+	pcall(function()
+		inset = GuiService:GetGuiInset()
+	end)
+	local function toViewport(x: number, y: number): (number, number)
+		return inset.X + x * scale, inset.Y + y * scale
+	end
+	local statusBottom = top.y + barHeight + 4 + 74
+	local boxLeft, boxTop = toViewport(left.x + left.w + gap, statusBottom + gap)
+	local boxRight, boxBottom = toViewport(right.x - gap, center.y + center.h - gap)
+	self.enemies.setBounds({ left = boxLeft, top = boxTop, right = boxRight, bottom = boxBottom })
 end
 
 --[[ Battle ]]
@@ -460,6 +537,10 @@ function CombatHUD._leaveBattle(self: CombatHUD)
 	self.dim.Visible = false
 	self.party.frame.Visible = false
 	self.ring.hide()
+	self.ringHeld = false
+	self.turnOpenedAt = nil
+	self.rewardSeenAt = nil
+	self.resultsHeld = false
 	self.manaPlate.update(nil, self.localUserId)
 	self.enemies.hide()
 	self.stamps.hide()
@@ -471,6 +552,7 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	-- A new turn starts clean, and "Sending..." only lasts until the server moves on.
 	if self.turnSeen ~= hud.turnNumber then
 		self.turnSeen = hud.turnNumber
+		self.turnOpenedAt = Workspace:GetServerTimeNow()
 		self.submittedTurn = nil
 		self:_setMode("Idle")
 	end
@@ -527,13 +609,25 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 		self.reveal.update(hud)
 	end
 	self.log.frame.Visible = (phase == "Input" or phase == "Resolve") and #hud.recentLog > 0 and self.mode ~= "List" -- the list covers its spot
-	self.log.update(hud.recentLog)
-	-- The results screen (S6) takes over once the fight is decided; the countdown follows the snapshot.
+	-- The feed shows the last two lines, wrapped (it sits under the party cards now, where a long
+	-- line needs two rows).
+	local recent = hud.recentLog
+	local shown = if #recent > 2 then { recent[#recent - 1], recent[#recent] } else recent
+	self.log.update(shown)
+	-- The results screen (S6) takes over once the fight is decided and the stage has played the
+	-- final blow (it waits while the stage is busy, at most RESULTS_WAIT_CAP); the countdown
+	-- follows the snapshot.
+	self.resultsHeld = false
 	if phase == "Reward" then
+		if self.rewardSeenAt == nil then
+			self.rewardSeenAt = Workspace:GetServerTimeNow()
+		end
 		local won = hud.winner == "Party"
 		local key = `{hud.rosterKey}:{won}`
 		if self.manager:isOpen(self.resultsName) and self.resultsFor == key then
 			self.results.setReturnAt(hud.overworldReturnAt)
+		elseif self:_resultsWait(Workspace:GetServerTimeNow()) then
+			self.resultsHeld = true
 		else
 			self.resultsFor = key
 			local players, members = Bindings.partyShape(hud)
@@ -575,9 +669,16 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	self.detailBase = detail
 	self.status.detail.Text = detail
 
-	-- Left: the ring, or the target panel.
+	-- Left: the ring (once the stage has finished its beat, or RING_WAIT_CAP after the turn
+	-- opened, whichever comes first), or the target panel.
+	self.ringHeld = false
 	if self.mode == "Ring" then
-		self.ring.show(self.commands)
+		if self:_ringWaits(Workspace:GetServerTimeNow()) then
+			self.ringHeld = true
+			self.ring.hide()
+		else
+			self.ring.show(self.commands)
+		end
 	else
 		self.ring.hide()
 	end
@@ -592,9 +693,27 @@ function CombatHUD._renderBattle(self: CombatHUD, hud: HudBattle)
 	local shownTarget = if self.mode == "Target" then self.targetId else nil
 	self.party.frame.Visible = self.mode ~= "List" and phase ~= "Reward"
 	self.party.update(hud, self.localUserId, if friendly then shownTarget else nil, pickable)
-	self.manaPlate.update(if myTurn then actor else nil, self.localUserId)
+	-- (Not while picking a target: nothing is spent there, and the target shot puts the enemy where
+	-- the plate sits, at the bottom middle.)
+	self.manaPlate.update(if myTurn and self.mode ~= "Target" then actor else nil, self.localUserId)
 	self.enemies.update(hud, if friendly then nil else shownTarget, pickable)
+	if self.mode == "List" then
+		-- The skill list covers the middle and the camera has pushed in on the hero: the plates
+		-- would only show through the list's rows (or behind the hero's head on a phone).
+		self.enemies.hide()
+	end
 	self.callbacks.onTargetChanged(shownTarget, friendly)
+	local framing: Framing = "Command"
+	if self.mode == "List" then
+		framing = "Menu"
+	elseif self.mode == "Target" and shownTarget ~= nil then
+		framing = if friendly then "TargetAlly" else "TargetEnemy"
+	end
+	local onFraming = self.callbacks.onFramingChanged
+	if onFraming and (framing ~= self.framing or shownTarget ~= self.framingTargetId) then
+		self.framing, self.framingTargetId = framing, shownTarget
+		onFraming(framing, shownTarget)
+	end
 end
 
 function CombatHUD._setMode(self: CombatHUD, mode: Mode)
