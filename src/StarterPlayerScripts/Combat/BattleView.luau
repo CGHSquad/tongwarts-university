@@ -90,7 +90,7 @@ local COVER_SECONDS = 0.45
 local SWEEP_SECONDS = CameraSpec.Sweep.seconds
 -- A beat's sequence ends this long before the server opens the next turn, so there's slack for
 -- latency; the next turn's whip-pan takes over from wherever the camera is.
-local RESOLVE_SLACK = 0.3
+local RESOLVE_SLACK = CombatConfig.ResolveSlackSeconds
 local HIT_DELAY = 0.12 -- after the blow lands: the recoil, the flinch, the shake
 -- The party faces this way on the stage (toward the enemies): the party-wide shots are built on it.
 local PARTY_FACING = Vector3.xAxis
@@ -155,6 +155,7 @@ type ViewFields = {
 	figures: { [string]: Figure },
 	battle: BattleState?,
 	lastActionSeen: number,
+	lostTurnSeen: number, -- the last turn lost to an ailment that the stage has shown
 	turnSeen: number,
 	resultShown: boolean,
 	targetId: string?,
@@ -843,6 +844,7 @@ function BattleView.new(options: Options?): BattleView
 		figures = {},
 		battle = nil,
 		lastActionSeen = 0,
+		lostTurnSeen = 0,
 		turnSeen = 0,
 		resultShown = false,
 		targetId = nil,
@@ -923,6 +925,12 @@ function BattleView.render(self: BattleView, battle: BattleState?): number
 		self.lastActionSeen = action.sequence
 		actionSeconds, impactIn = self:_playAction(battle, action)
 	end
+	local lost = battle.lostTurn
+	if lost ~= nil and lost.turnNumber == battle.turnNumber and lost.turnNumber > self.lostTurnSeen then
+		-- An ailment cost this turn: the stage shows why (the server's wait covers it).
+		self.lostTurnSeen = lost.turnNumber
+		self:_playLostTurn(lost)
+	end
 	for _, figure in self.figures do
 		if figure.fall == "Pending" then
 			-- Knocked out with no blow to wait for (joined late, or the action wasn't seen).
@@ -988,6 +996,17 @@ function BattleView._fall(self: BattleView, figure: Figure, remaining: number, a
 			table.insert(cues, { at = at + budget - SUMMON_FADE_SECONDS, run = freeze })
 		else
 			sequencer:addCue(at + budget - SUMMON_FADE_SECONDS, freeze)
+		end
+	end
+end
+
+-- A beat's sequence is about to be replaced (by the next action or a lost turn): any fall the
+-- previous one still had cued (waiting on its blow, or on its holds) lands now, into `cues`, so a
+-- knocked-out figure never stays standing because the next snapshot came in early.
+function BattleView._landCuedFalls(self: BattleView, cues: { Sequencer.Cue })
+	for _, figure in self.figures do
+		if figure.fall == "Cued" then
+			self:_fall(figure, DEATH_MAX_SECONDS, 0, cues)
 		end
 	end
 end
@@ -1236,6 +1255,7 @@ function BattleView._build(self: BattleView, battle: BattleState)
 	end
 	-- Don't replay an action that happened before this client started watching.
 	self.lastActionSeen = if battle.lastAction then battle.lastAction.sequence else 0
+	self.lostTurnSeen = if battle.lostTurn then battle.lostTurn.turnNumber else 0
 	self.turnSeen = 0
 	self.resultShown = false
 
@@ -1501,13 +1521,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 		end
 	end
 	local cues: { Sequencer.Cue } = {}
-	-- The previous beat's sequence is about to be replaced: a fall it still had cued lands now, so
-	-- a knocked-out figure never stays standing because the next snapshot came in early.
-	for _, figure in self.figures do
-		if figure.fall == "Cued" then
-			self:_fall(figure, DEATH_MAX_SECONDS, 0, cues)
-		end
-	end
+	self:_landCuedFalls(cues)
 
 	-- The beat's budget: what the server waits before the next turn, less slack for latency. Clips
 	-- are compressed to fit inside it; an enemy's beat also holds on the outcome and eases back.
@@ -1594,6 +1608,8 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	local firstTarget: Figure? = nil
 	-- Each target that's hit, on the frame its blow lands (staggered, misses included).
 	local hits: { { at: number, target: Figure, critical: boolean, toward: Vector3 } } = {}
+	-- Who the beat knocks out, and when its blow lands (their falls are cued after the loop).
+	local falls: { { figure: Figure, at: number } } = {}
 	local knockedSomeone = false
 	-- When the action's outcome shows: an attack as its blow lands, anything else once its
 	-- performer has materialized (a summon) and gestured.
@@ -1626,15 +1642,7 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 			-- It falls as the blow lands, not before, within what's left of the beat: through an
 			-- enemy's hold (the hold is there to show it), done before the camera returns.
 			target.fall = "Cued"
-			local fallen = target
-			local fallAt = contact
-			local returnSeconds = if enemyActor then CombatConfig.EnemyReturnSeconds else 0
-			table.insert(cues, {
-				at = fallAt,
-				run = function()
-					self:_fall(fallen, duration - returnSeconds - fallAt, fallAt)
-				end,
-			})
+			table.insert(falls, { figure = target, at = contact })
 		end
 		if ability.kind == "Attack" and target ~= actor then
 			firstTarget = firstTarget or target
@@ -1847,6 +1855,27 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 	if dashTarget and rig then
 		self:_dashCues(cues, actor, rig, dashTarget, lead + HIT_DELAY, plannedCritical)
 	end
+	-- The knocked out fall as their blow lands, but not while the beat's hit-stop or a critical's
+	-- slow-mo holds it (the fall is real-time motion: tweens, a death clip), nor before the beat's
+	-- last hit has registered (its hold may come later than this blow); within what's left of the
+	-- beat, done before the camera returns (through an enemy's hold, which is there to show it).
+	local lastHitAt = 0
+	for _, h in hits do
+		lastHitAt = math.max(lastHitAt, h.at)
+	end
+	local returnSeconds = if enemyActor then CombatConfig.EnemyReturnSeconds else 0
+	for _, f in falls do
+		local fallen = f.figure
+		table.insert(cues, {
+			at = math.max(f.at, lastHitAt),
+			run = function()
+				sequencer:afterHolds(function()
+					local at = sequencer:elapsed()
+					self:_fall(fallen, duration - returnSeconds - at, at)
+				end)
+			end,
+		})
+	end
 	if #hits > 0 then
 		-- The impact (hit-stop, punch, trauma; a critical's flash and slow-mo) lands on the frame of
 		-- the first critical hit, else the first hit; every other hit gets its own small shudder
@@ -1876,6 +1905,76 @@ function BattleView._playAction(self: BattleView, battle: BattleState, action: A
 
 	sequencer:play(duration, cues)
 	return duration, outcomeAt
+end
+
+-- A turn lost to an ailment (a daze): the camera holds on the dazed figure (a party member
+-- chest-up, an enemy frontal) while its name pops up ("Dazed!") and stars circle its head, within
+-- Pacing.lostTurnSeconds; the next turn's camera takes over after.
+local DAZE_STARS = 3
+local DAZE_SPIN_SECONDS = 0.9 -- one turn of the circling stars
+function BattleView._playLostTurn(self: BattleView, lost: BattleTypes.LostTurn)
+	local figure = self.figures[lost.actorId]
+	if figure == nil then
+		return
+	end
+	local duration = math.max(0.3, Pacing.lostTurnSeconds() - RESOLVE_SLACK)
+	local def = StatusEffects[lost.statusId]
+	local label = `{if def then def.name else lost.statusId}!`
+	local rest = standing(figure)
+	local camera, sequencer = self.camera, self.sequencer
+	local part, partRest = body(figure)
+	local feet = figure.home.Position.Y - BLOCK_SIZE.Y / 2
+	local overHead = feet + bodyHeight(figure) + 0.6 - partRest.Position.Y
+	local head = partRest.Position + Vector3.new(0, overHead, 0)
+	local base = if figure.side == "Party" then Shots.allyChestUp(rest) else Shots.enemyFrontal(rest, bodyHeight(figure))
+	local shot = Shots.withPointAt(base, head, CameraSpec.Daze.headAt)
+	local cues: { Sequencer.Cue } = {}
+	self:_landCuedFalls(cues)
+	table.insert(cues, {
+		at = 0,
+		run = function()
+			camera:cut(shot)
+			showPopup(sequencer, figure, label, BattleTheme.Accent, 0)
+			Fx.play(sequencer, "DazeStars", CFrame.new(head), self.folder)
+			-- Stars circling the head (still, with reduced motion).
+			local stars = Instance.new("BillboardGui")
+			stars.Name = "DazeStars"
+			stars.Adornee = part
+			stars.Size = UDim2.fromOffset(90, 44)
+			stars.StudsOffsetWorldSpace = Vector3.new(0, overHead, 0)
+			stars.AlwaysOnTop = true
+			stars.LightInfluence = 0
+			local ring = Instance.new("Frame")
+			ring.Name = "Ring"
+			ring.BackgroundTransparency = 1
+			ring.AnchorPoint = Vector2.new(0.5, 0.5)
+			ring.Position = UDim2.fromScale(0.5, 0.5)
+			ring.Size = UDim2.fromOffset(44, 44)
+			ring.Parent = stars
+			for index = 1, DAZE_STARS do
+				local angle = (index - 1) / DAZE_STARS * math.pi * 2
+				local star = Instance.new("TextLabel")
+				star.Name = "Star"
+				star.BackgroundTransparency = 1
+				star.AnchorPoint = Vector2.new(0.5, 0.5)
+				star.Position = UDim2.fromScale(0.5 + 0.5 * math.cos(angle), 0.5 + 0.5 * math.sin(angle))
+				star.Size = UDim2.fromOffset(18, 18)
+				star.Font = BattleTheme.FontHeavy
+				star.Text = "★"
+				star.TextScaled = true
+				star.TextColor3 = BattleTheme.Accent
+				star.TextStrokeTransparency = 0
+				star.Parent = ring
+			end
+			stars.Parent = figure.spot
+			if Motion.scale() > 0 then
+				local spins = math.max(1, math.floor(duration / DAZE_SPIN_SECONDS))
+				TweenService:Create(ring, TweenInfo.new(DAZE_SPIN_SECONDS, Enum.EasingStyle.Linear, Enum.EasingDirection.In, spins - 1), { Rotation = 360 }):Play()
+			end
+			sequencer:own(stars, duration)
+		end,
+	})
+	sequencer:play(duration, cues)
 end
 
 -- Real seconds a beat's hit-stop (and a critical's slow-mo) hold the clock for; none with reduced
@@ -2062,7 +2161,7 @@ function BattleView._react(self: BattleView, target: Figure, attacker: Figure, r
 	if result.hit then
 		-- It recoils and flinches (or blocks) once the hit-stop lets go: the cue runs just after
 		-- this one, and the sequencer's clock stands still through any hold the impact starts.
-		-- (Not one the blow knocks out: its fall has started and owns the body from here.)
+		-- (Not one the blow knocks out: its fall, once the holds end, owns the body.)
 		sequencer:addCue(sequencer:elapsed() + 1e-3, function()
 			if result.knockedOut then
 				return

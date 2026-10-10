@@ -299,3 +299,59 @@ well. Outcomes for its findings:
 The recoil skip and the sidestep direction aren't tested headlessly: the fake Roblox lands tweens
 at their end, so their paths can't be sampled there.
 
+## 7. Follow-ups before approval (PR #20 review)
+
+The owner asked for four changes on the same branch, Codex's P2 among them.
+
+| Ask | What changed |
+|---|---|
+| A knockout's fall must not play at full speed under the hit-stop or a critical's slow-mo (Codex P2) | The fall waits until every hold is over (`Sequencer:afterHolds`), and not before the beat's last hit (a later critical's hold). A lost turn or a new action that replaces the beat still lands any fall it had waiting |
+| A turn lost to a daze gets a beat | The server records the lost turn (`lostTurn` in the snapshot: turn, who, which ailment) and waits `Pacing.lostTurnSeconds` (base 0.9 + `LostTurn` 1.4 s). The stage holds on the dazed figure (a party member chest-up, an enemy frontal), re-aimed (an exact pitch for the pinhole camera) so its head sits 64% down the screen, below the HUD's status block (`CameraSpec.Daze`). "Dazed!" pops up, stars circle its head (drawn, still with reduced motion), and pack effect #9 bursts there (`CombatFx.DazeStars`, copied into `CombatAssets/Vfx`). The status line and feed say it lost its turn |
+| The status line must read over a bright sky | The detail line is near-white (`Theme.Colors.TextOverScene`) with a 2 px Ink outline (`Theme.Sizes.StrokeOverScene`), like the title |
+| The results screen gets its full time once it opens, after a win and a loss | The server's `overworldReturnAt` adds the final blow's beat (`Pacing.resultsSeconds`: the final action's wait, less the stage's 0.3 s slack, now `CombatConfig.ResolveSlackSeconds`, plus `ResultScreenSeconds`). While that beat plays, the status line shows the final blow's own log line (the one before Victory/Defeat, which the results screen says anyway) |
+
+**Tests.** The new Sim tests:
+
+- The fall waits out the holds, for a hero and for a creature, and a later critical's holds too.
+- A lost turn: "Dazed!", the stars below the status block at phone size, the camera on the figure (from the front for a party member), the stage busy for the server's wait less the slack, and no replay. A fall waiting on the last beat's holds still lands when a lost turn replaces it.
+- The results screen keeps at least `ResultScreenSeconds` once it opens, after a win and after a loss, and the status line shows the final blow's own line until it opens.
+- The session's snapshot carries the lost turn only while it's current. The tests' observer now expects the lost-turn wait on every lost turn in every fight.
+
+The fall and results tests fail on the old code: everyone fell under the holds, and the results screen got 4.99 s.
+
+One older test, "after a win the enemy is gone until it respawns", had to change. It checked the overworld's encounter cooldown to the exact frame. The overworld counts that cooldown on its Heartbeat clock, which can trail the fight's end by a heartbeat: 0.2 s in the tests, a frame in the game. The fight now ends between heartbeats, so the test allows one heartbeat.
+
+**Live (Studio Play, real server rolls).**
+
+| Check | Result |
+|---|---|
+| Knockout falls | A hero went down 0.098 s after the number (after the 4-frame freeze). The playtester saw five knockouts, a critical among them (freeze, then 0.3 s of slow-mo, then the fall), and none fell mid-hold |
+| Lost turns | Seven seen, two on party members. The next turn opened 2.30–2.33 s later (Pacing says 2.3). On the phone the stars sat 61% down the screen, clear of the status block |
+| Status line | Readable on desktop and phone, over sky and over ground (captures `C2b_status_desktop_sky`, `C2b_status_desktop_ground_staged_cam`, `C2b_status_phone_sky`, `C2b_status_phone_ground_staged_cam`; the ground ones point the camera at the grass on purpose) |
+| Results | Opened with 8.25–8.29 s left after wins and a loss, and closed within 0.06 s of the countdown. (Measured before the slack fix; the screen now opens with 8.0 s left, by the same arithmetic the results test checks) |
+
+**Quality loop round 1.** The critic found nothing serious. Fixed:
+
+- a fall that a lost turn could drop
+- a fall that started before a later critical's hold
+- the results countdown opening at "9"
+- a camera check that couldn't fail
+- stale comments
+
+The playtester confirmed all four changes in play. On the phone, the stars sat under the turn bar or over the status text, so the daze shot was re-aimed. The final blow's status line was blank, so it now shows the final blow's own log line.
+
+**Quality loop round 2** (critic, on the round-1 fixes). Nothing serious. Fixed:
+
+- the status line showed the Victory/Defeat line instead of the final blow's own line
+- a new beat inherited the replaced beat's holds, so a fall it landed at once could still play under one (`Sequencer:play` now clears them)
+- the daze aim was a small-angle approximation (about 0.60–0.63 instead of 0.64; it's exact now, and the test holds it to ±0.03)
+- two comments above the wrong function
+
+A final live run on the phone emulator gave one loss and one win. In both, the status line showed the final blow's own line ("Tung Tung Sahur A is knocked out!", "Wild Sapling B is knocked out!") until the results opened 2.8–3.5 s after the fight was decided. No daze came up in those two fights. The exact aim is pinned headlessly to 64% ±3%; the earlier live phone run with the approximate aim measured 61%.
+
+**Left for the owner:**
+
+- At the start of each beat, the status line still shows the previous action's line until the new blow lands (the HUD reveals outcomes as the stage shows them).
+- When a departing player decides a fight, the results get no extra time for a beat that's still playing.
+- On the command shot, the second enemy can hide behind the active hero (CAMERA_POLISH).
+

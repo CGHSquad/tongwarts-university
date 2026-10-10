@@ -66,6 +66,13 @@ export type ActionRecord = {
 	results: { ActionResult }, -- one per target
 }
 
+-- A turn an ailment cost its summon (it was dazed): the stage shows why the turn was skipped.
+export type LostTurn = {
+	turnNumber: number, -- the turn that was lost
+	actorId: string,
+	statusId: string, -- the ailment that cost it (it may have run out that same turn)
+}
+
 export type BattleState = {
 	battleId: number,
 	phase: Phase,
@@ -77,6 +84,7 @@ export type BattleState = {
 	participants: { ParticipantState },
 	winner: Side?,
 	lastAction: ActionRecord?,
+	lostTurn: LostTurn?, -- set while the current turn is one an ailment cost
 	log: { string },
 	turnDeadline: number?, -- when the current player's turn auto-passes
 	overworldReturnAt: number?, -- when the result screen closes and everyone's back in the overworld

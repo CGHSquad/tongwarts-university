@@ -108,7 +108,10 @@ treat it as the current source of truth, not something to hand-edit here.
   and particle caps, lower on touch-only devices) and `CombatSounds`. A clip with no published id is
   registered from its KeyframeSequence in Studio only (a temporary id); with neither, and with no
   effect or weapon template, the beat falls back to procedural moves, which is what the headless
-  tests see.
+  tests see. Real-time motion that mustn't play under a hit-stop or slow-mo (a knockout's fall)
+  waits with `Sequencer:afterHolds`. A turn lost to an ailment is `lostTurn` in the snapshot; the
+  server waits `Pacing.lostTurnSeconds` and the stage holds on the dazed figure. The results
+  screen gets its full `ResultScreenSeconds` after the final blow's beat (`Pacing.resultsSeconds`).
 - Asset packs (licensed BuiltByBit packs, see `CREDITS.md`): never commit any pack file, export or
   copy to this public repo, and never put one in the repo folder; `.gitignore` covers the usual
   names, but check each commit's file list. The raw packs live only in the place, in

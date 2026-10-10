@@ -147,7 +147,8 @@ function Widgets.statusLine(parent: Instance): StatusLine
 	local frame = Gui.frame(parent, "Status")
 	local title = Gui.label(frame, "Title", { size = Theme.Sizes.TextTitle, font = Theme.Fonts.Display, stroke = 1 })
 	title.Size = UDim2.new(1, 0, 0, 30)
-	local detail = Gui.label(frame, "Detail", { size = Theme.Sizes.TextBody, font = Theme.Fonts.Bold, color = Theme.Colors.TextDim, wrap = true })
+	-- The detail sits straight over the scene, often a bright sky: near-white with an Ink outline.
+	local detail = Gui.label(frame, "Detail", { size = Theme.Sizes.TextBody, font = Theme.Fonts.Bold, color = Theme.Colors.TextOverScene, wrap = true, stroke = Theme.Sizes.StrokeOverScene })
 	detail.Size = UDim2.new(1, 0, 0, 44)
 	detail.Position = UDim2.fromOffset(0, 30)
 	return {

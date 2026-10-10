@@ -30,6 +30,7 @@ local CombatFx = {
 	EvadeDust = effect("EvadeDust", 40, 20, 1.2), -- pack #10: dust puff
 	KnockoutDust = effect("KnockoutDust", 50, 25, 1.5), -- pack #16: dust and smoke burst
 	ParryFlash = effect("ParryFlash", 55, 28, 1), -- pack #30: white ring burst (no parry rule yet)
+	DazeStars = effect("DazeStars", 29, 20, 1), -- pack #9: white star sparks, over a dazed head
 }
 
 return CombatFx

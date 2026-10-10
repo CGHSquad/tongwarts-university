@@ -109,6 +109,11 @@ function Sequencer.play(self: Sequencer, duration: number, cues: { Cue })
 	self.cues = scheduled
 	self.time = 0
 	self.endsAt = math.max(0, duration)
+	-- A hit-stop or slow-mo still running belonged to the beat being replaced: the new one starts
+	-- at full speed (so whatever it lands at once, like a fall the old beat had waiting, never
+	-- plays under a hold).
+	table.clear(self.holds)
+	self:_setScale(1)
 	self:_settle()
 end
 
@@ -128,6 +133,21 @@ function Sequencer.hold(self: Sequencer, seconds: number, scale: number)
 	end
 	table.insert(self.holds, { seconds = seconds, scale = math.max(0, scale) })
 	self:_setScale(self.holds[1].scale)
+end
+
+-- Runs `run` once every hold (a hit-stop, a slow-mo) has played out, including any queued on this
+-- same frame by a cue that hasn't run yet: for motion that doesn't follow the clock (a tween, a
+-- fall), so it never plays at full speed while the beat is frozen or slowed. Dropped if a new
+-- sequence starts first, like any cue.
+function Sequencer.afterHolds(self: Sequencer, run: () -> ())
+	local function check()
+		if #self.holds > 0 then
+			self:addCue(self.time + 1e-3, check)
+		else
+			run()
+		end
+	end
+	self:addCue(self.time + 1e-3, check)
 end
 
 -- The clock's rate right now (1 unless a hold is running).

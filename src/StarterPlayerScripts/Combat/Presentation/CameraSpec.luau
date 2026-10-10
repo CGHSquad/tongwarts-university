@@ -112,6 +112,11 @@ local CameraSpec = {
 		focusUp = 1.8, -- (aimed at the shoulders, so the head clears the status line above)
 	},
 
+	-- A turn lost to a daze (C2 follow-up): the dazed figure's own shot (a party member chest-up,
+	-- an enemy frontal), aimed so its head and the stars over it sit this far down the screen,
+	-- below the HUD's status block on a phone (which reaches about half way down).
+	Daze = { headAt = 0.64 },
+
 	-- Buffs and heals, when they fire (section 5).
 	Cast = {
 		initiationSeconds = 0.25, -- the caster's frontal medium shot

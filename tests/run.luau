@@ -285,7 +285,13 @@ function Observer:check(snapshot)
 			self.resolveTurn = battle.turnNumber
 			self.resolveAt = self.sim.now
 			local expected = self.Pacing.resolveSeconds(nil, nil, false)
-			if fresh and resolveAction then
+			local lost = battle.lostTurn
+			if lost and lost.turnNumber == battle.turnNumber then
+				expected = self.Pacing.lostTurnSeconds() -- an ailment cost the turn: the stage shows it
+				if lost.actorId ~= battle.currentActorId then
+					self:fail(`lost turn {lost.turnNumber} names {lost.actorId}, but {tostring(battle.currentActorId)} is acting`)
+				end
+			elseif fresh and resolveAction then
 				local attacker = byId[resolveAction.actorId]
 				local ability = self.Abilities[resolveAction.abilityId]
 				local summoned = attacker ~= nil and self.Pacing.isSummoned(attacker.side, attacker.abilities, resolveAction.abilityId)
@@ -530,6 +536,7 @@ function Observer:check(snapshot)
 			self.battlesFinished += 1
 			table.insert(self.results, {
 				winner = battle.winner,
+				returnAt = battle.overworldReturnAt, -- when the server ends the fight
 				rounds = battle.round,
 				turns = battle.turnNumber,
 				duration = self.sim.now - self.battleStartTime,
@@ -1417,8 +1424,11 @@ test("ailments: Luck against Luck to inflict, and a dazed summon may lose its tu
 	expectEqual(session.phase, "resolve", "lost its turn")
 	expect(string.find(session.log[#session.log], "is dazed and loses its turn", 1, true), "logged")
 	expectEqual(session.byId.E1.statuses[1].turnsLeft, 1, "counted down")
+	local lost = session:getState().lostTurn
+	expect(lost ~= nil and lost.actorId == "E1" and lost.statusId == "Dazed" and lost.turnNumber == session.turnNumber, "the snapshot says which turn was lost, by whom, to what")
 
 	session:beginNextTurn() -- E2
+	expectEqual(session:getState().lostTurn, nil, "only while that turn is current")
 	session:passTurn("NoValidAction")
 	session:beginNextTurn() -- P2
 	session:passTurn("Timeout")
@@ -2269,7 +2279,7 @@ test("after a win the enemy is gone until it respawns; everyone gets a moment to
 		return observer.battlesFinished >= 1 and backInOverworld(observer)
 	end, 600), "the fight never finished")
 	expectEqual(observer.results[1].winner, "Party")
-	local endedAt = sim.now
+	local endedAt = observer.results[1].returnAt -- the server's end of the fight (the cooldown starts there; the observer sees it a frame later)
 
 	expect(sim:overworldEnemies().SouthLookout == nil, "a beaten enemy vanishes")
 	local root, humanoid = sim:rootPart(-1), sim:humanoid(-1)
@@ -2283,7 +2293,9 @@ test("after a win the enemy is gone until it respawns; everyone gets a moment to
 	expect(sim:runUntil(function()
 		return observer.battlesStarted >= 2
 	end, 3), "the next fight should start after the cooldown")
-	expect(sim.now - endedAt >= config.EncounterCooldownSeconds, "not before the cooldown ended")
+	-- (The overworld counts the cooldown on its Heartbeat clock, which can trail the fight's end by
+	-- up to a heartbeat: 0.2 s here, a frame in the game.)
+	expect(sim.now - endedAt >= config.EncounterCooldownSeconds - 0.2, `not before the cooldown ended ({sim.now - endedAt} s after the fight ended)`)
 
 	-- The beaten enemy comes back where it started.
 	sim:run(config.EnemyRespawnSeconds)
@@ -3981,7 +3993,7 @@ test("C1: Pacing: the pause after an action grows with what the stage has to sho
 		return { targetId = "E1", hit = hit, critical = critical, damage = if hit then 5 else 0, healed = 0, knockedOut = knockedOut, cleansed = false }
 	end
 	local base = Pacing.resolveSeconds(nil, nil, false)
-	expectEqual(base, Config.ResolvePauseSeconds, "a passed or lost turn")
+	expectEqual(base, Config.ResolvePauseSeconds, "a passed turn")
 	local attack = Pacing.resolveSeconds(Abilities.Attack, { result(true, false, false) }, false)
 	expect(attack > base, "an attack takes longer than nothing")
 	local strike = Pacing.resolveSeconds(Abilities.Strike, { result(true, false, false) }, true)
@@ -5213,6 +5225,193 @@ test("C2: a guarding hero knocked out by a guarded hit still shows it guarded; a
 		sawDust = sawDust or h.stage:FindFirstChild("KnockoutDust") ~= nil
 	end)
 	expect(sawDust, "dust as the enemy goes down")
+end)
+
+test("C2: a knockout's fall waits out the hit-stop and a critical's slow-mo (it never plays on at full speed under them)", function()
+	local h = stageView(944)
+	local downedWhileHeld, downedAt, holdsEndedAt = false, nil, nil
+	local held = false
+	playBeat(h, { actorId = "E1", abilityId = "Strike", results = { result("P1", true, true, 90, true) } }, function(b)
+		local p = participant(b, "P1")
+		p.hp = 0
+		p.status = "KnockedOut"
+	end, 3, function(t)
+		local scale = h.view.sequencer:timeScale()
+		local downed = h.stage.P1.Character:GetAttribute("Stance") == "Downed"
+		if scale < 1 then
+			held = true
+			if downed then
+				downedWhileHeld = true
+			end
+		elseif held and holdsEndedAt == nil then
+			holdsEndedAt = t
+		end
+		if downed and downedAt == nil then
+			downedAt = t
+		end
+	end)
+	expect(held, "the critical held the beat")
+	expect(not downedWhileHeld, "no fall while the beat is frozen or slowed")
+	expect(downedAt ~= nil and holdsEndedAt ~= nil and downedAt >= holdsEndedAt and downedAt - holdsEndedAt < 0.05, `it falls as the holds end ({downedAt} vs {holdsEndedAt})`)
+
+	-- An enemy's creature too: its fall starts only after the holds.
+	local fellWhileHeld, fell = false, false
+	playBeat(h, { actorId = "P2", abilityId = "Attack", results = { result("E1", true, true, 90, true) } }, function(b)
+		local e = participant(b, "E1")
+		e.hp = 0
+		e.status = "KnockedOut"
+	end, 3, function()
+		local down = h.view.figures.E1.fall == "None"
+		if h.view.sequencer:timeScale() < 1 and down then
+			fellWhileHeld = true
+		end
+		fell = fell or down
+	end)
+	expect(fell and not fellWhileHeld, "the creature falls after the holds, not under them")
+
+	-- Several targets, the first knocked out by a plain hit and a later one critical: the first
+	-- doesn't fall until the critical's holds are over either.
+	local m = stageView(947)
+	local e1FellWhileHeld, e1Fell = false, false
+	playBeat(m, { actorId = "P1", abilityId = "GaleClap", results = { result("E1", true, false, 90, true), result("E2", true, true, 16) } }, function(b)
+		local e = participant(b, "E1")
+		e.hp = 0
+		e.status = "KnockedOut"
+	end, 3, function()
+		local down = m.view.figures.E1.fall == "None"
+		if m.view.sequencer:timeScale() < 1 and down then
+			e1FellWhileHeld = true
+		end
+		e1Fell = e1Fell or down
+	end)
+	expect(e1Fell and not e1FellWhileHeld, "it waits for the later critical's holds too")
+end)
+
+test("C2: a turn lost to a daze gets its beat: the camera on the dazed figure, Dazed! and circling stars, with the server's wait covering it", function()
+	local h = stageView(945)
+	local Pacing = h.client.env.require(h.client.env.dm:GetService("ReplicatedStorage").Combat.Pacing)
+	expect(Pacing.lostTurnSeconds() > Pacing.resolveSeconds(nil, nil, false), "a lost turn waits longer than a passed one")
+	local battle = deepCopy(h.battle)
+	battle.phase = "resolve"
+	battle.turnNumber += 1
+	battle.currentActorId = "E1"
+	battle.lostTurn = { turnNumber = battle.turnNumber, actorId = "E1", statusId = "Dazed" }
+	h.view:render(battle)
+	local camera = h.client.env.dm:GetService("Workspace").CurrentCamera
+	local sawCallout, sawStars, facing = false, false, -1
+	local starsAt = nil
+	local busyFor = 0
+	for _ = 1, 150 do
+		h.view:update(1 / 60)
+		for _, popup in popupsOn(h, "E1") do
+			local label = popup:FindFirstChildWhichIsA("TextLabel", true)
+			sawCallout = sawCallout or (label ~= nil and label.Text == "Dazed!")
+		end
+		local starsGui = h.stage.E1.Spot:FindFirstChild("DazeStars")
+		sawStars = sawStars or starsGui ~= nil
+		if starsGui then
+			local size = roblox.Vector2.new(749, 388) -- a phone in landscape
+			local point = Sim.worldToViewportPoint(camera.CFrame, camera.FieldOfView, size, starsGui.Adornee.CFrame:PointToWorldSpace(starsGui.StudsOffsetWorldSpace))
+			starsAt = point.Y / size.Y
+		end
+		-- (Across the ground: the shot is aimed a little above the head, to put it below the HUD.)
+		local toE1 = h.stage.E1.Spot.CFrame.Position - camera.CFrame.Position
+		local look = camera.CFrame.LookVector
+		facing = math.max(facing, roblox.Vector3.new(look.X, 0, look.Z).Unit:Dot(roblox.Vector3.new(toE1.X, 0, toE1.Z).Unit))
+		if h.view.sequencer:isBusy() then
+			busyFor += 1 / 60
+		end
+	end
+	expect(sawCallout, "Dazed! pops up over it")
+	expect(sawStars, "stars circle its head")
+	-- Below the HUD's status block, which reaches about half way down a phone's screen.
+	expect(starsAt ~= nil and math.abs(starsAt - 0.64) < 0.03, `the stars sit below the status block, 64% down ({starsAt})`)
+	expect(facing > 0.95, `the camera holds on it ({facing})`)
+	local duration = Pacing.lostTurnSeconds() - 0.3
+	expect(math.abs(busyFor - duration) < 0.1, `the stage plays it for the server's wait less the slack ({busyFor} vs {duration})`)
+	-- The same lost turn arriving again (a resent snapshot) doesn't replay.
+	h.view:render(battle)
+	expect(not h.view.sequencer:isBusy(), "shown once")
+
+	-- A party member's lost turn: its character chest-up, from the front (its turn shot is from
+	-- behind, over its shoulder).
+	local mine = deepCopy(battle)
+	mine.turnNumber += 1
+	mine.currentActorId = "P1"
+	mine.lostTurn = { turnNumber = mine.turnNumber, actorId = "P1", statusId = "Dazed" }
+	h.view:render(mine)
+	local front, sawMine = -1, false
+	for _ = 1, 60 do
+		h.view:update(1 / 60)
+		local spot = h.stage.P1.Spot.CFrame
+		local offset = camera.CFrame.Position - spot.Position
+		front = math.max(front, spot.LookVector:Dot(roblox.Vector3.new(offset.X, 0, offset.Z).Unit))
+		for _, popup in popupsOn(h, "P1") do
+			local label = popup:FindFirstChildWhichIsA("TextLabel", true)
+			sawMine = sawMine or (label ~= nil and label.Text == "Dazed!")
+		end
+	end
+	expect(sawMine, "Dazed! over the party member")
+	expect(front > 0.5, `the camera holds on it from the front ({front})`)
+
+	-- A lost turn arriving while the last blow's knockout is still waiting on its holds: the fall
+	-- isn't lost with the replaced beat.
+	local k = stageView(946)
+	local knocked = playBeat(k, { actorId = "E1", abilityId = "Strike", results = { result("P1", true, true, 90, true) } }, function(b)
+		local p = participant(b, "P1")
+		p.hp = 0
+		p.status = "KnockedOut"
+	end, 0.8)
+	expect(k.view.sequencer:timeScale() < 1, "(still in the critical's holds)")
+	local lostNext = deepCopy(knocked)
+	lostNext.phase = "resolve"
+	lostNext.turnNumber += 1
+	lostNext.currentActorId = "E2"
+	lostNext.lostTurn = { turnNumber = lostNext.turnNumber, actorId = "E2", statusId = "Dazed" }
+	k.view:render(lostNext)
+	expectEqual(k.view.sequencer:timeScale(), 1, "the new beat doesn't inherit the old one's holds, so nothing plays under them")
+	for _ = 1, 30 do
+		k.view:update(1 / 60)
+	end
+	expectEqual(k.stage.P1.Character:GetAttribute("Stance"), "Downed", "the knocked-out hero still goes down")
+end)
+
+test("C2: the results screen gets its full time once it opens, after a win and after a loss", function()
+	for _, case in {
+		{ name = "win", seed = 951, stats = { Strength = 1, Magic = 1, Endurance = 0, Agility = 1, Luck = 0 }, winner = "Party" },
+		{ name = "loss", seed = 952, stats = { Strength = 80, Magic = 80, Endurance = 60, Agility = 30, Luck = 0 }, winner = "Enemy" },
+	} do
+		local sim, observer = newWorld(case.seed)
+		local rs = sim.server.dm:GetService("ReplicatedStorage")
+		local summons = sim.server.require(rs.Combat.Summons)
+		local config = sim.server.require(rs.Combat.CombatConfig)
+		summons.WildSapling.stats = case.stats
+		local client = join(sim, observer, -1, "Ann", { thinkMin = 0.3, thinkMax = 1, policy = "greedy" })
+		sim:run(1)
+		touch(sim, observer, -1, "GymWildSapling", "front")
+		local resultsGui = nil
+		local finalLine = nil
+		expect(sim:runUntil(function()
+			resultsGui = client.playerGui:FindFirstChild("Results")
+			local snapshot = client.lastSnapshot.battle
+			local status = client.playerGui.CombatHUD.SafeArea.Status
+			if snapshot and snapshot.phase == "reward" and not (resultsGui and resultsGui.Enabled) and status.Visible and status.Detail.Text == snapshot.log[#snapshot.log - 1] then
+				finalLine = status.Detail.Text
+			end
+			return resultsGui ~= nil and resultsGui.Enabled
+		end, 900), `{case.name}: the results screen never opened`)
+		expect(finalLine ~= nil, `{case.name}: the status line says what the final blow did while it plays`)
+		local openedAt = sim.now
+		local battle = client.lastSnapshot.battle
+		expectEqual(battle.winner, case.winner, `{case.name}: the expected outcome`)
+		local left = battle.overworldReturnAt - openedAt
+		expect(left >= config.ResultScreenSeconds - 0.25, `{case.name}: {left} s left once the results opened; it should be the full {config.ResultScreenSeconds}`)
+		expect(sim:runUntil(function()
+			return client.lastSnapshot.battle == nil
+		end, config.ResultScreenSeconds + 6), `{case.name}: the fight never closed`)
+		expect(math.abs(sim.now - battle.overworldReturnAt) < 0.3, `{case.name}: everyone's back when the countdown said ({sim.now - battle.overworldReturnAt})`)
+		assertClean(sim, observer)
+	end
 end)
 
 test("C2: data: every character clip names its pack source and a hit marker inside its length; weapons, effects and sounds are complete", function()

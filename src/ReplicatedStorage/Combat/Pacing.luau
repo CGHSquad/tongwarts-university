@@ -21,8 +21,21 @@ function Pacing.isSummoned(side: BattleTypes.Side, abilities: { string }, abilit
 	return side == "Party" and table.find(abilities, abilityId) ~= nil
 end
 
+-- Seconds between a turn lost to an ailment (a daze) and the next turn opening: the stage shows
+-- why it was skipped.
+function Pacing.lostTurnSeconds(): number
+	return CombatConfig.ResolvePauseSeconds + CombatConfig.ResolveExtraSeconds.LostTurn
+end
+
+-- Seconds from the fight being decided until everyone's back in the overworld: the final blow's
+-- beat (`finalBeatSeconds`, its resolveSeconds; the stage plays it for that less the slack, and
+-- the results screen waits for it), then the full results screen.
+function Pacing.resultsSeconds(finalBeatSeconds: number): number
+	return math.max(0, finalBeatSeconds - CombatConfig.ResolveSlackSeconds) + CombatConfig.ResultScreenSeconds
+end
+
 -- Seconds between an action resolving and the next turn opening. `ability` is nil when the turn
--- passed or was lost to an ailment: nothing to show but the log line. `side` is the actor's: an
+-- passed: nothing to show but the log line (a turn lost to an ailment is lostTurnSeconds). `side` is the actor's: an
 -- enemy's action holds on its outcome and the camera eases back afterwards (CombatConfig's
 -- EnemyHoldSeconds and EnemyReturnSeconds), which the wait covers.
 function Pacing.resolveSeconds(
